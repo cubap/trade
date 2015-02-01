@@ -1,0 +1,319 @@
+<section>
+    <h2>Concepts</h2>
+    <ul class="nav nav-pills nav-justified">
+        <li role="presentation"><a href="#time">Time</a></li>
+        <li role="presentation"><a href="#knowledge+skills">Knowledge and Skills</a></li>
+        <li role="presentation"><a href="#politics+civilization">Politics and Civilization</a></li>
+        <li role="presentation"><a href="#industry">Industry</a></li>
+        <li role="presentation"><a href="#fighting">Fighting</a></li>
+    </ul>
+    <h3 id="time">Time</h3>
+    <p>
+        Time is simple and regular, mirroring the time on the user's own
+        machine. This prevents hunger from being over-managed and sleep from
+        becoming inconvenient. When the user is not guiding a character, it
+        becomes a sort of NPC, persisting in the world for others to act with
+        and perhaps developing skills on its own or acting out a planned routine.
+    </p>
+    <p>
+        It may require some experimenting, but if time is quickened, it should
+        a factor of a real day and not so fast that characters rest unrealistically.
+        The same patterns will drive the critters that have many of the same needs
+        each user-created character attempts to fulfill. As time is persistent
+        for each new character, a user is really dropping in on them to see how
+        things are going - it should not be uninteresting to operate an entire
+        server of zombie characters who may co-evolve.
+    </p>
+    <h3 id="knowledge+skills">Knowledge and Skills</h3>
+    <p>
+        Knowledge is gained by observing, experimenting, or conversing with
+        other characters. Skills are gained by practicing the actions that
+        work towards development. As expected, mastery of some skills may
+        be pre-requisite for future advances.
+    </p>
+    <h4>Exploration Example</h4>
+    <p>
+        A character who is born <em>tabula rasa</em> has no skills at
+        genesis, but may immediately begin to gain experience in two ways:</p>
+    <ol>
+        <li>As she sits idle, she has time to think and each moment moves
+            her closer to unveiling philosophical skills like <code>consideration</code>
+            or even <code>imagining</code>. These skills may combine with
+            others to allow for <code>experimentation</code> later on.</li>
+        <li>More likely, however, is that hunger or insecurity will drive 
+            her away from her spawning location. Each new step develops
+            <code>exploration</code>, which will then allow explorers to
+            <code>look around</code> or <code>remember</code> waypoints and landmarks.
+        </li>
+    </ol>
+    <p>All these basic skills are developed through simple actions. The character
+        who spends more time examining individual objects and interacting with
+        them will become more studious and pick up on new properties more
+        quickly. She who strikes out quickly hither and yon will be first
+        to discover cardinal directions and make maps.
+    </p>
+    <p>
+        Along with these sorts of intellectual developments (as there is no
+        real distinction between knowledge and skill levels) there are
+        physical consequences of these actions. One who is out and moving
+        more quickly hungers, but also develops speed and strength.
+    </p>
+    <h3 id="politics+civilization">Politics and Civilization</h3>
+    <p>The self-organizing principles of the game are four-fold and represent
+        the generalized ways communities stave off entropy:</p>
+    <dl class="">
+        <dt>Tribal from followers:</dt><dd>hunting parties, adventuring groups,
+            merchant caravans, military organization</dd>
+        <dt>Civil from buildings:</dt><dd>shared structures, citizenship, 
+            communal policies</dd>
+        <dt>Corporate from businesses:</dt><dd>trade relationships, stock
+            exchanges</dd>
+        <dt>Cultural from schools, guilds, art houses:</dt><dd>guilds,
+            apprenticeships, bards</dd>
+    </dl>
+    <p>These general groups are similar to knowledge and skills, but 
+        require more than one character to realize. In this way, complex
+        organizations may find themselves with unique options (standing
+        army, university) that require sufficient group experience in several
+        areas.</p>
+    <h4 id="tribal">Tribal</h4>
+    <p>A character who battles a lot may simply be a mercenary, hero, or smuggler;
+        by grouping with others on shared goals, experience toward real 
+        organization (<code>follow</code>, <code>obey orders</code>) can
+        happen, allowing for AI overrides and basic hegemony.</p>
+    <p>Players with enough skill can <code>follow</code> to let another 
+        physically lead the pathfinding and eventually <code>take orders</code>.
+        A commander with enough skill can <code>give orders</code>, even if the
+        ordered player is less experienced.</p>
+    <p>Promotions are natural as leadership complicates. Not relying on
+        physical structures, all grouping is nomadic or ad hoc and can be
+        violent or nonviolent such as simple groups for gathering, trade
+        caravans or hunting parties, adventuring groups, and raiding 
+        parties. More than 5 followers may begin to subdivide.</p>
+    <h5 id="commands-in-a-tribal-path">Commands in a tribal path</h5>
+    <ul>
+        <li><code>Follow</code> (character, animal) - physical path tracing 
+            to be in the same place and mirror control of directions. Related
+            to <code>tracking</code>.</li>
+        <li><code>Mark</code> (target) - tag a mutually visible object for 
+            attention by followers. Related to <code>attack</code>,
+            <code>gather</code>, <code>unload</code>, <code>load</code>,
+            <code>protect</code>.</li>
+        <li><code>Attack</code> (target) - command remote character to
+            assault target using independent AI for determination.</li>
+        <li><code>Gather</code> (target) - mark a specific resource for
+            collection.</li>
+        <li><code>Gather</code> (type) - find specified resource nearby 
+            and return to group or cache.</li>
+        <li><code>Protect</code> (target) - defend a person, resource, or
+            location.</li>
+        <li><code>Obey</code> (character) - transfer trust of leadership to
+            another from a group.</li>
+        <li><code>(Un)load</code> (inventory, cache) - move in and out
+            of a designated cache.</li>
+    </ul>
+    <h5 id="skills-in-a-tribal-path">Skills in a tribal path</h5>
+    <p>Skills allow certain commands and grant bonuses to group events beyond the advantage of numbers.</p>
+    <ul>
+        <li><code>Lead</code></li>
+        <li><code>Direct</code></li>
+        <li><code>Organize</code></li>
+        <li><code>Schedule</code></li>
+        <li><code>Command</code></li>
+        <li><code>Tactics</code></li>
+        <li><code>Assault</code></li>
+        <li><code>Siege</code></li>
+        <li><code>Settle</code></li>
+    </ul>
+    <h4 id="civil">Civil</h4>
+    <p>When a permanent structure is built, civics begins to accumulate.
+        5 households in the same place (each has at least 2 within 15 
+        meters and is within 30 meters of the center) may allow for some
+        laws and organization.</p>
+    <p>Administrative positions exist within a city and can be more 
+        formalized as it grows. Administrative buildings grant further 
+        commands and bonuses. These collaborative buildings can be very 
+        functional for characters (city hall, firehouse) or direct city
+        improvements (streets, walls). In smaller villages, individuals 
+        will freely contribute skills, but a city can have its own treasury
+        and supply goods and pay for work, etc.</p>
+    <p>Laws in a city will start with recognition of citizenship. Some 
+        trust and reputation comes just from sharing citizenship (or 
+        enemies…). Eventually laws can include curfews, taxes, tolls, 
+        tariffs. Some leader character will decide these and (eventually)
+        decide whether it goes to a consensus or vote.</p>
+    <p>Townships may eventually need to mint a currency to standardize
+        exchanges and taxes. Before the mint, a village leader will 
+        artificially set exchange rates for tradeable resources, especially
+        those which are needed for structures. Contributing to the town is
+        reflected in the civic reputation for the character and may be key
+        in elections or minimum standards for citizenship benefits.
+        Exchanging for payable taxes at a banker (chicken for wood, 
+        for example) who sets certain values and stockpiles the trades. 
+        Backed script is then possible and is redeemable at these 
+        locations.</p>
+    <p>Once cities grow to a size that they can support a city planner
+        or streets department, paths around the town boundaries can be 
+        paved as well. This can benefit movement for trade, military, 
+        or simple mobility. Several cities may even collaborate and 
+        share plans to build it and enhance their civic relationship 
+        as a result.</p>
+    <h4 id="corporate">Corporate</h4>
+    <p>A sale happens as early as the first trade. Once a character trades
+        a stick for a snack, she may be on her way to becoming a stick-seller.
+        Once she sets up a shop, this becomes more formalized, as others
+        know where to come for their sticks. Shops have a limited inventory,
+        so they are likely to start as general goods and grow into grocers,
+        building supplies, weaponsmiths, etc. The earliest shop is just a
+        trading post, since there is no money. Characters will exchange 
+        their surplus for specific needs at the shop at a rate set by the 
+        shopkeeper. These exchange rates allow for “fair pricing” even while
+        in AI mode. If the keeper is out - an offer can be made (offer range,
+        if haggling) that the keeper can respond to when available (or set a
+        default time to accept or reject).</p>
+    <aside class="bg-info pull-right col-sm-4 col-lg-3 hidden-xs">
+        At first, subsistence will be key, 
+        but shops will grow as characters begin to specialize in trades
+        and spend time in that way (gathering, crafting, smithing, farming).
+        This covers goods (stock) primarily, since services will require 
+        some different logic.</aside>
+    <p>The infrastructure for the economy will grow as well. A player who
+        collects sticks all day and sells them the next will soon accept
+        a lower price for goods in one shop to wholesale them. Alternately,
+        a shopkeeper may be born when the same player decides to pay a less
+        experienced player to gather sticks for them. If a courier spends 
+        enough time traveling between caches, he may become a merchant. 
+        Someone who decides to map out the different exchange rates at
+        various shops and move goods to turn a profit may become a very
+        rich stock day trader.</p>
+    <p>Support structures are raised around businesses for their protection 
+        and efficient operation. A courier may make do with a basket or a 
+        wheelbarrow, but a distance requires a horse or wagon. At each level,
+        a more advanced skill to build is needed. A corporation will bundle
+        several businesses together, with special rates and some control over
+        the supply chain. A managed forest may supply great lumber that is
+        only accessible at one wholesaler in large lots, so the final shops
+        for individuals will have a higher price unless others can supply. 
+        In this way, “private” property can have a very civil relationship
+        when it comes to land deeds and plots or paying for the city’s
+        protection from raiders or supporting laws that punish theft or
+        damage to property.</p>
+    <p>Groups of shops can agree to fix prices and avoid speculators, 
+        day traders, or fluctuations from flooding the market in one area.
+        Block bargaining may fetch better prices and lead to corporate 
+        (or cooperative) formations. Shops may start to trade in store credit
+        and allow players to trade for credit that can be used at other
+        stores as well, even if the township doesn't yet have a currency.
+        In this way, currency may emerge from civil caches and banks
+        and from corporate economic organization.</p>
+    <h4 id="cultural">Cultural</h4>
+    <p>Education and guilds make up the service industry. At a simple 
+        level, one character may tell information (story, landmark location,
+        gossip), show a skill (dance, sing, teach), or performs a task 
+        (protect, carry, clerk) for another character. For a bard (poet, 
+        historian) this may be stories of deeds, resource locations, prices
+        in another area. For a scout, this may be terrain information and
+        troop movements.</p>
+    <p>With the addition of some resources, services become crafting. One
+        may hire a carpenter to build a house or furniture out of resources
+        on hand. Also, a furniture store may employ a carpenter full-time 
+        to supply the stock. At some level, even couriers are a type of 
+        service industry.</p>
+    <p>A guild structure allows for education and apprenticeship. Experience
+        can be gained in tutelage for skills otherwise inaccessible. This 
+        is especially important for something interdisciplinary. For example,
+        some musical skill may be needed for a furniture-maker to begin
+        constructing musical instruments, but once it is learned it can be
+        taught without the same prerequisites.</p>
+    <p>With higher levels in military or civics, other services become
+        available. A policeman protects civic interests as a character, 
+        but also may need a badge, uniform, weapon. A teacher may learn
+        many basic skills to share out and increase the quality of life
+        or speed of learning through experience for others. A newsman
+        may effectively gather information and report it out, but then
+        need a printer and paper mill to increase circulation. A player
+        with artistic skills and good communication can paint signs for
+        storefronts, wayfinding, or public information.</p>
+    <p>Combined with corporations, a crafter or service character can be
+        the official workshop for a group. A town may appoint posts
+        (paid or not) so that new members or visitors can easily find 
+        their way around. "Help wanted" will become the default place for
+        (un)skilled workers to find "quests".</p>
+    <h3 id="industry">Industry</h3>
+    <p>Major industries include things with a significant startup investment
+        and that are helped by complex machinery or skilled labor, but 
+        cheap and plentiful raw materials.</p>
+    <ul>
+        <li>Milling - Grain to flour, wood to lumber, stone to grit 
+            (of types)</li>
+        <li>Smithing - crafting from metal (stone, wood), especially 
+            advanced weapons and tools</li>
+        <li>Farming - basic foods are easy to find and forage, but takes
+            time</li>
+        <li>Shopkeeping - for timesaving and avoiding direct trading
+            for goods as well as obtaining exotic materials or goods</li>
+        <li>Textiles - simple woven or processed fabrics from grass,
+            fibers, and skins</li>
+    </ul>
+    <p>A new character to an already developed area can start out by
+        gathering any of these or apprenticing, if desired. If a character
+        is in an area where this is not available, milling or textiles
+        would come only with experience on a small scale; smithing could
+        be learned and improved from building tools; farming takes
+        experience with gathering; and shopkeeping is super-trading.</p>
+    <p>More advanced industries may include:</p>
+    <ul>
+        <li>Smelting - processing raw ores into more usable, higher quality forms and alloys</li>
+        <li>Stock trading - moving large quantities of goods around the map</li>
+        <li>Banking - storing and exchanging goods for taxes, shopping, or loans</li>
+    </ul>
+    <h3 id="fighting">Fighting</h3>
+    <aside class="bg-info pull-right col-sm-4 col-lg-3 hidden-xs">
+        <p>Turn-based, asynchronous initiative, automated with interrupt.
+            Range considerations, movement, actions, free action, stamina
+            cost. THAC0, DAM based on skills, wearables, and item used, 
+            aiming. Resistance based on health, skills (evade, etc.), 
+            stamina. In most cases, KO is real, but kill must be finished.</p>
+        <p>Fleeing and pursuit is just a stamina vs. skills game. Instinct
+            may prevent desired action until fighting skills are gained</p>
+    </aside>
+    <p>Fighting is resource-expensive and not intended to be primary
+        to <span class="label label-primary">Trade</span>. Obviously,
+        combat will resolve hunting or surviving wildlife. PvP is not
+        specifically disallowed, but is considered a hostile act and has
+        a negative impact on reputation. That said, most weaponry may be able
+        to quickly incapacitate, but an intentional finishing blow is
+        called for to make a kill. Though this may be a bit of a nerf, 
+        it will allow for muggings and general banditry without leaving a
+        trail of bodies.</p>
+    <h4>Using Weapons</h4>
+    <p>
+        Inventory controls should keep from carrying tons of weapons,
+        but most characters might keep a ranged and melee weapon handy. First
+        attack may require readying a weapon and switching may require
+        putting one away or just dropping it (free action) and pulling 
+        out another.
+    </p>
+    <p>
+        A player with stone skills can pick up a stone or stone+ weapon 
+        easily. In fact, if the player does not know how to build it,
+        it should be very easy to reverse engineer (albeit at low quality).
+        Other related categories need to be identified as well, like good 
+        with a hammer should help with an axe. Vertical categories should
+        also be linked. Good with a stone axe probably means good with a
+        metal axe and probably means there is some skill with a metal hammer.
+        Some weapons will have steeper learning curves and low quality will
+        inhibit fast skill advancement.
+    </p>
+    <p>
+        Buying a weapon way out of your league may work out, but will 
+        require a lot of practice, exponential to the skill dearth. If
+        the gap is big enough, the character may not even recognize the
+        weapon as one and may hurt themselves in the attempt. Some 
+        parallel skills may help: a hunter may find it easy to pick up
+        a longbow: a woodsman can use a battleaxe better than average;
+        a butcher may have skills with a chopping sword, but not a 
+        rapier; a farmer may actually carry a fork like a trident for
+        defense and with better effect because of the skill with it.
+    </p>
+</section>

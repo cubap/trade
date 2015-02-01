@@ -1,74 +1,33 @@
 <!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta http-equiv="X-UA-Compatible" content="chrome=1">
-    <title>Trade</title>
-    <link rel="stylesheet" href="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.2/css/bootstrap.min.css">
-    <!--[if lt IE 9]>
-    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
-    <![endif]-->
-  </head>
-  <body>
-    <div class="container">
-      <header>
-        <h1>Trade
-        <small>Barter and exchange to thrive in a new world</small></h1>
-          <small><a href="https://github.com/cubap/trade">View On <strong>GitHub</strong></a></small>
-      </header>
-        <aside class="bg-info pull-right col-sm-4 col-lg-2 hidden-xs">
-            <h2>It Seems</h2>
-            <p>Current MMOs are crowded with characters who
-            are deadlocked on a personal storyline. The MUDs of old encouraged users
-            to interact and contribute not just in a specific quest or raid but for
-            mutual benefit and social fulfillment. As chat rooms became fantastic
-            worlds we see more and more of our avatars and less and less of each other.
-            </p>
-        </aside>
-        <article>
-        <section>
-            <p class="lead"> 
-            <span class="label label-primary">Trade</span> is a game that allows a user
-            to coach a character (or set of characters) through advanced development. It
-            is, in part, a survival game, but seeks to be a game in which characters
-            find new ways to thrive.</p>
-            <h3>Basics</h3>
-            <p>
-                All entities in the <span class="label label-primary">Trade</span>
-                world act with an intelligence. Each strives to survive, grow,
-                and thrive based on some universal goals and a few specific ones.
-                When a user is playing, her will suppresses (to some extent) the
-                will of the active character.
-            </p>
-            <dl class="dl-horizontal">
-                <dt>Survive</dt>
-                <dd>Every creature has basic needs for food, water, shelter, and
-                    good health.</dd>
-                <dt>Grow</dt>
-                <dd>Plants and animals increase their characteristics over time.</dd>
-                <dt>Thrive</dt>
-                <dd>Each species is driven by desires and may form packs, avoid
-                conflict, amass wealth, etc.</dd>
-            </dl>
-        </section>
-      <section>
-          <h2>Concepts</h2>
-          <ul class="nav nav-pills nav-justified">
-  <li role="presentation"><a href="#time">Time</a></li>
-  <li role="presentation"><a href="#knowledge+skills">Knowledge and Skills</a></li>
-  <li role="presentation"><a href="#civics+relationships">Civics and Relationships</a></li>
-  <li role="presentation"><a href="#mercantilism">Mercantilism</a></li>
-  <li role="presentation"><a href="#fighting">Fighting</a></li>
-</ul>
-          <h3 id="time">Time</h3>
-          <h3 id="knowledge+skills">Knowledge and Skills</h3>
-          <h3 id="civics+relationships">Civics and Relationships</h3>
-          <h3 id="mercantilism">Mercantilism</h3>
-          <h3 id="fighting">Fighting</h3>
-      </section>
-        </article>
-    </div>
-    <script src="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.2/js/bootstrap.min.js"></script>
-    
-  </body>
+<html ng-app="trade">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="chrome=1">
+        <title>Trade</title>
+        <link rel="stylesheet" href="http://maxcdn.bootstrapcdn.com/bootstrap/3.3.2/css/bootstrap.min.css">
+        <!--[if lt IE 9]>
+        <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+        <![endif]-->
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>Trade
+                    <small>Barter and exchange to thrive in a new world</small></h1>
+                <small><a href="https://github.com/cubap/trade">View On <strong>GitHub</strong></a></small>
+            </header>
+            <nav class="nav">
+                <a href="#home">Home</a>
+                <a href="#concepts">Concepts</a>
+            </nav>
+            <article ng-view>
+            </article>
+        </div>
+<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.3.11/angular.min.js"></script>
+<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.3.11/angular-route.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/angular-ui-bootstrap/0.12.0/ui-bootstrap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/angular-ui-bootstrap/0.12.0/ui-bootstrap-tpls.min.js"></script>
+<script src="javascripts/app.js"></script>
+
+    </body>
 </html>
