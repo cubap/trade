@@ -1,6 +1,7 @@
 ---
 title: Markdown Cheatsheet Demo
 updated: 2015-09-04 22:43
+published: false
 ---
 
 > This is Markdown Cheatsheet Demo for **The Plain**, this Jekyll theme. Please check the raw content of this file for the markdown usage.
