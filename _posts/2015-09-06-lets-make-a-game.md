@@ -4,7 +4,7 @@ updated: 2015-10-29 15:56
 published: false
 ---
 
-# It Seems
+### It Seems
 
 Current MMOs are crowded with characters who are deadlocked on a personal storyline. 
 The MUDs of old encouraged users to interact and contribute not just in a specific
@@ -22,6 +22,11 @@ to the problems I faced at work by playing the game in my head. It started to ge
 enough that I really wanted to play this game. The problem is, I have no game development
 experience, know nothing about game systems, and have a full-time job.
 
-# Commit to a Solution
+### Commit to a Solution
 
-So this is it. I am building a game, I guess. It may never be playable, it will have a lot of 
+So this is it. I am building a game, I guess. It may never be playable, it will have 
+a lot of false starts, I am sure. I hadn't fully committed to this until after a long
+layover on a trip when I started to write some of this down. That manuscript is how
+I will close out this first post. For the TL:DR; Just keep following these posts.
+
+[Trade Game Manuscript](https://drive.google.com/open?id=0B5lLcwXun1ZiNDc5SDVfVFlGckk)
