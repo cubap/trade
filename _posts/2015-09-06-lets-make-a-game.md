@@ -1,7 +1,7 @@
 ---
 title: Let's Make a Game
 updated: 2015-10-29 15:56
-published: false
+published: true
 ---
 
 ### It Seems
