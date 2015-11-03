@@ -7,9 +7,11 @@ As I've been led to understand, describing behaviors is better than trying to pr
 
 ### Plant Behaviors
 We know from biology that plants feed on light, soil, and air; they propogate by seed, runner, rhisome, and cutting; they grow through distinct life phases; and generate a host of materials useful to myriad critters. In this world, light and air will be simulated by a `crowding` metric; soil will have `type` and `quality`; propogation will follow different patterns; plant `stage` will enable certain properties; and all manner of droppables (nuts, seeds, fruit, flowers, berries, sticks, logs, fiber).
+
 #### Grow and Multiply
 Growing is a simple set of rules where the `base.quality` of the tile (however we determine that) sets a multiplier on the advancing of the stages of the plant and space available will determine when new growth is possible.
 **turf** like grass and grains has the easiest behavior, since it acts mostly like a covering organism instead of many individual ones. Each grass will have a `coverage` and will first fill up its neighborhood and then spread to others: 
+
 ```
 if (hex.vacant > grass.coverage) {
   grass.coverage += random * base.quality * grass.growthRate
@@ -36,6 +38,7 @@ From this, other mechanics may develop as well:
 * farmers may observe natural fertilizers (bone char, ash, blood, manure) and begin to amend soil with them.
 
 **Bushes and Trees** will be more complex because they have stages of life. A new `tree` begins as a seed in `stage:0` with `age:0`, and `footprint:0`. A seed takes up no space on the ground and grows only by aging:
+
 ```
 if(tree.age > 7){
   // grow to seedling
@@ -48,6 +51,7 @@ if(tree.age > 7){
 ```
 The seed will check its environment every turn for a set range of times to attempt to grow. If conditions never prove favorable, it `dies()`.
 A `stage:1` seedling follows the exact same rules, but with a different environmental test and different age range. As the plants mature, they require more space, but can idle for longer while waiting for favorable conditions. The environment check generally checks for similar plants in the stage being entered:
+
 ```
 function checkEnvironment (tree) {
   switch (tree.stage) {
