@@ -10,7 +10,7 @@ We know from biology that plants feed on light, soil, and air; they propogate by
 #### Grow and Multiply
 Growing is a simple set of rules where the `base.quality` of the tile (however we determine that) sets a multiplier on the advancing of the stages of the plant and space available will determine when new growth is possible.
 **turf** like grass and grains has the easiest behavior, since it acts mostly like a covering organism instead of many individual ones. Each grass will have a `coverage` and will first fill up its neighborhood and then spread to others: 
-~~~
+```
 if (hex.vacant > grass.coverage) {
   grass.coverage += random * base.quality * grass.growthRate
   if (grass.coverage > 40%) {
@@ -26,17 +26,17 @@ if (hex.vacant > grass.coverage) {
           self.propogate(n,seed);
       }
   }
-~~~
+```
 In this way, grasses against rocky or sandy areas will stop spreading and turf will be much thinner in an area well-populated with trees, homes, or other things that take up space on a tile. If the space is below some threshold (40%, here), it will be considered too crowded and grass won't even get a start.
 From this, other mechanics may develop as well:
 * a constantly grazed area will remain in lower coverage, but replenish itself rapidly unless it is grazed bald in areas;
-* well-trodden areas may make natural paths, which mobile critters woudl be able to detect and prefer to move along;
+* well-trodden areas may make natural paths, which mobile critters would be able to detect and prefer to move along;
 * farming grain or flowers would have a natural buff if the farmer were clever enough to clear an area and sparsely sow the seeds. Weed grasses would invade and slow propogation naturally;
 * potted flowers would need their `tile` replaced with a pot container of some type, just as with a raised bed garden; and
 * farmers may observe natural fertilizers (bone char, ash, blood, manure) and begin to amend soil with them.
 
 **Bushes and Trees** will be more complex because they have stages of life. A new `tree` begins as a seed in `stage:0` with `age:0`, and `footprint:0`. A seed takes up no space on the ground and grows only by aging:
-~~~
+```
 if(tree.age > 7){
   // grow to seedling
   if(checkEnvironment(tree)) {
@@ -45,10 +45,10 @@ if(tree.age > 7){
       self.dies(tree);
   }
 }
-~~~
+```
 The seed will check its environment every turn for a set range of times to attempt to grow. If conditions never prove favorable, it `dies()`.
 A `stage:1` seedling follows the exact same rules, but with a different environmental test and different age range. As the plants mature, they require more space, but can idle for longer while waiting for favorable conditions. The environment check generally checks for similar plants in the stage being entered:
-~~~
+```
 function checkEnvironment (tree) {
   switch (tree.stage) {
     case 0: if (number_of_seedlings_on_tile > 2)
@@ -62,7 +62,7 @@ function checkEnvironment (tree) {
   }
   return true;
 }
-~~~
+```
 
 Seeding takes place in an adult `bush` or `tree` and individual spreading rules (like the equal circles of grass, above) can be set for different varieties. A `berry` or `fruit` might first create a seeded fruit on the plant and mature it before dropping or being consumed. A `nut` may drop a fruit that needs to spend quite some time off the tree (during which other forces may move it) before growing. A `maple` or `lumber` type, might drop many fragile seeds along a wind vector.
 Farming trees follows the patterns for `grass` above:
