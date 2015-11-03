@@ -31,6 +31,7 @@ if (hex.vacant > grass.coverage) {
 ```
 In this way, grasses against rocky or sandy areas will stop spreading and turf will be much thinner in an area well-populated with trees, homes, or other things that take up space on a tile. If the space is below some threshold (40%, here), it will be considered too crowded and grass won't even get a start.
 From this, other mechanics may develop as well:
+
 * a constantly grazed area will remain in lower coverage, but replenish itself rapidly unless it is grazed bald in areas;
 * well-trodden areas may make natural paths, which mobile critters would be able to detect and prefer to move along;
 * farming grain or flowers would have a natural buff if the farmer were clever enough to clear an area and sparsely sow the seeds. Weed grasses would invade and slow propogation naturally;
@@ -70,6 +71,7 @@ function checkEnvironment (tree) {
 
 Seeding takes place in an adult `bush` or `tree` and individual spreading rules (like the equal circles of grass, above) can be set for different varieties. A `berry` or `fruit` might first create a seeded fruit on the plant and mature it before dropping or being consumed. A `nut` may drop a fruit that needs to spend quite some time off the tree (during which other forces may move it) before growing. A `maple` or `lumber` type, might drop many fragile seeds along a wind vector.
 Farming trees follows the patterns for `grass` above:
+
 * well-spaced trees will reach maturity quickly and soil can be amended for better yields;
 * clearing an area requires not only removing adults, but maintaining to remove the sprouts as well;
 * knowledge and cultivation of variants will yeild better results for purposeful farming; and
