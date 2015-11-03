@@ -12,7 +12,7 @@ author_gravatar:    3a55707cbed540a61403d07606539f28 # Gravatar md5 hash
 
 # Site Settings
 baseurl:            "http://cubap.github.io/trade" # Base URL must end WITHOUT a slash, default: ""
-permalink:          /notes/:title # Post permalink
+permalink:          /posts/:title # Post permalink
 timezone:           America/Chicago # https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
 
 # Site Build
