@@ -1,5 +1,5 @@
 ---
-title: Let's Imagine Behaviors - Critters
+title: Let's Chase Critters
 date: 2015-11-03 00:15
 ---
 
