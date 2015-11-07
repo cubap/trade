@@ -7,4 +7,6 @@ In the [last post](lets-imagine-behaviors.md), we covered the basic plant life c
 
 ### Movement
 
+Any mobile critter will need to find food and water to sustain itself and shelter to survive and reproduce. Natural behavior will not be constant and will probably react to current health and energy levels as well as time of day. Some critters will prefer plentiful food sources (grass) in large quantities while others will expend serious energy for large and infrequent meals (critters). A caching, hoarding, or burying may also be an interesting mechanic as it will certainly be necessary for humanoid critters.
+
 ### Motivation
