@@ -18,13 +18,13 @@ Similarly, though I know that WebGL is hot and an app built for Android or iOS o
 Okay, fair point. Let's assume the basic game concept is baked even where not recorded and start from there. Let's also assume our environment during development is a browser, which we'll connect to a back-end when we need to later (perhaps NodeJS, my mustachioed friend?):
 
 1. Build a POJO definitions for basic entities: map, vegetation, and critters;
-* Organize POJO collections for the same and mock-persist them in the game cache (probably localCache);
-* Build a simple game-loop without rendering and create a simple output view (probably something obvious like AngularJS);
-* Attach motivations and behaviors to `turf` and `trees` to simulate growth and terraformation;
-* Attach motivations to some simple critters and let them wander around;
-* Switch to some simple draw cycles and see if it looks like the world is visualizing in a natural way;
-* Finish at least 3 tiers of vegetation and 3 tiers of critters all on a single map tile type;
-* Add humanoids as simple critters with only a few social behaviors at first;
-* Try porting the mess into a game engine and evaluate options like canvas vs. svg vs. WebGL vs. whatevs;
-* Do something;
-* Take over the world.
+2. Organize POJO collections for the same and mock-persist them in the game cache (probably localCache);
+3. Build a simple game-loop without rendering and create a simple output view (probably something obvious like AngularJS);
+4. Attach motivations and behaviors to `turf` and `trees` to simulate growth and terraformation;
+5. Attach motivations to some simple critters and let them wander around;
+6. Switch to some simple draw cycles and see if it looks like the world is visualizing in a natural way;
+7. Finish at least 3 tiers of vegetation and 3 tiers of critters all on a single map tile type;
+8. Add humanoids as simple critters with only a few social behaviors at first;
+9. Try porting the mess into a game engine and evaluate options like canvas vs. svg vs. WebGL vs. whatevs;
+10. Do something;
+11. Take over the world.
