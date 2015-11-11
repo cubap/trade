@@ -3,7 +3,10 @@ title: Let's POJO Some Entities
 published: 2015-11-13 02:51
 ---
 
+It is not pseudo-code, but it isn't baked into any structure or commit yet. The goal is to outline what properties will be attached to which entity for control. Behaviors are not considered yet.
+
 ## Gameboard
+
 ~~~
 trade.Map = {
   tiles: {},                // Map of Tiles
@@ -24,4 +27,10 @@ trade.Tile = {
   vacant: 100         // percent of space not covered by structures or turf
   // Add? owner, signs, paths, makeup (fertility, danger, etc?)
 };
+~~~
+
+## Plants
+
+~~~
+trade
 ~~~
