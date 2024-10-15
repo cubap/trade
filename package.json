@@ -1,6 +1,7 @@
 {
   "name": "trade",
   "version": "0.0.10",
+  "type": "module",
   "description": "A game of learning trades, trading stories, and executing trades.",
   "main": "index.js",
   "scripts": {
@@ -19,8 +20,10 @@
   "homepage": "https://github.com/cubap/trade#readme",
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "mongoose": "^8.7.1",
-    "socket.io": "^4.8.0"
+    "socket.io": "^4.8.0",
+    "supertest": "^7.0.0"
   }
 }
