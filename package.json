@@ -1,0 +1,26 @@
+{
+  "name": "trade",
+  "version": "0.0.10",
+  "description": "A game of learning trades, trading stories, and executing trades.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cubap/trade.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "Trade © 2008 by Patrick Cuba is licensed under CC BY-NC-SA 4.0",
+  "bugs": {
+    "url": "https://github.com/cubap/trade/issues"
+  },
+  "homepage": "https://github.com/cubap/trade#readme",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "mongoose": "^8.7.1",
+    "socket.io": "^4.8.0"
+  }
+}
