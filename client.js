@@ -1,12 +1,9 @@
 import 'dotenv/config'
 import { io } from 'socket.io-client'
-import mongoose from 'mongoose'
+
+const validObjectId = process.env.TEST_PAWN
 
 const socket = io('http://localhost:5000')
-
-// Use a valid ObjectId
-const validObjectId = process.env.TEST_PAWN
-// const validObjectId = new mongoose.Types.ObjectId().toString()
 
 socket.on('connect', () => {
   console.log('Connected to server')
