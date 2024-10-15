@@ -1,15 +1,13 @@
-import { configDotenv } from 'dotenv'
-configDotenv()
+import 'dotenv/config'
 import express from 'express'
 import mongoose from 'mongoose'
 import cors from 'cors'
 import { createServer } from 'http'
-import { Server } from 'socket.io'
+import setupGameLogic from './gameLogic.js'
 import connectDB from './config/db.js'
 
 const app = express()
 const server = createServer(app)
-const io = new Server(server)
 
 // Middleware
 app.use(cors())
@@ -22,6 +20,9 @@ connectDB()
 app.get('/', (req, res) => {
   res.send('Server is running')
 })
+
+// Setup game logic
+setupGameLogic(server)
 
 // Start server
 const PORT = process.env.PORT || 5000
