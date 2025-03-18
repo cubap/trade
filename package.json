@@ -5,6 +5,8 @@
   "description": "A game of learning trades, trading stories, and executing trades.",
   "main": "index.js",
   "scripts": {
+    "serve": "node server.js",
+    "start:client": "node client.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -26,5 +28,13 @@
     "socket.io": "^4.8.0",
     "socket.io-client": "^4.8.0",
     "supertest": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.50.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.0.0"
   }
 }
