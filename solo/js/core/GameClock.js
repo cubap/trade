@@ -1,34 +1,67 @@
 class GameClock {
-    constructor(tickRate = 1000) {
+    constructor(msPerTick = 1000) {
+        this.msPerTick = msPerTick
+        this.lastTimestamp = 0
+        this.accumulatedTime = 0
         this.currentTick = 0
-        this.tickRate = tickRate
-        this.lastTickTime = performance.now()
-        this.accumulator = 0
-        this.lastProgress = 0 // Track last progress value for detection of resets
+        this.isPaused = false
+        this.lastProgressTimestamp = 0
     }
-
-    update(currentTime) {
-        // Calculate time delta since last update
-        const delta = currentTime - this.lastTickTime
-        this.lastTickTime = currentTime
+    
+    pause() {
+        this.isPaused = true
+    }
+    
+    resume() {
+        this.isPaused = true
+        // Reset last timestamp on resume to prevent time accumulation during pause
+        this.lastTimestamp = performance.now()
+        this.accumulatedTime = 0
+        this.isPaused = false
+    }
+    
+    update(timestamp) {
+        // If first update or resuming from pause, just store time and return
+        if (this.lastTimestamp === 0 || this.isPaused) {
+            this.lastTimestamp = timestamp
+            return false
+        }
         
-        // Add to accumulator
-        this.accumulator += delta
+        // Calculate time since last update
+        const deltaTime = timestamp - this.lastTimestamp
         
-        // If we've accumulated enough time for a tick
-        if (this.accumulator >= this.tickRate) {
+        // Add to accumulated time
+        this.accumulatedTime += deltaTime
+        
+        // Check if we've accumulated enough time for a tick
+        if (this.accumulatedTime >= this.msPerTick) {
+            // Increment tick counter
             this.currentTick++
-            this.accumulator -= this.tickRate  // Keep remainder for smooth transitions
+            
+            // Subtract processed time from accumulator
+            this.accumulatedTime -= this.msPerTick
+            
+            // Update last timestamp
+            this.lastTimestamp = timestamp
+            
+            // Record time for progress calculation
+            this.lastProgressTimestamp = timestamp
+            
             return true
         }
+        
+        // Not enough time for a tick
+        this.lastTimestamp = timestamp
         return false
     }
     
     getProgress() {
-        const progress = this.accumulator / this.tickRate
-        // Detect if we've reset (new tick) and notify renderer
-        const reset = progress < this.lastProgress && this.lastProgress > 0.8
-        this.lastProgress = progress
+        // Calculate how far we are into the next tick (0-1)
+        const progress = this.accumulatedTime / this.msPerTick
+        
+        // Also determine if we just reset (for renderer to handle transitions)
+        const reset = this.accumulatedTime < 10
+        
         return { progress, reset }
     }
 }

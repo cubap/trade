@@ -211,6 +211,11 @@ class CanvasRenderer {
             } else {
                 this.renderImmobileEntity(entity)
             }
+            
+            // If this is the highlighted entity, draw highlight
+            if (entity === this.highlightedEntity) {
+                this.renderHighlight(entity)
+            }
         }
         
         // Restore context state
@@ -225,38 +230,430 @@ class CanvasRenderer {
         }
     }
 
+    // Update the renderMobileEntity method to correctly interpolate
     renderMobileEntity(entity, progress) {
-        // For mobile entities, interpolate position between current and target
-        const easing = entity.moving ? this.continuousEase(progress) : this.easeOut(progress)
+        // For mobile entities, we need to interpolate between previous and current positions
+        let x, y
         
-        // Calculate interpolated position
-        let x = entity.x
-        let y = entity.y
-        
-        // Only interpolate if the entity has target positions
-        if (entity.targetX !== undefined && entity.targetY !== undefined) {
-            x = this.lerp(entity.x, entity.targetX, easing)
-            y = this.lerp(entity.y, entity.targetY, easing)
+        if (entity.moving) {
+            // If entity is moving, interpolate between current position and target
+            // using a smooth easing function
+            const easing = this.easeInOutQuad(progress)
+            x = this.lerp(entity.prevX, entity.x, easing)
+            y = this.lerp(entity.prevY, entity.y, easing)
+        } else {
+            // If not moving, just use current position
+            x = entity.x
+            y = entity.y
         }
         
-        // Draw entity (position only rounded during rendering)
-        this.context.beginPath()
+        // Continue with rendering at the interpolated position
+        this.context.save()
         
+        // Animal-specific rendering
+        if (entity.subtype === 'animal') {
+            this.renderAnimal(entity, x, y)
+        } else {
+            // Default rendering for other mobile entities
+            this.renderDefaultMobile(entity, x, y)
+        }
+        
+        this.context.restore()
+    }
+
+    // Smooth quadratic easing function for animations
+    easeInOutQuad(t) {
+        return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+    }
+
+    renderAnimal(animal, x, y) {
+        const size = animal.size || 10
+        
+        // Base color from animal color or species
+        let baseColor = animal.color
+        if (!baseColor) {
+            // Species-based coloring
+            switch(animal.species) {
+                case 'rabbit':
+                    baseColor = '#BBBBBB' // Gray
+                    break
+                case 'fox':
+                    baseColor = '#D67D3E' // Orange/red
+                    break
+                case 'deer':
+                    baseColor = '#A68064' // Brown
+                    break
+                case 'wolf':
+                    baseColor = '#6D695E' // Dark gray
+                    break
+                default:
+                    baseColor = '#AAAAAA' // Default gray
+            }
+        }
+        
+        // Modify display based on behavior state
+        let shapeFunction = this.drawOval
+        let behaviorIndicator = null
+        let indicatorColor = null
+        
+        switch(animal.behaviorState) {
+            case 'foraging':
+                // When foraging, draw a small food indicator
+                behaviorIndicator = () => {
+                    this.context.beginPath()
+                    this.context.arc(x + size * 0.7, y - size * 0.7, size * 0.3, 0, Math.PI * 2)
+                    this.context.fillStyle = '#7CFC00' // Bright green for food
+                    this.context.fill()
+                }
+                break
+                
+            case 'seeking_water':
+                // When seeking water, draw a water droplet
+                behaviorIndicator = () => {
+                    this.context.beginPath()
+                    this.context.arc(x + size * 0.7, y - size * 0.7, size * 0.3, 0, Math.PI * 2)
+                    this.context.fillStyle = '#1E90FF' // Blue for water
+                    this.context.fill()
+                }
+                break
+                
+            case 'resting':
+                // Resting animals are slightly transparent
+                baseColor = this.adjustAlpha(baseColor, 0.7)
+                // And have a "Z" indicator
+                behaviorIndicator = () => {
+                    this.context.font = `${size * 0.8}px Arial`
+                    this.context.fillStyle = '#FFFFFF'
+                    this.context.fillText('z', x + size * 0.5, y - size * 0.5)
+                }
+                break
+                
+            case 'fleeing':
+                // Fleeing animals are drawn with motion lines
+                behaviorIndicator = () => {
+                    // Draw motion lines
+                    this.context.strokeStyle = '#FF5555'
+                    this.context.lineWidth = 1
+                    
+                    // Calculate direction of motion
+                    const dx = animal.targetX - animal.x
+                    const dy = animal.targetY - animal.y
+                    const angle = Math.atan2(dy, dx)
+                    
+                    // Draw opposite to movement direction
+                    const backAngle = angle + Math.PI
+                    
+                    // Three motion lines
+                    for (let i = -1; i <= 1; i++) {
+                        const offsetAngle = backAngle + i * 0.3
+                        this.context.beginPath()
+                        this.context.moveTo(x, y)
+                        this.context.lineTo(
+                            x + Math.cos(offsetAngle) * size * 1.2, 
+                            y + Math.sin(offsetAngle) * size * 1.2
+                        )
+                        this.context.stroke()
+                    }
+                }
+                
+                // Make fleeing animals appear more vibrant
+                baseColor = this.brightenColor(baseColor, 1.2)
+                break
+                
+            default:
+                // Default idle behavior
+                break
+        }
+        
+        // Draw direction indicator if moving
+        if (animal.moving && animal.targetX !== animal.x && animal.targetY !== animal.y) {
+            const dx = animal.targetX - animal.x
+            const dy = animal.targetY - animal.y
+            const angle = Math.atan2(dy, dx)
+            
+            // Rotate the animal shape in the direction of movement
+            this.context.translate(x, y)
+            this.context.rotate(angle)
+            this.context.translate(-x, -y)
+        }
+        
+        // Draw animal shape based on species
+        switch(animal.species) {
+            case 'rabbit':
+                this.drawRabbit(x, y, size, baseColor)
+                break
+            case 'fox':
+                this.drawFox(x, y, size, baseColor)
+                break
+            case 'deer':
+                this.drawDeer(x, y, size, baseColor)
+                break
+            case 'wolf':
+                this.drawWolf(x, y, size, baseColor)
+                break
+            default:
+                // Default oval shape
+                this.drawOval(x, y, size, baseColor)
+        }
+        
+        // Draw behavior indicator if applicable
+        if (behaviorIndicator) {
+            behaviorIndicator()
+        }
+        
+        // Draw needs indicators - small bars showing hunger/thirst/etc
+        this.drawNeedsIndicators(animal, x, y, size)
+        
+        // Draw entity name
+        this.drawEntityName(animal, x, y, size)
+    }
+
+    // Helper methods for drawing animal shapes
+    drawOval(x, y, size, color) {
+        this.context.beginPath()
+        this.context.ellipse(x, y, size, size * 0.8, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        this.context.strokeStyle = this.darkenColor(color, 0.7)
+        this.context.lineWidth = 1
+        this.context.stroke()
+    }
+
+    drawRabbit(x, y, size, color) {
+        // Body
+        this.context.beginPath()
+        this.context.ellipse(x, y, size * 0.8, size * 1.2, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Ears
+        this.context.beginPath()
+        this.context.ellipse(x - size * 0.3, y - size * 1.3, size * 0.2, size * 0.6, 0, 0, Math.PI * 2)
+        this.context.ellipse(x + size * 0.3, y - size * 1.3, size * 0.2, size * 0.6, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Face details
+        this.context.beginPath()
+        this.context.arc(x - size * 0.3, y - size * 0.2, size * 0.15, 0, Math.PI * 2) // Eye
+        this.context.arc(x + size * 0.3, y - size * 0.2, size * 0.15, 0, Math.PI * 2) // Eye
+        this.context.fillStyle = 'black'
+        this.context.fill()
+    }
+
+    drawFox(x, y, size, color) {
+        // Body
+        this.context.beginPath()
+        this.context.ellipse(x, y, size, size * 0.8, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Head
+        this.context.beginPath()
+        this.context.ellipse(x + size * 0.8, y, size * 0.6, size * 0.5, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Tail
+        this.context.beginPath()
+        this.context.ellipse(x - size * 1.2, y, size * 0.8, size * 0.4, 0, 0, Math.PI * 2)
+        this.context.fillStyle = this.brightenColor(color, 1.1)
+        this.context.fill()
+        
+        // Face details
+        this.context.beginPath()
+        this.context.arc(x + size * 1.1, y - size * 0.2, size * 0.1, 0, Math.PI * 2) // Eye
+        this.context.arc(x + size * 1.1, y + size * 0.2, size * 0.1, 0, Math.PI * 2) // Eye
+        this.context.fillStyle = 'black'
+        this.context.fill()
+    }
+
+    drawDeer(x, y, size, color) {
+        // Body
+        this.context.beginPath()
+        this.context.ellipse(x, y, size * 1.2, size * 0.9, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Head
+        this.context.beginPath()
+        this.context.ellipse(x + size, y - size * 0.3, size * 0.6, size * 0.4, Math.PI * 0.2, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Antlers (only for adult deer)
+        this.context.beginPath()
+        this.context.moveTo(x + size * 1.2, y - size * 0.6)
+        this.context.lineTo(x + size * 1.6, y - size * 1.3)
+        this.context.lineTo(x + size * 1.9, y - size * 1.0)
+        
+        this.context.moveTo(x + size * 1.2, y - size * 0.6)
+        this.context.lineTo(x + size * 1.0, y - size * 1.3)
+        this.context.lineTo(x + size * 0.7, y - size * 1.0)
+        
+        this.context.strokeStyle = this.darkenColor(color, 0.8)
+        this.context.lineWidth = size * 0.15
+        this.context.stroke()
+        
+        // Eyes
+        this.context.beginPath()
+        this.context.arc(x + size * 1.3, y - size * 0.5, size * 0.1, 0, Math.PI * 2)
+        this.context.fillStyle = 'black'
+        this.context.fill()
+    }
+
+    drawWolf(x, y, size, color) {
+        // Body
+        this.context.beginPath()
+        this.context.ellipse(x, y, size * 1.2, size * 0.8, 0, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Head
+        this.context.beginPath()
+        this.context.ellipse(x + size * 1.1, y, size * 0.7, size * 0.5, Math.PI * 0.1, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Ears (pointed)
+        this.context.beginPath()
+        this.context.moveTo(x + size * 1.1, y - size * 0.4)
+        this.context.lineTo(x + size * 1.5, y - size * 0.9)
+        this.context.lineTo(x + size * 1.3, y - size * 0.3)
+        
+        this.context.moveTo(x + size * 1.1, y - size * 0.4)
+        this.context.lineTo(x + size * 0.8, y - size * 0.9)
+        this.context.lineTo(x + size * 0.9, y - size * 0.3)
+        
+        this.context.fillStyle = this.darkenColor(color, 0.8)
+        this.context.fill()
+        
+        // Tail
+        this.context.beginPath()
+        this.context.ellipse(x - size * 1.3, y, size * 0.8, size * 0.3, Math.PI * 0.2, 0, Math.PI * 2)
+        this.context.fillStyle = color
+        this.context.fill()
+        
+        // Nose and eyes
+        this.context.beginPath()
+        this.context.arc(x + size * 1.6, y + size * 0.1, size * 0.12, 0, Math.PI * 2) // Nose
+        this.context.fillStyle = 'black'
+        this.context.fill()
+        
+        this.context.beginPath()
+        this.context.arc(x + size * 1.3, y - size * 0.2, size * 0.1, 0, Math.PI * 2) // Eye
+        this.context.fillStyle = 'yellow'
+        this.context.fill()
+        
+        this.context.beginPath()
+        this.context.arc(x + size * 1.3, y - size * 0.2, size * 0.05, 0, Math.PI * 2) // Pupil
+        this.context.fillStyle = 'black'
+        this.context.fill()
+    }
+
+    drawDefaultMobile(entity, x, y) {
         // Size can be entity-specific or default
         const size = entity.size || 10
         
+        // Draw entity (position only rounded during rendering)
+        this.context.beginPath()
         this.context.arc(Math.round(x), Math.round(y), size, 0, 2 * Math.PI)
-        this.context.fillStyle = this.getColorForEntity(entity)
+        this.context.fillStyle = entity.color || this.getColorForEntity(entity)
         this.context.fill()
         
         // Draw entity name
+        this.drawEntityName(entity, x, y, size)
+    }
+
+    renderDefaultMobile(entity, x, y) {
+        // Size can be entity-specific or default
+        const size = entity.size || 10
+        
+        // Draw entity (position only rounded during rendering)
+        this.context.beginPath()
+        this.context.arc(Math.round(x), Math.round(y), size, 0, 2 * Math.PI)
+        this.context.fillStyle = entity.color || this.getColorForEntity(entity)
+        this.context.fill()
+        
+        // Add a border
+        this.context.strokeStyle = 'rgba(0, 0, 0, 0.5)'
+        this.context.lineWidth = 1
+        this.context.stroke()
+        
+        // If entity has a role, indicate it visually
+        if (entity.role) {
+            // Draw a small indicator inside the entity
+            this.context.beginPath()
+            this.context.arc(Math.round(x), Math.round(y), size * 0.4, 0, 2 * Math.PI)
+            
+            // Different colors for different roles
+            const roleColors = {
+                explorer: '#5555FF',
+                builder: '#FF5555',
+                scout: '#55FF55',
+                trader: '#FFFF55'
+            }
+            
+            this.context.fillStyle = roleColors[entity.role] || '#FFFFFF'
+            this.context.fill()
+        }
+        
+        // Draw entity name
+        this.drawEntityName(entity, x, y, size)
+    }
+
+    drawNeedsIndicators(animal, x, y, size) {
+        if (!animal.drives) return
+        
+        const barWidth = size * 2
+        const barHeight = size * 0.2
+        const startY = y + size * 1.2
+        const spacing = barHeight * 1.2
+        
+        // Draw hunger indicator
+        if (animal.drives.hunger !== undefined) {
+            this.drawNeedBar(x - barWidth/2, startY, barWidth, barHeight, 
+                           animal.drives.hunger/100, '#F39C12', 'hunger')
+        }
+        
+        // Draw thirst indicator
+        if (animal.drives.thirst !== undefined) {
+            this.drawNeedBar(x - barWidth/2, startY + spacing, barWidth, barHeight, 
+                           animal.drives.thirst/100, '#3498DB', 'thirst')
+        }
+        
+        // Draw rest indicator 
+        if (animal.drives.rest !== undefined) {
+            this.drawNeedBar(x - barWidth/2, startY + spacing * 2, barWidth, barHeight, 
+                           animal.drives.rest/100, '#9B59B6', 'rest')
+        }
+    }
+
+    drawNeedBar(x, y, width, height, fillPercent, color, needType) {
+        // Draw background
+        this.context.fillStyle = 'rgba(0, 0, 0, 0.3)'
+        this.context.fillRect(x, y, width, height)
+        
+        // Draw fill based on need level
+        this.context.fillStyle = color
+        this.context.fillRect(x, y, width * fillPercent, height)
+        
+        // Add border
+        this.context.strokeStyle = 'rgba(0, 0, 0, 0.5)'
+        this.context.lineWidth = 0.5
+        this.context.strokeRect(x, y, width, height)
+    }
+
+    drawEntityName(entity, x, y, size) {
         this.context.fillStyle = 'black'
         this.context.font = '12px Arial'
+        this.context.textAlign = 'center'
         this.context.fillText(
             entity.name || entity.subtype || entity.type,
-            Math.round(x) - 20, 
-            Math.round(y) - size - 5
+            x, 
+            y - size - 5
         )
+        this.context.textAlign = 'left' // Reset alignment
     }
 
     renderImmobileEntity(entity) {
@@ -438,6 +835,106 @@ class CanvasRenderer {
                 this.context.stroke()
             }
         }
+    }
+
+    // Color utility methods
+    brightenColor(hexColor, factor) {
+        // Convert hex to RGB
+        const r = parseInt(hexColor.substr(1, 2), 16)
+        const g = parseInt(hexColor.substr(3, 2), 16)
+        const b = parseInt(hexColor.substr(5, 2), 16)
+        
+        // Brighten
+        const newR = Math.min(255, Math.round(r * factor))
+        const newG = Math.min(255, Math.round(g * factor))
+        const newB = Math.min(255, Math.round(b * factor))
+        
+        // Convert back to hex
+        return `#${newR.toString(16).padStart(2, '0')}${newG.toString(16).padStart(2, '0')}${newB.toString(16).padStart(2, '0')}`
+    }
+
+    darkenColor(hexColor, factor) {
+        // Convert hex to RGB
+        const r = parseInt(hexColor.substr(1, 2), 16)
+        const g = parseInt(hexColor.substr(3, 2), 16)
+        const b = parseInt(hexColor.substr(5, 2), 16)
+        
+        // Darken
+        const newR = Math.max(0, Math.round(r * factor))
+        const newG = Math.max(0, Math.round(g * factor))
+        const newB = Math.max(0, Math.round(b * factor))
+        
+        // Convert back to hex
+        return `#${newR.toString(16).padStart(2, '0')}${newG.toString(16).padStart(2, '0')}${newB.toString(16).padStart(2, '0')}`
+    }
+
+    adjustAlpha(hexColor, alpha) {
+        // Convert hex to RGB
+        const r = parseInt(hexColor.substr(1, 2), 16)
+        const g = parseInt(hexColor.substr(3, 2), 16)
+        const b = parseInt(hexColor.substr(5, 2), 16)
+        
+        // Return with alpha
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`
+    }
+
+    // Add this method to the CanvasRenderer class
+    highlightEntity(entity, duration = 1000) {
+        // Store the entity to highlight
+        this.highlightedEntity = entity
+        this.highlightEndTime = performance.now() + duration
+        
+        // Clear any existing highlight timeout
+        if (this.highlightTimeout) {
+            clearTimeout(this.highlightTimeout)
+        }
+        
+        // Set timeout to clear the highlight
+        this.highlightTimeout = setTimeout(() => {
+            this.highlightedEntity = null
+            this.highlightTimeout = null
+        }, duration)
+    }
+
+    // Add method to render the highlight effect
+    renderHighlight(entity) {
+        // Calculate how long the highlight has been active (for animation)
+        const timeRemaining = this.highlightEndTime - performance.now()
+        const duration = 1000 // Same as default in highlightEntity
+        const progress = 1 - (timeRemaining / duration)
+        
+        // Calculate pulsing effect (0 to 1 to 0)
+        const pulseRate = 2 // Complete pulse cycles per highlight duration
+        const pulse = 0.5 + 0.5 * Math.sin(progress * Math.PI * 2 * pulseRate)
+        
+        // Draw highlight circle with pulsing opacity
+        this.context.beginPath()
+        this.context.arc(entity.x, entity.y, (entity.size || 10) * 1.5, 0, Math.PI * 2)
+        this.context.strokeStyle = 'rgba(255, 255, 0, ' + (0.4 + 0.6 * pulse) + ')'
+        this.context.lineWidth = 2 + pulse * 2
+        this.context.stroke()
+        
+        // Draw connecting line to a metadata indicator
+        this.context.beginPath()
+        this.context.moveTo(entity.x, entity.y - (entity.size || 10))
+        this.context.lineTo(entity.x, entity.y - (entity.size || 10) * 3)
+        this.context.strokeStyle = 'rgba(255, 255, 0, 0.8)'
+        this.context.lineWidth = 1
+        this.context.stroke()
+        
+        // Draw small info badge
+        this.context.fillStyle = 'rgba(0, 0, 0, 0.7)'
+        this.context.beginPath()
+        this.context.arc(entity.x, entity.y - (entity.size || 10) * 3, 8, 0, Math.PI * 2)
+        this.context.fill()
+        
+        this.context.fillStyle = 'white'
+        this.context.font = '12px Arial'
+        this.context.textAlign = 'center'
+        this.context.textBaseline = 'middle'
+        this.context.fillText('i', entity.x, entity.y - (entity.size || 10) * 3)
+        this.context.textAlign = 'left'
+        this.context.textBaseline = 'alphabetic'
     }
 }
 
