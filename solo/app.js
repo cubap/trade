@@ -7,22 +7,28 @@ class Entity {
         this.prevY = this.y
         this.targetX = this.x
         this.targetY = this.y
+        this.nextTargetX = this.x  // Add next target for continuous motion
+        this.nextTargetY = this.y
         this.speed = speed
         this.moving = false
     }
 
     move() {
-        // Store previous position before updating
+        // Current position becomes the previous position
         this.prevX = this.x
         this.prevY = this.y
         
-        // Current position becomes the previous target
+        // Current target becomes current position
         this.x = this.targetX
         this.y = this.targetY
         
-        // Calculate new target position (with integer rounding)
-        this.targetX = Math.round(this.x + (Math.random() - 0.5) * this.speed)
-        this.targetY = Math.round(this.y + (Math.random() - 0.5) * this.speed)
+        // Next target becomes current target
+        this.targetX = this.nextTargetX
+        this.targetY = this.nextTargetY
+        
+        // Calculate next target position
+        this.nextTargetX = Math.round(this.targetX + (Math.random() - 0.5) * this.speed)
+        this.nextTargetY = Math.round(this.targetY + (Math.random() - 0.5) * this.speed)
         
         this.moving = true
     }
@@ -123,32 +129,33 @@ class GameClock {
         this.currentTick = 0
         this.tickRate = tickRate
         this.lastTickTime = performance.now()
-        this.nextTickTime = this.lastTickTime + this.tickRate
-        this.previousProgress = 0 // Track last progress value for smoother transitions
+        this.accumulator = 0
+        this.lastProgress = 0 // Track last progress value for detection of resets
     }
 
     update(currentTime) {
-        if (currentTime >= this.nextTickTime) {
+        // Calculate time delta since last update
+        const delta = currentTime - this.lastTickTime
+        this.lastTickTime = currentTime
+        
+        // Add to accumulator
+        this.accumulator += delta
+        
+        // If we've accumulated enough time for a tick
+        if (this.accumulator >= this.tickRate) {
             this.currentTick++
-            this.lastTickTime = this.nextTickTime
-            this.nextTickTime = this.lastTickTime + this.tickRate
-            this.previousProgress = 0 // Reset progress counter
+            this.accumulator -= this.tickRate  // Keep remainder for smooth transitions
             return true
         }
         return false
     }
     
-    getProgress(currentTime) {
-        // Calculate exact progress between ticks (0 to 1)
-        const newProgress = (currentTime - this.lastTickTime) / this.tickRate
-        
-        // Ensure progress never goes backward (can happen with timing inconsistencies)
-        if (newProgress < this.previousProgress && this.previousProgress < 0.99) {
-            return this.previousProgress
-        }
-        
-        this.previousProgress = newProgress
-        return Math.min(newProgress, 1)
+    getProgress() {
+        const progress = this.accumulator / this.tickRate
+        // Detect if we've reset (new tick) and notify renderer
+        const reset = progress < this.lastProgress && this.lastProgress > 0.8
+        this.lastProgress = progress
+        return { progress, reset }
     }
 }
 
@@ -168,6 +175,7 @@ class CanvasRenderer {
         this.canvas.height = world.height
         
         this.context = this.canvas.getContext('2d')
+        this.justReset = false // Initialize justReset flag
         
         // Define color palettes for more visually cohesive looks
         this.colorPalettes = {
@@ -184,7 +192,12 @@ class CanvasRenderer {
 
     render() {
         // Calculate interpolation factor (0 to 1)
-        const progress = this.calculateTickProgress()
+        const { progress, reset } = this.world.clock.getProgress()
+        
+        // If we just reset, remember that for animation continuity
+        if (reset) {
+            this.justReset = true
+        }
         
         // Clear the canvas
         this.context.clearRect(0, 0, this.canvas.width, this.canvas.height)
@@ -192,19 +205,23 @@ class CanvasRenderer {
         // Draw each entity
         for (const entity of this.world.entitiesMap.values()) {
             // Interpolate position between current and target
-            const x = this.lerp(entity.x, entity.targetX, progress)
-            const y = this.lerp(entity.y, entity.targetY, progress)
+            // Use continuous easing for entities that are continuously moving
+            const easing = entity.moving ? this.continuousEase(progress) : this.easeOut(progress)
             
-            // Draw entity circle
+            // Calculate interpolated position
+            const x = this.lerp(entity.x, entity.targetX, easing)
+            const y = this.lerp(entity.y, entity.targetY, easing)
+            
+            // Draw entity (position only rounded during rendering)
             this.context.beginPath()
-            this.context.arc(x, y, 10, 0, 2 * Math.PI)
+            this.context.arc(Math.round(x), Math.round(y), 10, 0, 2 * Math.PI)
             this.context.fillStyle = this.getColorForEntity(entity)
             this.context.fill()
             
             // Draw entity name
             this.context.fillStyle = 'black'
             this.context.font = '12px Arial'
-            this.context.fillText(entity.name, x - 20, y - 15)
+            this.context.fillText(entity.name, Math.round(x) - 20, Math.round(y) - 15)
         }
         
         // Display current tick
@@ -213,24 +230,29 @@ class CanvasRenderer {
         this.context.fillText(`Tick: ${this.world.clock.currentTick}`, 10, 20)
     }
     
-    calculateTickProgress() {
-        const currentTime = performance.now()
-        // Get exact progress from the clock
-        const rawProgress = this.world.clock.getProgress(currentTime)
-        
-        // Apply easing for smoother movement
-        return this.easeInOutCubic(rawProgress)
-    }
-    
-    // Linear interpolation with rounding for pixel-perfect rendering
+    // Remove calculateTickProgress since we're getting progress directly
+
+    // Linear interpolation without rounding for smoother motion
     lerp(start, end, progress) {
-        return Math.round(start + (end - start) * progress)
+        return start + (end - start) * progress
     }
     
-    // Add an improved easing function for smoother transitions
-    easeInOutCubic(t) {
-        // Cubic easing is smoother than quadratic
-        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+    // Continuous easing function that doesn't pause at endpoints
+    continuousEase(t) {
+        // No pausing at the beginning or end
+        if (this.justReset) {
+            // If we just reset, start with velocity
+            this.justReset = false
+            return t * 0.8 + 0.2 // Start at higher velocity
+        }
+        
+        // Minimal easing that maintains velocity throughout
+        return t
+    }
+
+    // Regular easing for non-continuous animations
+    easeOut(t) {
+        return 1 - Math.pow(1 - t, 2)
     }
     
     getColorForEntity(entity) {
