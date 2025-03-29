@@ -2,7 +2,7 @@ import ActionQueue from './ActionQueue.js'
 import GameClock from './GameClock.js'
 
 class World {
-    constructor(width, height) {
+    constructor(width = 2000, height = 2000) {
         this.width = width
         this.height = height
         this.entitiesMap = new Map()
