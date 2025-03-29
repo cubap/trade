@@ -2,10 +2,15 @@ import World from './core/World.js'
 import CanvasRenderer from './rendering/CanvasRenderer.js'
 import setupControls from './ui/controls.js'
 import { Pawn, Animal } from './models/entities/index.js'
+import ResourceGenerator from './core/ResourceGenerator.js'
 
 // Create a larger world
 const world = new World(2000, 2000)
 const renderer = new CanvasRenderer(world, 'game-canvas')
+
+// Add after world initialization and before other entities
+const resourceGenerator = new ResourceGenerator(world)
+resourceGenerator.generateResources()
 
 // Initialize only mobile entities
 function initializeEntities() {
@@ -42,11 +47,15 @@ const controls = setupControls(world, renderer)
 
 // Animation loop
 function simulationLoop(timestamp) {
+    // Only update the world if not paused
     if (!controls.isPaused()) {
         world.update(timestamp)
+    } else {
+        // When paused, ensure the clock doesn't accumulate time
+        world.clock.lastTimestamp = timestamp
     }
     
-    // Always render to show animations
+    // Always render to show current state
     renderer.render()
     
     // Continue the animation loop

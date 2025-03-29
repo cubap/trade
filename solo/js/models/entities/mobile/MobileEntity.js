@@ -10,58 +10,121 @@ class MobileEntity extends Entity {
         this.prevY = this.y
         this.targetX = this.x
         this.targetY = this.y
-        this.nextTargetX = this.x
-        this.nextTargetY = this.y
         this.speed = 20
         this.moveRange = 50
         this.moving = false
         this.distanceThreshold = 1
-        this.tickPredictionFactor = 1.2
+        
+        // Reset the nextTarget variables - they should be undefined by default
+        this.nextTargetX = undefined
+        this.nextTargetY = undefined
     }
     
     move() {
-        // Current position becomes the previous position
+        // Store previous position for rendering interpolation
         this.prevX = this.x
         this.prevY = this.y
         
-        // Current target becomes current position
-        this.x = this.targetX
-        this.y = this.targetY
-        
-        // Calculate distance to next target
-        const distanceToNext = this.distanceTo({x: this.nextTargetX, y: this.nextTargetY})
-        
-        // Predict if we'll reach the target within the next tick
-        const willReachTarget = distanceToNext <= this.speed * this.tickPredictionFactor
-        
-        if (willReachTarget) {
-            // We'll reach the target soon, set current target and calculate new next target
-            this.targetX = this.nextTargetX
-            this.targetY = this.nextTargetY
-            this.decideNextMove()
-        } else {
-            // Continue moving toward next target
-            const moveRatio = Math.min(this.speed / distanceToNext, 1)
-            const dx = this.nextTargetX - this.x
-            const dy = this.nextTargetY - this.y
+        // Check if already moving toward a target
+        if (this.moving && this.targetX !== undefined && this.targetY !== undefined) {
+            const dx = this.targetX - this.x
+            const dy = this.targetY - this.y
+            const distance = Math.sqrt(dx * dx + dy * dy)
             
-            this.targetX = Math.round(this.x + dx * moveRatio)
-            this.targetY = Math.round(this.y + dy * moveRatio)
+            // If we haven't reached the target yet
+            if (distance > this.distanceThreshold) {
+                // Move by at most speed units toward target
+                const moveDistance = Math.min(distance, this.speed)
+                
+                // Avoid division by zero
+                if (distance > 0) {
+                    const ratio = moveDistance / distance
+                    this.x += dx * ratio
+                    this.y += dy * ratio
+                }
+                
+                // Ensure we stay within world bounds if world exists
+                if (this.world) {
+                    this.x = Math.max(0, Math.min(this.world.width, this.x))
+                    this.y = Math.max(0, Math.min(this.world.height, this.y))
+                }
+                
+                return true
+            }
+            
+            // We've reached the target
+            this.x = this.targetX
+            this.y = this.targetY
+            this.moving = false
+        }
+        
+        // If not moving anymore, process the next target or decide on a new move
+        if (!this.moving) {
+            // Use next target if available
+            if (this.nextTargetX !== undefined && this.nextTargetY !== undefined) {
+                // Validate and limit target distance
+                this.setValidatedTarget(this.nextTargetX, this.nextTargetY)
+                this.nextTargetX = undefined
+                this.nextTargetY = undefined
+            } else {
+                // No next target, so decide on a new move
+                this.decideNextMove()
+                
+                // If decideNextMove set a next target, use it
+                if (this.nextTargetX !== undefined && this.nextTargetY !== undefined) {
+                    this.setValidatedTarget(this.nextTargetX, this.nextTargetY)
+                    this.nextTargetX = undefined
+                    this.nextTargetY = undefined
+                }
+            }
+        }
+        
+        return this.moving
+    }
+    
+    // Helper to validate and set targets with proper distance limits
+    setValidatedTarget(x, y) {
+        const dx = x - this.x
+        const dy = y - this.y
+        const distance = Math.sqrt(dx * dx + dy * dy)
+        
+        // If the target is too far away, limit it to the move range
+        if (distance > this.moveRange) {
+            const ratio = this.moveRange / distance
+            this.targetX = this.x + dx * ratio
+            this.targetY = this.y + dy * ratio
+        } else {
+            this.targetX = x
+            this.targetY = y
+        }
+        
+        // Ensure targets are within world bounds
+        if (this.world) {
+            this.targetX = Math.max(0, Math.min(this.world.width, this.targetX))
+            this.targetY = Math.max(0, Math.min(this.world.height, this.targetY))
         }
         
         this.moving = true
     }
     
-    decideNextMove() {
-        // To be implemented by specific mobile entity types
-        this.nextTargetX = this.x
-        this.nextTargetY = this.y
-    }
-    
     update(tick) {
         super.update(tick)
+        
+        // For animals with behavior system, update drives and calculate behavior
+        if (this.drives) {
+            this.updateDrives(tick)
+            this.evaluatePriorities()
+            this.executeBehavior()
+        }
+        
+        // Execute movement - this now handles the actual position updates
         this.move()
+        
         return true
+    }
+    
+    decideNextMove() {
+        // To be implemented by specific mobile entity types
     }
 }
 
