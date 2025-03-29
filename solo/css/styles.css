@@ -1,0 +1,18 @@
+body {
+    margin: 0;
+    padding: 20px;
+    font-family: Arial, sans-serif;
+}
+
+#game-canvas {
+    display: block;
+    margin: 0 auto;
+    border: 1px solid #000;
+    width: 800px;
+    height: 600px;
+}
+
+button, select {
+    padding: 5px 10px;
+    cursor: pointer;
+}
