@@ -5,118 +5,202 @@ class ResourceGenerator {
         this.world = world
     }
     
-    // Generate resources throughout the world
+    // Generate resources throughout the world using chunk-based placement
     generateResources() {
-        this.generateFoodSources()
-        this.generateWaterSources()
-        this.generateCoverAreas()
+        this.generateChunkBasedResources()
     }
     
-    generateFoodSources() {
-        // Create clusters of food
-        const clusters = Math.floor(this.world.width * this.world.height / 200000) + 3
+    generateChunkBasedResources() {
+        const chunkManager = this.world.chunkManager
+        
+        // Generate resources for each chunk based on its properties
+        for (let x = 0; x < chunkManager.chunksX; x++) {
+            for (let y = 0; y < chunkManager.chunksY; y++) {
+                const chunk = chunkManager.getChunk(x, y)
+                if (chunk) {
+                    this.generateResourcesForChunk(chunk)
+                }
+            }
+        }
+    }
+    
+    generateResourcesForChunk(chunk) {
+        this.generateFoodSourcesForChunk(chunk)
+        this.generateWaterSourcesForChunk(chunk)
+        this.generateCoverAreasForChunk(chunk)
+    }
+    
+    generateFoodSourcesForChunk(chunk) {
+        // Base food count adjusted by chunk's food density
+        const baseFoodCount = 2 + Math.floor(Math.random() * 4)
+        const foodCount = Math.floor(baseFoodCount * chunk.foodDensity)
+        
+        if (foodCount === 0) return
+        
+        // Food types vary by biome
+        let foodTypes
+        switch (chunk.biome) {
+            case 'forest':
+                foodTypes = ['Mushroom Patch', 'Berry Bush', 'Nut Tree', 'Root Vegetable']
+                break
+            case 'plains':
+                foodTypes = ['Grain Field', 'Fruit Tree', 'Herb Patch']
+                break
+            case 'wetland':
+                foodTypes = ['Water Plants', 'Marsh Berry', 'Reed Shoots']
+                break
+            case 'mountain':
+                foodTypes = ['Mountain Berry', 'Pine Nuts', 'Wild Tubers']
+                break
+            default:
+                foodTypes = ['Berry Bush', 'Fruit Tree', 'Mushroom Patch', 'Root Vegetable']
+        }
+        
+        // Create clusters within the chunk
+        const clusters = Math.max(1, Math.floor(foodCount / 3))
         
         for (let i = 0; i < clusters; i++) {
-            // Pick a center for the cluster
-            const centerX = Math.random() * this.world.width
-            const centerY = Math.random() * this.world.height
+            // Cluster center within chunk bounds
+            const centerX = chunk.worldX + 50 + Math.random() * (chunk.size - 100)
+            const centerY = chunk.worldY + 50 + Math.random() * (chunk.size - 100)
             
-            // Create between 3-8 food sources in this cluster
-            const count = 3 + Math.floor(Math.random() * 6)
-            const clusterRadius = 100 + Math.random() * 150
+            const itemsInCluster = Math.ceil(foodCount / clusters)
+            const clusterRadius = 30 + Math.random() * 50
             
-            // Names for different food types
-            const foodTypes = ['Berry Bush', 'Fruit Tree', 'Mushroom Patch', 'Root Vegetable']
-            
-            for (let j = 0; j < count; j++) {
-                // Random position within the cluster radius
+            for (let j = 0; j < itemsInCluster; j++) {
                 const angle = Math.random() * Math.PI * 2
                 const distance = Math.random() * clusterRadius
                 
-                const x = Math.max(0, Math.min(this.world.width, centerX + Math.cos(angle) * distance))
-                const y = Math.max(0, Math.min(this.world.height, centerY + Math.sin(angle) * distance))
+                const x = Math.max(chunk.worldX, 
+                    Math.min(chunk.worldX + chunk.size, 
+                        centerX + Math.cos(angle) * distance))
+                const y = Math.max(chunk.worldY, 
+                    Math.min(chunk.worldY + chunk.size, 
+                        centerY + Math.sin(angle) * distance))
                 
-                // Select a random food type
                 const foodType = foodTypes[Math.floor(Math.random() * foodTypes.length)]
                 
-                // Create the food source
                 const foodSource = new FoodSource(
-                    `food_${i}_${j}`,
+                    `food_${chunk.x}_${chunk.y}_${i}_${j}`,
                     foodType,
                     x, 
                     y
                 )
                 
-                // Add to world
+                // Adjust properties based on biome
+                if (chunk.biome === 'forest') {
+                    foodSource.nutritionalValue *= 1.2
+                } else if (chunk.biome === 'wetland') {
+                    foodSource.regenerationRate *= 1.5
+                }
+                
                 this.world.addEntity(foodSource)
             }
         }
     }
     
-    generateWaterSources() {
-        // Create fewer water sources but make them larger
-        const waterCount = Math.floor(this.world.width * this.world.height / 400000) + 2
+    generateWaterSourcesForChunk(chunk) {
+        // Water generation based on chunk's water density
+        const baseWaterChance = 0.3  // 30% chance per chunk
+        const waterChance = baseWaterChance * chunk.waterDensity
         
-        // Names for different water types
-        const waterTypes = ['Pond', 'Stream', 'Spring', 'River Bend']
+        if (Math.random() > waterChance) return
         
-        for (let i = 0; i < waterCount; i++) {
-            const x = Math.random() * this.world.width
-            const y = Math.random() * this.world.height
-            
-            // Pick a water type
-            const waterType = waterTypes[Math.floor(Math.random() * waterTypes.length)]
-            
-            // Create the water source
-            const waterSource = new WaterSource(
-                `water_${i}`,
-                waterType,
-                x,
-                y
-            )
-            
-            // Water sources are larger
-            waterSource.size = 18 + Math.floor(Math.random() * 8)
-            
-            // Add to world
-            this.world.addEntity(waterSource)
+        // Water types vary by biome
+        let waterTypes
+        switch (chunk.biome) {
+            case 'wetland':
+                waterTypes = ['Pond', 'Marsh', 'Stream', 'Spring']
+                break
+            case 'mountain':
+                waterTypes = ['Mountain Spring', 'Stream', 'Snow Melt']
+                break
+            case 'forest':
+                waterTypes = ['Forest Spring', 'Creek', 'Pond']
+                break
+            default:
+                waterTypes = ['Pond', 'Stream', 'Spring']
         }
+        
+        // Position within chunk
+        const x = chunk.worldX + 30 + Math.random() * (chunk.size - 60)
+        const y = chunk.worldY + 30 + Math.random() * (chunk.size - 60)
+        
+        const waterType = waterTypes[Math.floor(Math.random() * waterTypes.length)]
+        
+        const waterSource = new WaterSource(
+            `water_${chunk.x}_${chunk.y}`,
+            waterType,
+            x,
+            y
+        )
+        
+        // Adjust size based on biome and density
+        const baseSize = 18 + Math.floor(Math.random() * 8)
+        if (chunk.biome === 'wetland') {
+            waterSource.size = baseSize * 1.5
+            waterSource.capacity *= 2
+        } else if (chunk.biome === 'mountain') {
+            waterSource.size = baseSize * 0.8
+            waterSource.purity = 95  // Mountain water is cleaner
+        }
+        
+        this.world.addEntity(waterSource)
     }
     
-    generateCoverAreas() {
-        // Create a mix of individual and clustered cover
-        const coverCount = Math.floor(this.world.width * this.world.height / 100000) + 5
+    generateCoverAreasForChunk(chunk) {
+        // Cover generation based on chunk's shelter density
+        const baseCoverCount = 2 + Math.floor(Math.random() * 3)
+        const coverCount = Math.floor(baseCoverCount * chunk.shelterDensity)
         
-        // Names for different cover types
-        const coverTypes = ['Rock Formation', 'Dense Bush', 'Hollow Log', 'Tall Grass', 'Tree']
+        if (coverCount === 0) return
+        
+        // Cover types vary by biome
+        let coverTypes
+        switch (chunk.biome) {
+            case 'forest':
+                coverTypes = ['Hollow Log', 'Dense Bush', 'Tree', 'Root Cave']
+                break
+            case 'mountain':
+                coverTypes = ['Rock Formation', 'Cave', 'Stone Shelter', 'Cliff Overhang']
+                break
+            case 'plains':
+                coverTypes = ['Tall Grass', 'Rock Outcrop', 'Shrub']
+                break
+            case 'wetland':
+                coverTypes = ['Reed Bed', 'Fallen Log', 'Dense Marsh']
+                break
+            default:
+                coverTypes = ['Rock Formation', 'Dense Bush', 'Hollow Log', 'Tall Grass', 'Tree']
+        }
         
         for (let i = 0; i < coverCount; i++) {
-            const x = Math.random() * this.world.width
-            const y = Math.random() * this.world.height
+            const x = chunk.worldX + 20 + Math.random() * (chunk.size - 40)
+            const y = chunk.worldY + 20 + Math.random() * (chunk.size - 40)
             
-            // Pick a cover type
             const coverType = coverTypes[Math.floor(Math.random() * coverTypes.length)]
             
-            // Create the cover
             const cover = new Cover(
-                `cover_${i}`,
+                `cover_${chunk.x}_${chunk.y}_${i}`,
                 coverType,
                 x,
                 y
             )
             
-            // Vary size and capacity based on type
-            if (coverType === 'Rock Formation') {
-                cover.size = 20
-                cover.capacity = 4
-                cover.securityValue = 90
-            } else if (coverType === 'Tree') {
-                cover.size = 18
-                cover.capacity = 3
-                cover.securityValue = 75
+            // Adjust properties based on biome and type
+            if (chunk.biome === 'mountain') {
+                cover.securityValue *= 1.3
+                if (coverType === 'Cave') {
+                    cover.capacity = 6
+                    cover.securityValue = 95
+                }
+            } else if (chunk.biome === 'forest') {
+                cover.size *= 1.1
+                if (coverType === 'Tree') {
+                    cover.capacity = 4
+                }
             }
             
-            // Add to world
             this.world.addEntity(cover)
         }
     }

@@ -1,5 +1,6 @@
 import ActionQueue from './ActionQueue.js'
 import GameClock from './GameClock.js'
+import ChunkManager from './ChunkManager.js'
 
 class World {
     constructor(width = 2000, height = 2000) {
@@ -8,12 +9,16 @@ class World {
         this.entitiesMap = new Map()
         this.actionQueue = new ActionQueue()
         this.clock = new GameClock(500)  // 500ms per tick
+        this.chunkManager = new ChunkManager(width, height)
     }
 
     addEntity(entity) {
         this.entitiesMap.set(entity.id || entity.name, entity)
         entity.world = this  // Set reference to world
         entity.spawned = this.clock.currentTick
+        
+        // Add entity to chunk system
+        this.chunkManager.addEntity(entity)
     }
 
     update(timestamp) {
@@ -28,6 +33,10 @@ class World {
         const entitiesToRemove = []
         
         for (const [id, entity] of this.entitiesMap.entries()) {
+            // Store old position for chunk updating
+            const oldX = entity.x
+            const oldY = entity.y
+            
             // Call the entity's update method
             const entityAlive = entity.update(currentTick)
             
@@ -39,10 +48,19 @@ class World {
             
             // Keep entity in bounds
             this.keepEntityInBounds(entity)
+            
+            // Update chunk if entity moved
+            if (entity.x !== oldX || entity.y !== oldY) {
+                this.chunkManager.updateEntityChunk(entity, oldX, oldY)
+            }
         }
         
         // Remove any entities marked for removal
         for (const id of entitiesToRemove) {
+            const entity = this.entitiesMap.get(id)
+            if (entity?.currentChunk) {
+                entity.currentChunk.removeEntity(entity)
+            }
             this.entitiesMap.delete(id)
         }
         
@@ -76,19 +94,8 @@ class World {
     }
     
     getNearbyEntities(x, y, radius) {
-        const nearby = []
-        
-        for (const entity of this.entitiesMap.values()) {
-            const dx = entity.x - x
-            const dy = entity.y - y
-            const distance = Math.sqrt(dx * dx + dy * dy)
-            
-            if (distance <= radius) {
-                nearby.push(entity)
-            }
-        }
-        
-        return nearby
+        // Use chunk-based lookup for better performance
+        return this.chunkManager.getEntitiesInRadius(x, y, radius)
     }
 }
 

@@ -555,14 +555,140 @@ class Animal extends MobileEntity {
 
     // Add a new exploration method for when animals need resources but don't know where they are
     exploreForResources() {
-        // If we've been exploring in the same direction, occasionally change
+        // Enhanced chunk-aware exploration
+        if (this.world?.chunkManager) {
+            this.exploreByChunks()
+        } else {
+            // Fallback to original exploration method
+            this.exploreRandomly()
+        }
+    }
+    
+    exploreByChunks() {
+        const currentChunk = this.currentChunk || this.world.chunkManager.getChunkAtPosition(this.x, this.y)
+        
+        if (!currentChunk) {
+            this.exploreRandomly()
+            return
+        }
+        
+        // Track explored chunks in memory
+        if (!this.memory.exploredChunks) {
+            this.memory.exploredChunks = new Set()
+        }
+        
+        // Add current chunk to explored
+        this.memory.exploredChunks.add(`${currentChunk.x},${currentChunk.y}`)
+        
+        // Get nearby chunks
+        const nearbyChunks = currentChunk.getNearbyChunks(this.world.chunkManager, 2)
+        
+        // Find unexplored chunks or chunks with better resources
+        const targetChunk = this.selectBestChunkToExplore(nearbyChunks)
+        
+        if (targetChunk && targetChunk !== currentChunk) {
+            // Move toward the center of the target chunk
+            const chunkCenterX = targetChunk.worldX + targetChunk.size / 2
+            const chunkCenterY = targetChunk.worldY + targetChunk.size / 2
+            
+            // Add some randomness to avoid always going to exact center
+            const offsetX = (Math.random() - 0.5) * targetChunk.size * 0.3
+            const offsetY = (Math.random() - 0.5) * targetChunk.size * 0.3
+            
+            this.nextTargetX = chunkCenterX + offsetX
+            this.nextTargetY = chunkCenterY + offsetY
+        } else {
+            // Explore within current chunk
+            this.exploreWithinChunk(currentChunk)
+        }
+    }
+    
+    selectBestChunkToExplore(chunks) {
+        if (!chunks || chunks.length === 0) return null
+        
+        let bestChunk = null
+        let bestScore = -1
+        
+        for (const chunk of chunks) {
+            const chunkKey = `${chunk.x},${chunk.y}`
+            let score = 0
+            
+            // Prefer unexplored chunks
+            if (!this.memory.exploredChunks.has(chunkKey)) {
+                score += 50
+            }
+            
+            // Score based on resource density for current needs
+            if (this.drives.hunger > 60) {
+                score += chunk.foodDensity * 20
+            }
+            if (this.drives.thirst > 60) {
+                score += chunk.waterDensity * 20
+            }
+            if (this.drives.rest > 80) {
+                score += chunk.shelterDensity * 15
+            }
+            
+            // Biome variety bonus - explore different biomes
+            if (!this.memory.visitedBiomes) {
+                this.memory.visitedBiomes = new Set()
+            }
+            
+            if (!this.memory.visitedBiomes.has(chunk.biome)) {
+                score += 30
+                this.memory.visitedBiomes.add(chunk.biome)
+            }
+            
+            // Distance penalty (prefer closer chunks)
+            const distance = Math.sqrt(
+                Math.pow(chunk.worldX + chunk.size/2 - this.x, 2) + 
+                Math.pow(chunk.worldY + chunk.size/2 - this.y, 2)
+            )
+            score -= distance * 0.01
+            
+            if (score > bestScore) {
+                bestScore = score
+                bestChunk = chunk
+            }
+        }
+        
+        return bestChunk
+    }
+    
+    exploreWithinChunk(chunk) {
+        // Explore systematically within the current chunk
+        if (!this.memory.chunkExplorationTarget) {
+            // Pick a random point within the chunk
+            this.memory.chunkExplorationTarget = {
+                x: chunk.worldX + Math.random() * chunk.size,
+                y: chunk.worldY + Math.random() * chunk.size
+            }
+        }
+        
+        const target = this.memory.chunkExplorationTarget
+        const distance = Math.sqrt(
+            Math.pow(target.x - this.x, 2) + 
+            Math.pow(target.y - this.y, 2)
+        )
+        
+        // If we're close to the target, pick a new one
+        if (distance < 20) {
+            this.memory.chunkExplorationTarget = {
+                x: chunk.worldX + Math.random() * chunk.size,
+                y: chunk.worldY + Math.random() * chunk.size
+            }
+        } else {
+            this.nextTargetX = target.x
+            this.nextTargetY = target.y
+        }
+    }
+    
+    exploreRandomly() {
+        // Original exploration method as fallback
         if (!this.explorationDirection || Math.random() < 0.1) {
             this.explorationDirection = Math.random() * Math.PI * 2
             this.explorationSteps = 0
         }
-        
-        // Bias exploration direction toward less explored areas
-        // (This is simplified - in a more complex implementation, we could track visited areas)
         
         // Increase range for exploration
         const exploreRange = this.moveRange * 1.2
