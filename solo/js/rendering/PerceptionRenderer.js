@@ -124,6 +124,23 @@ class PerceptionRenderer {
         
         return allMemories.some(memory => memory.id === entity.id)
     }
+    
+    // Add Pawn memoryMap support for landmarks
+    getVisibleLandmarksForPawn(pawn, range = 100) {
+        if (!pawn?.memoryMap) return []
+        return pawn.getVisibleLandmarks?.(pawn.x, pawn.y, range) ?? []
+    }
+
+    getLandmarkRenderStyle(landmark) {
+        // Style based on faded/fog status
+        if (landmark.fog) {
+            return { opacity: 0.1, filter: 'grayscale(1) blur(2px)' }
+        }
+        if (landmark.faded) {
+            return { opacity: 0.4, filter: 'grayscale(0.7)' }
+        }
+        return { opacity: 1, filter: 'none' }
+    }
 }
 
 export default PerceptionRenderer
