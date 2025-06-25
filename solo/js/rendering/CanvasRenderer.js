@@ -137,6 +137,11 @@ class CanvasRenderer {
         // Get entities to render based on perception mode
         const entitiesToRender = this.perception.getEntitiesToRender(this.camera.followedEntity)
         
+        // Debug: log entity count
+        if (this.world.clock.currentTick % 60 === 0) { // Every ~1 second
+            console.log(`Rendering ${entitiesToRender.length} entities out of ${this.world.entitiesMap.size} total`)
+        }
+        
         // Update entity renderer palette
         this.entityRenderer.activePalette = this.activePalette
         

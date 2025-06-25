@@ -4,7 +4,7 @@ class FoodSource extends Resource {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.subtype = 'food'
-        this.tags.add('food')
+        this.tags.push('food')  // Add to existing array
         this.color = '#7CFC00'  // Bright green
         this.size = 8
     }

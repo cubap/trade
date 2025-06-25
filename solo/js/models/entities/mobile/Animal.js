@@ -4,6 +4,7 @@ class Animal extends MobileEntity {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.subtype = 'animal'
+        this.tags.push('animal')  // Add animal-specific tag
         this.color = '#e74c3c'  // Default color for animals
         
         // Basic animal attributes
@@ -223,7 +224,7 @@ class Animal extends MobileEntity {
         
         // Look for nearby food
         const nearbyFood = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const food = nearbyFood.filter(e => e.tags?.has('food') && !e.depleted)
+        const food = nearbyFood.filter(e => e.tags?.includes('food') && !e.depleted)
         
         if (food.length > 0) {
             // Sort by distance
@@ -281,7 +282,7 @@ class Animal extends MobileEntity {
     seekWater() {
         // Similar to foraging but looking for water
         const nearbyWater = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const water = nearbyWater.filter(e => e.tags?.has('water') && !e.depleted)
+        const water = nearbyWater.filter(e => e.tags?.includes('water') && !e.depleted)
         
         if (water.length > 0) {
             // Sort by distance
@@ -336,7 +337,7 @@ class Animal extends MobileEntity {
     rest() {
         // Try to find shelter to rest in
         const nearbyCovers = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const covers = nearbyCovers.filter(e => e.tags?.has('cover') && e.hasSpace?.())
+        const covers = nearbyCovers.filter(e => e.tags?.includes('cover') && e.hasSpace?.())
         
         if (covers.length > 0) {
             // Sort by distance and security value
@@ -425,7 +426,7 @@ class Animal extends MobileEntity {
     flee() {
         // Rapid movement away from threats
         const nearbyThreats = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const threats = nearbyThreats.filter(e => e.predator || e.tags?.has('threat'))
+        const threats = nearbyThreats.filter(e => e.predator || e.tags?.includes('threat'))
         
         if (threats.length > 0) {
             // Calculate average threat position
@@ -455,7 +456,7 @@ class Animal extends MobileEntity {
         } else {
             // No immediate threats, seek shelter
             const nearbyCovers = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-            const covers = nearbyCovers.filter(e => e.tags?.has('cover'))
+            const covers = nearbyCovers.filter(e => e.tags?.includes('cover'))
             
             if (covers.length > 0) {
                 const nearest = covers[0]
@@ -756,7 +757,7 @@ class Animal extends MobileEntity {
         
         // Filter for resources that are unknown to the animal
         const resourceEntities = nearbyEntities.filter(e => 
-            (e.tags?.has('food') || e.tags?.has('water') || e.tags?.has('cover')) && 
+            (e.tags?.includes('food') || e.tags?.includes('water') || e.tags?.includes('cover')) && 
             !this.isKnownResource(e)
         )
         
@@ -768,13 +769,13 @@ class Animal extends MobileEntity {
             if (knowledge.foodScore <= knowledge.waterScore && 
                 knowledge.foodScore <= knowledge.shelterScore) {
                 // Need food knowledge most
-                targetResource = resourceEntities.find(e => e.tags?.has('food'))
+                targetResource = resourceEntities.find(e => e.tags?.includes('food'))
             } else if (knowledge.waterScore <= knowledge.shelterScore) {
                 // Need water knowledge most
-                targetResource = resourceEntities.find(e => e.tags?.has('water'))
+                targetResource = resourceEntities.find(e => e.tags?.includes('water'))
             } else {
                 // Need shelter knowledge most
-                targetResource = resourceEntities.find(e => e.tags?.has('cover'))
+                targetResource = resourceEntities.find(e => e.tags?.includes('cover'))
             }
             
             // If didn't find priority resource, just go to the closest
@@ -804,15 +805,15 @@ class Animal extends MobileEntity {
 
     // Check if resource is already known
     isKnownResource(resource) {
-        if (resource.tags?.has('food')) {
+        if (resource.tags?.includes('food')) {
             return this.memory.knownFood.some(f => f.id === resource.id)
         }
         
-        if (resource.tags?.has('water')) {
+        if (resource.tags?.includes('water')) {
             return this.memory.knownWater.some(w => w.id === resource.id)
         }
         
-        if (resource.tags?.has('cover')) {
+        if (resource.tags?.includes('cover')) {
             return this.memory.knownShelter.some(s => s.id === resource.id)
         }
         
@@ -821,7 +822,7 @@ class Animal extends MobileEntity {
 
     // Record resource in memory
     recordResourceInMemory(resource) {
-        if (resource.tags?.has('food') && !this.memory.knownFood.some(f => f.id === resource.id)) {
+        if (resource.tags?.includes('food') && !this.memory.knownFood.some(f => f.id === resource.id)) {
             this.memory.knownFood.push({
                 id: resource.id,
                 x: resource.x,
@@ -835,7 +836,7 @@ class Animal extends MobileEntity {
             }
         }
         
-        if (resource.tags?.has('water') && !this.memory.knownWater.some(w => w.id === resource.id)) {
+        if (resource.tags?.includes('water') && !this.memory.knownWater.some(w => w.id === resource.id)) {
             this.memory.knownWater.push({
                 id: resource.id,
                 x: resource.x,
@@ -849,7 +850,7 @@ class Animal extends MobileEntity {
             }
         }
         
-        if (resource.tags?.has('cover') && !this.memory.knownShelter.some(s => s.id === resource.id)) {
+        if (resource.tags?.includes('cover') && !this.memory.knownShelter.some(s => s.id === resource.id)) {
             this.memory.knownShelter.push({
                 id: resource.id,
                 x: resource.x,

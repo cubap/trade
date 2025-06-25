@@ -4,7 +4,7 @@ class WaterSource extends Resource {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.subtype = 'water'
-        this.tags.add('water')
+        this.tags.push('water')  // Add to existing array
         this.color = '#1E90FF'  // Blue
         this.size = 12
         this.quantity = 200     // More water available

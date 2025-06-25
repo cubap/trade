@@ -39,15 +39,17 @@ class Chunk {
     addEntity(entity) {
         this.entities.add(entity)
         
-        // Cache resources for quick access
-        if (entity.tags?.has('food')) {
-            this.foodSources.push(entity)
-        }
-        if (entity.tags?.has('water')) {
-            this.waterSources.push(entity)
-        }
-        if (entity.tags?.has('cover')) {
-            this.shelters.push(entity)
+        // Cache resources for quick access (only if entity has tags array)
+        if (Array.isArray(entity.tags)) {
+            if (entity.tags.includes('food')) {
+                this.foodSources.push(entity)
+            }
+            if (entity.tags.includes('water')) {
+                this.waterSources.push(entity)
+            }
+            if (entity.tags.includes('cover')) {
+                this.shelters.push(entity)
+            }
         }
     }
     

@@ -4,6 +4,7 @@ class MobileEntity extends Entity {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.type = 'mobile'
+        this.tags = ['mobile']  // Add tags array for mobile entities
         
         // Movement properties
         this.prevX = this.x
