@@ -11,7 +11,13 @@ class Pawn extends MobileEntity {
         
         // Pawn-specific attributes
         this.inventory = []
-        this.skills = {}
+        this.skills = {
+            planning: 0, // Planning skill for idle automation
+            orienteering: 0, // Affects map accuracy
+            cartography: 0,  // Affects map detail and persistence
+            storytelling: 0, // Affects oral map sharing
+            // Add more skills here for future skill tree
+        }
         this.behaviorState = 'idle'  // Current activity state
         
         // Initialize sophisticated needs and goals systems
@@ -23,6 +29,15 @@ class Pawn extends MobileEntity {
         
         // Current target for movement/interaction
         this.currentTarget = null
+        
+        // Placeholder for future skill tree structure
+        this.skillTree = {}
+        
+        this.idleTicks = 0 // Track idle time for planning skill
+
+        // Memory map for landmarks
+        this.memoryMap = [] // List of known landmarks
+        this.maxLandmarks = 5 // Can be increased by skills
     }
     
     decideNextMove() {
@@ -247,8 +262,22 @@ class Pawn extends MobileEntity {
         
         // Evaluate and update goals based on current needs
         this.goals.evaluateAndSetGoals()
-        
+
+        if (this.behaviorState === 'idle' && !this.goals.currentGoal) {
+            this.idleTicks++
+            if (this.idleTicks % 100 === 0) {
+                this.increasePlanningSkill()
+            }
+        } else {
+            this.idleTicks = 0
+        }
+
         return true
+    }
+    
+    increasePlanningSkill() {
+        this.skills.planning++
+        // Optionally, trigger events or unlock features as planning increases
     }
     
     // Get status information for debugging/UI
@@ -268,6 +297,58 @@ class Pawn extends MobileEntity {
     // Method to set world reference for resource finding
     setWorldAccess(chunkManager) {
         this.chunkManager = chunkManager
+    }
+
+    rememberLandmark({x, y, type, significance = 1, name = null, event = null}) {
+        // Remove least significant or oldest if at max
+        if (this.memoryMap.length >= this.maxLandmarks) {
+            this.memoryMap.sort((a, b) => (a.significance ?? 1) - (b.significance ?? 1))
+            this.memoryMap.shift()
+        }
+        this.memoryMap.push({
+            x, y, type, significance, name, event,
+            timestamp: Date.now()
+        })
+    }
+
+    forgetLandmark(nameOrType) {
+        this.memoryMap = this.memoryMap.filter(lm => lm.name !== nameOrType && lm.type !== nameOrType)
+    }
+
+    reinforceLandmark(nameOrType, amount = 1) {
+        for (const lm of this.memoryMap) {
+            if (lm.name === nameOrType || lm.type === nameOrType) {
+                lm.significance = (lm.significance ?? 1) + amount
+            }
+        }
+    }
+
+    nameLandmark(x, y, name) {
+        const lm = this.memoryMap.find(l => l.x === x && l.y === y)
+        if (lm) lm.name = name
+    }
+
+    shareLandmarksWith(otherPawn) {
+        // Share degraded info based on storytelling skill
+        for (const lm of this.memoryMap) {
+            const degraded = { ...lm }
+            if (this.skills.storytelling < 3) {
+                degraded.significance = Math.max(1, (degraded.significance ?? 1) - 1)
+                degraded.name = null
+            }
+            otherPawn.rememberLandmark(degraded)
+        }
+    }
+
+    getVisibleLandmarks(currentX, currentY, range = 100) {
+        return this.memoryMap.map(lm => {
+            const dist = Math.sqrt((lm.x - currentX) ** 2 + (lm.y - currentY) ** 2)
+            return {
+                ...lm,
+                faded: dist > range,
+                fog: dist > range * 2
+            }
+        })
     }
 }
 
