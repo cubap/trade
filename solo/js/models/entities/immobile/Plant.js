@@ -14,6 +14,18 @@ class Plant extends ImmobileEntity {
         this.seedingChance = 0.01
         this.seedingRange = 100
         this.seasonalModifier = 1  // Modifier based on current season
+
+        // Domestication/farming
+        this.domesticated = false
+        this.farmType = null // orchard, patch, field, garden
+
+        // Persistent drops
+        this.hasPersistentDrops = false
+        this.persistentDrops = [] // e.g. fruit, branches
+
+        // Poisonous traits
+        this.poisonous = false
+        this.poisonType = null // 'consumption', 'contact', etc.
     }
 
     update(tick, currentSeason) {
@@ -84,9 +96,40 @@ class Plant extends ImmobileEntity {
         this.world.addEntity(newPlant)
     }
 
+    setDomesticated(type) {
+        this.domesticated = true
+        this.farmType = type
+    }
+
+    setPersistentDrops(drops) {
+        this.hasPersistentDrops = true
+        this.persistentDrops = drops
+    }
+
+    setPoisonous(type = 'consumption') {
+        this.poisonous = true
+        this.poisonType = type
+    }
+
+    collectDrop(dropType) {
+        if (!this.hasPersistentDrops) return null
+        const drop = this.persistentDrops.find(d => d.type === dropType)
+        if (drop && drop.amount > 0) {
+            drop.amount--
+            return { ...drop, amount: 1 }
+        }
+        return null
+    }
+
     harvest() {
         // Returns resources and kills the plant
         const resources = this.resourceValue
+        if (this.hasPersistentDrops && this.persistentDrops.length > 0) {
+            // Collect all remaining persistent drops
+            const drops = this.persistentDrops.filter(d => d.amount > 0)
+            drops.forEach(d => d.amount = 0)
+            return { resources, drops }
+        }
         this.growthStage = 'dying'
         this.growthProgress = 90  // Nearly dead after harvesting
         return resources
