@@ -10,12 +10,29 @@ class Pawn extends MobileEntity {
         this.color = '#3498db'  // Blue color for pawns
         
         // Pawn-specific attributes
-        this.inventory = []
+        this.inventory = [] // Carried items
+        this.inventorySlots = 10 // Default slot count
+        this.inventoryWeight = 0 // Current total weight
+        this.maxWeight = 50 // Default max weight
+        this.maxSize = 100 // Default max size (volume)
+        this.hiddenInventory = [] // Items dropped on death/harvest
+
         this.skills = {
             planning: 0, // Planning skill for idle automation
             orienteering: 0, // Affects map accuracy
             cartography: 0,  // Affects map detail and persistence
             storytelling: 0, // Affects oral map sharing
+            intuition: 0, // Perceive reputation
+            bragging: 0, // Influence positive perception
+            composure: 0, // Hide negative acts
+            manipulation: 0, // Adjust impressions
+            convincing: 0, // Spread stories more effectively
+            // Medical and alchemical skills
+            medicine: 0, // General medical knowledge
+            surgery: 0, // Performing surgery
+            herbalism: 0, // Identifying and using herbs
+            alchemy: 0, // Creating potions and elixirs
+            poisoncraft: 0, // Making and handling poisons
             // Add more skills here for future skill tree
         }
         this.behaviorState = 'idle'  // Current activity state
@@ -38,6 +55,31 @@ class Pawn extends MobileEntity {
         // Memory map for landmarks
         this.memoryMap = [] // List of known landmarks
         this.maxLandmarks = 5 // Can be increased by skills
+
+        // Reputation system
+        this.reputation = { alignment: 0, aggression: 0, membership: {} }
+        this.reputationMemory = {} // { pawnId: { alignment, aggression, source, strength, timestamp } }
+
+        // Health attributes
+        this.traits = {
+            health: 100,
+            healthMax: 100
+        }
+        this.healthEvents = [] // Track health events (injuries, healing, etc.)
+
+        // Time system constants (in seconds)
+        this.constructor.TURN_REAL_SECONDS = 12
+        this.constructor.TURN_GAME_SECONDS = 48
+        this.constructor.GAME_HOUR_SECONDS = 60 * 48 // 2880s = 48min real time
+        this.constructor.GAME_DAY_HOURS = 6
+        this.constructor.GAME_DAY_SECONDS = 6 * 60 * 48 // 17280s = 3.6h real time
+
+        // Pawn time-tracking properties (game time, in seconds)
+        this.lastSleepTime = 0
+        this.lastMealTime = 0
+        this.lastDrinkTime = 0
+        this.sleepDeprivation = 0 // In game seconds
+        this.isAsleep = false
     }
     
     decideNextMove() {
@@ -254,15 +296,101 @@ class Pawn extends MobileEntity {
         return targetTags.some(tag => entity.tags.includes(tag))
     }
     
+    increaseSkill(skill, amount = 1) {
+        if (this.skills[skill] !== undefined) {
+            this.skills[skill] += amount
+        }
+    }
+
+    useSkill(skill, amount = 1) {
+        this.increaseSkill(skill, amount)
+    }
+
+    passiveSkillTick() {
+        // Example: exploring increases orienteering, guarding increases composure
+        if (this.behaviorState === 'exploring') {
+            this.increaseSkill('orienteering', 0.1)
+        }
+        if (this.behaviorState === 'guarding') {
+            this.increaseSkill('composure', 0.1)
+        }
+        // Add more passive skill checks as needed
+    }
+
+    trainSkill(skill, student, amount = 0.5) {
+        // Training another pawn increases their skill
+        if (student && student.increaseSkill) {
+            student.increaseSkill(skill, amount)
+        }
+    }
+
+    apprenticeSkill(skill, teacher, amount = 0.5) {
+        // Apprenticing under a teacher
+        if (teacher && teacher.skills[skill] > (this.skills[skill] ?? 0)) {
+            this.increaseSkill(skill, amount)
+        }
+    }
+
+    applyHealthChange(amount, reason = '') {
+        this.traits = this.traits ?? {}
+        this.traits.health = (this.traits.health ?? 100) + amount
+        this.traits.health = Math.max(0, Math.min(this.traits.health, this.traits.healthMax ?? 100))
+        if (amount < 0) {
+            this.addHealthEvent('injury', amount, reason)
+        } else if (amount > 0) {
+            this.addHealthEvent('healing', amount, reason)
+        }
+    }
+
+    addHealthEvent(type, amount, reason = '') {
+        this.healthEvents = this.healthEvents ?? []
+        this.healthEvents.push({
+            type,
+            amount,
+            reason,
+            timestamp: Date.now(),
+            duration: this.getHealthEventDuration(type, amount, reason)
+        })
+    }
+
+    getHealthEventDuration(type, amount, reason) {
+        // Example: injuries last longer, infections can be persistent
+        if (type === 'injury') return Math.abs(amount) * 1000
+        if (type === 'infection') return 5000 + Math.abs(amount) * 500
+        if (type === 'healing') return Math.abs(amount) * 500
+        return 1000
+    }
+
+    updateHealthEvents() {
+        this.healthEvents = this.healthEvents?.filter(event => {
+            const elapsed = Date.now() - event.timestamp
+            return elapsed < event.duration
+        }) ?? []
+    }
+
+    isInfected() {
+        return this.healthEvents?.some(e => e.type === 'infection') ?? false
+    }
+
+    applyFoodMedicine(item) {
+        // item: { medicine, infectionCure, healing, ... }
+        if (item.medicine) {
+            this.applyHealthChange(item.medicine, 'medicine')
+        }
+        if (item.infectionCure && this.isInfected()) {
+            this.healthEvents = this.healthEvents.filter(e => e.type !== 'infection')
+        }
+        if (item.healing) {
+            this.applyHealthChange(item.healing, 'healing food')
+        }
+    }
+
     update(tick) {
         super.update(tick)
-        
-        // Update needs system
         this.needs.updateNeeds(tick)
-        
-        // Evaluate and update goals based on current needs
         this.goals.evaluateAndSetGoals()
-
+        this.passiveSkillTick()
+        this.updateHealthEvents()
         if (this.behaviorState === 'idle' && !this.goals.currentGoal) {
             this.idleTicks++
             if (this.idleTicks % 100 === 0) {
@@ -271,7 +399,6 @@ class Pawn extends MobileEntity {
         } else {
             this.idleTicks = 0
         }
-
         return true
     }
     
@@ -349,6 +476,265 @@ class Pawn extends MobileEntity {
                 fog: dist > range * 2
             }
         })
+    }
+
+    recordReputationEvent({ type, value, witnesses = [], context = {} }) {
+        // Update own reputation
+        if (type in this.reputation) {
+            this.reputation[type] = (this.reputation[type] ?? 0) + value
+        }
+        // Propagate to witnesses
+        for (const witness of witnesses) {
+            witness.observeReputationEvent(this, type, value, context)
+        }
+    }
+
+    observeReputationEvent(actor, type, value, context = {}) {
+        const intuition = this.skills.intuition ?? 0
+        const perceivedValue = value * (1 + intuition * 0.05)
+        const now = Date.now()
+        this.reputationMemory[actor.id] = {
+            alignment: type === 'alignment' ? perceivedValue : 0,
+            aggression: type === 'aggression' ? perceivedValue : 0,
+            source: 'witness',
+            strength: Math.abs(perceivedValue),
+            timestamp: now,
+            context
+        }
+    }
+
+    hearReputationStory(actor, story) {
+        // story: { alignment, aggression, strength, source, timestamp }
+        const storytelling = this.skills.storytelling ?? 0
+        const decay = 1 - Math.min(0.5, storytelling * 0.05)
+        const heard = {
+            ...story,
+            alignment: (story.alignment ?? 0) * decay,
+            aggression: (story.aggression ?? 0) * decay,
+            source: 'gossip',
+            timestamp: Date.now(),
+            strength: (story.strength ?? 1) * decay
+        }
+        this.reputationMemory[actor.id] = heard
+    }
+
+    getPerceivedReputation(targetPawn) {
+        // Returns the reputation of targetPawn as perceived by this pawn
+        return this.reputationMemory[targetPawn.id] ?? null
+    }
+
+    shareReputationWith(otherPawn, targetPawn) {
+        // Share strongest story about targetPawn
+        const story = this.reputationMemory[targetPawn.id]
+        if (story) {
+            otherPawn.hearReputationStory(targetPawn, story)
+        }
+    }
+
+    addItemToInventory(item) {
+        // item: { id, name, weight, size, slotType, increasesCapacity, ... }
+        if (item.increasesCapacity) {
+            this.inventorySlots += item.increasesCapacity.slots ?? 0
+            this.maxWeight += item.increasesCapacity.weight ?? 0
+            this.maxSize += item.increasesCapacity.size ?? 0
+        }
+        if (this.inventory.length >= this.inventorySlots) return false
+        if ((this.inventoryWeight + (item.weight ?? 1)) > this.maxWeight) return false
+        if ((this.getInventorySize() + (item.size ?? 1)) > this.maxSize) return false
+        this.inventory.push(item)
+        this.inventoryWeight += item.weight ?? 1
+        return true
+    }
+
+    removeItemFromInventory(itemId) {
+        const idx = this.inventory.findIndex(i => i.id === itemId)
+        if (idx !== -1) {
+            const [item] = this.inventory.splice(idx, 1)
+            this.inventoryWeight -= item.weight ?? 1
+            return item
+        }
+        return null
+    }
+
+    getInventorySize() {
+        return this.inventory.reduce((sum, i) => sum + (i.size ?? 1), 0)
+    }
+
+    addToHiddenInventory(item) {
+        this.hiddenInventory.push(item)
+    }
+
+    dropHiddenInventory() {
+        const dropped = [...this.hiddenInventory]
+        this.hiddenInventory = []
+        return dropped
+    }
+
+    canRecognizeItem(item, skill, experience = 0) {
+        // Returns true if pawn can recognize item based on skill or experience
+        const skillLevel = this.skills[skill] ?? 0
+        const threshold = item.recognitionThreshold ?? 25
+        return skillLevel >= threshold || experience >= threshold || (skillLevel + experience) >= threshold * 1.2
+    }
+
+    experimentWithItems(itemA, itemB) {
+        // Try combining or processing items without a recipe
+        // Returns a result or null if nothing happens
+        // This is a stub for more advanced experimentation logic
+        this.increaseSkill('processing', 0.2)
+        // Example: if both are sticks, maybe discover 'sharp stick'
+        if (itemA.type === 'stick' && itemB.type === 'rock') {
+            return { type: 'sharp stick', quality: 1, discovered: true }
+        }
+        // Add more logic for experimentation
+        return null
+    }
+
+    craft(recipe, ingredients) {
+        // Attempt to craft an item using a recipe and ingredients
+        // Recipe: { name, requiredSkills, requiredExperience, result, qualityBase }
+        // Ingredients: array of items
+        let skillOk = true
+        let expOk = true
+        for (const req of recipe.requiredSkills ?? []) {
+            if ((this.skills[req.skill] ?? 0) < req.level) skillOk = false
+        }
+        for (const req of recipe.requiredExperience ?? []) {
+            if ((this.getItemExperience(req.item) ?? 0) < req.amount) expOk = false
+        }
+        // If not skilled or experienced, allow but with low quality
+        let quality = recipe.qualityBase ?? 1
+        if (!skillOk || !expOk) quality *= 0.5
+        else quality += (this.skills[recipe.primarySkill] ?? 0) * 0.05
+        // Use up ingredients
+        for (const ing of ingredients) {
+            this.removeItemFromInventory(ing.id)
+        }
+        // Gain experience with used items
+        for (const ing of ingredients) {
+            this.addItemExperience(ing.type)
+        }
+        // Increase skill
+        if (recipe.primarySkill) this.increaseSkill(recipe.primarySkill, 0.5)
+        return { ...recipe.result, quality }
+    }
+
+    getItemExperience(itemType) {
+        this.itemExperience = this.itemExperience ?? {}
+        return this.itemExperience[itemType] ?? 0
+    }
+
+    addItemExperience(itemType, amount = 1) {
+        this.itemExperience = this.itemExperience ?? {}
+        this.itemExperience[itemType] = (this.itemExperience[itemType] ?? 0) + amount
+    }
+
+    consumeFoodOrDrink(item) {
+        // item: { satisfying, filling, thirstQuench, buffs, type }
+        // Satisfying: how much hunger/thirst is sated immediately
+        // Filling: how much it slows future hunger/thirst
+        // ThirstQuench: how much thirst is sated
+        // Buffs: { skill: amount, ... }
+        // Type: 'food', 'drink', etc.
+        if (!item) return
+        // Sate hunger
+        if (item.satisfying) {
+            this.needs.satisfyNeed?.('hunger', item.satisfying)
+        }
+        // Sate thirst
+        if (item.thirstQuench) {
+            this.needs.satisfyNeed?.('thirst', item.thirstQuench)
+        }
+        // Overfilling on water can sate some hunger
+        if (item.type === 'drink' && item.thirstQuench > 0 && item.thirstQuench > (item.satisfying ?? 0)) {
+            this.needs.satisfyNeed?.('hunger', item.thirstQuench * 0.2)
+        }
+        // Foods that also quench thirst
+        if (item.type === 'food' && item.thirstQuench) {
+            this.needs.satisfyNeed?.('thirst', item.thirstQuench * 0.5)
+        }
+        // Filling slows future hunger
+        if (item.filling) {
+            this.needs.modifyNeedDecay?.('hunger', -item.filling)
+        }
+        // Buffs
+        if (item.buffs) {
+            for (const skill in item.buffs) {
+                this.increaseSkill(skill, item.buffs[skill])
+            }
+        }
+        // Mythical/rare effects (example: beer and charisma)
+        if (item.type === 'beer') {
+            this.increaseSkill('charisma', 1)
+        }
+    }
+
+    // Call this from the main game loop to update pawn's time awareness
+    timeTick(gameTime) {
+        // gameTime: current game time in seconds
+        this.gameTime = gameTime
+        this.updateNeedsDecay()
+        this.checkSleepDeprivation()
+        this.applyRegularHoursBonus()
+    }
+
+    isDaytime() {
+        // Returns true if current game hour is between 1 and 5 (out of 6)
+        const hour = Math.floor((this.gameTime ?? 0) / Pawn.TURN_GAME_SECONDS / 60) % Pawn.GAME_DAY_HOURS
+        return hour >= 1 && hour <= 5
+    }
+
+    updateNeedsDecay() {
+        // Slow down hunger/thirst decay so eating/drinking is not needed every game hour
+        // Example: only get hungry every 2-3 game hours
+        if (!this.needs) return
+        const hoursSinceMeal = ((this.gameTime ?? 0) - (this.lastMealTime ?? 0)) / (Pawn.TURN_GAME_SECONDS * 60)
+        const hoursSinceDrink = ((this.gameTime ?? 0) - (this.lastDrinkTime ?? 0)) / (Pawn.TURN_GAME_SECONDS * 60)
+        if (hoursSinceMeal > 2) this.needs.modifyNeedDecay?.('hunger', 0.1 * (hoursSinceMeal - 2))
+        if (hoursSinceDrink > 1.5) this.needs.modifyNeedDecay?.('thirst', 0.1 * (hoursSinceDrink - 1.5))
+    }
+
+    sleep(hours = 1) {
+        // Pawn sleeps for a number of game hours
+        this.isAsleep = true
+        this.lastSleepTime = this.gameTime ?? 0
+        this.sleepDeprivation = 0
+        // Restore needs, health, etc. as desired
+        this.needs.satisfyNeed?.('rest', hours * 20)
+        this.applyHealthChange(hours * 2, 'sleep')
+    }
+
+    wakeUp() {
+        this.isAsleep = false
+    }
+
+    checkSleepDeprivation() {
+        // If pawn hasn't slept in >1 game day, apply penalties
+        const timeSinceSleep = (this.gameTime ?? 0) - (this.lastSleepTime ?? 0)
+        if (timeSinceSleep > Pawn.GAME_DAY_SECONDS) {
+            this.sleepDeprivation = timeSinceSleep - Pawn.GAME_DAY_SECONDS
+            // Apply penalty to needs/skills
+            this.needs.modifyNeedDecay?.('rest', 0.2 * (this.sleepDeprivation / Pawn.GAME_DAY_SECONDS))
+            this.applyHealthChange(-1, 'sleep deprivation')
+        } else {
+            this.sleepDeprivation = 0
+        }
+    }
+
+    applyRegularHoursBonus() {
+        // If pawn is awake during regular hours, apply a small bonus
+        if (!this.isAsleep && this.isDaytime()) {
+            this.increaseSkill('planning', 0.05)
+            this.increaseSkill('composure', 0.05)
+        }
+    }
+
+    // Call when pawn eats/drinks
+    recordMeal() {
+        this.lastMealTime = this.gameTime ?? 0
+    }
+    recordDrink() {
+        this.lastDrinkTime = this.gameTime ?? 0
     }
 }
 

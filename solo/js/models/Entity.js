@@ -32,6 +32,12 @@ class Entity {
         return Math.sqrt(dx * dx + dy * dy)
     }
     
+    distanceToPoint(x, y) {
+        const dx = x - this.x
+        const dy = y - this.y
+        return Math.sqrt(dx * dx + dy * dy)
+    }
+    
     canInteractWith(entity) {
         // Base interaction check
         return false

@@ -69,6 +69,17 @@ class Animal extends MobileEntity {
         
         // Current behavior state
         this.behaviorState = 'idle'  // idle, foraging, fleeing, etc.
+        
+        // Home/nest system
+        this.home = null // { x, y, type: 'nest' | 'den' | ... }
+        this.hasNest = false
+        // Reproduction
+        this.isPregnant = false
+        this.pregnancyTimer = 0
+        this.offspringToProduce = 0
+        // Carcass and specialty drops
+        this.hiddenInventory = [] // Items dropped on death
+        this.specialtyDrops = [] // e.g. feathers, tusks
     }
     
     // Override update to properly handle cover and movement
@@ -955,6 +966,85 @@ class Animal extends MobileEntity {
         const quadrantHeight = this.world.height / 2
         const quadrantY = this.explorationState.currentQuadrant < 2 ? 0 : 1
         return quadrantY * quadrantHeight + quadrantHeight / 2
+    }
+
+    // Override update to include pregnancy and reproduction
+    update(tick) {
+        // If our behavior is changing from resting, leave any cover
+        if (this.behaviorState === 'resting') {
+            const oldBehavior = this.behaviorState
+            
+            // Call parent update which will also call move()
+            const result = super.update(tick)
+            
+            // If behavior changed from resting, leave cover
+            if (oldBehavior === 'resting' && this.behaviorState !== 'resting') {
+                this.leaveCover()
+            }
+            
+            return result
+        }
+        
+        // Pregnancy/egg laying
+        if (this.isPregnant) {
+            this.pregnancyTimer--
+            if (this.pregnancyTimer <= 0) {
+                this.layEggs()
+            }
+        }
+        
+        // Standard update otherwise, which will also handle movement
+        return super.update(tick)
+    }
+    
+    // Reproduction methods
+    reproduce(partner) {
+        // Simple reproduction logic
+        if (!this.home) this.establishHome()
+        this.isPregnant = true
+        this.pregnancyTimer = 100 + Math.floor(Math.random() * 100)
+        this.offspringToProduce = 1 + Math.floor(Math.random() * 3)
+    }
+
+    layEggs() {
+        if (!this.home) this.establishHome('nest')
+        // Add eggs to world at home location (pseudo)
+        if (this.world?.addEntity) {
+            for (let i = 0; i < this.offspringToProduce; i++) {
+                this.world.addEntity({ type: 'egg', x: this.home.x, y: this.home.y, parent: this.id })
+            }
+        }
+        this.isPregnant = false
+        this.offspringToProduce = 0
+    }
+
+    // Home/nest methods
+    establishHome(type = 'nest') {
+        this.home = { x: this.x, y: this.y, type }
+        this.hasNest = true
+    }
+
+    returnHome() {
+        if (this.home) {
+            this.nextTargetX = this.home.x
+            this.nextTargetY = this.home.y
+        }
+    }
+
+    die() {
+        // Drop carcass and specialty items
+        if (this.world?.addEntity) {
+            this.world.addEntity({ type: 'carcass', x: this.x, y: this.y, source: this.id })
+            for (const item of this.specialtyDrops) {
+                this.world.addEntity({ ...item, x: this.x, y: this.y })
+            }
+        }
+        // Drop hidden inventory
+        for (const item of this.hiddenInventory) {
+            this.world?.addEntity?.({ ...item, x: this.x, y: this.y })
+        }
+        // Remove from world (pseudo)
+        this.isDead = true
     }
 }
 

@@ -102,6 +102,11 @@ class World {
         // Use chunk-based lookup for better performance
         return this.chunkManager.getEntitiesInRadius(x, y, radius)
     }
+
+    // Query all entities within a radius of (x, y)
+    queryEntitiesInRadius(x, y, radius) {
+        return this.getNearbyEntities(x, y, radius)
+    }
 }
 
 export default World
