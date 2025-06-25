@@ -553,6 +553,77 @@ function createEntitySummary(entity) {
         }
     }
     
+    // Add pawn-specific properties
+    if (entity.subtype === 'pawn') {
+        summary.behaviorState = entity.behaviorState
+        summary.inventory = [...(entity.inventory || [])]
+        summary.skills = { ...(entity.skills || {}) }
+        
+        // Add detailed needs information
+        if (entity.needs) {
+            summary.needs = {}
+            for (const need in entity.needs.needs) {
+                const value = entity.needs.needs[need]
+                const thresholds = entity.needs.thresholds[need]
+                
+                let status = 'satisfied'
+                if (value >= thresholds.critical) status = 'critical'
+                else if (value >= thresholds.high) status = 'high'
+                else if (value >= thresholds.medium) status = 'medium'
+                else if (value >= thresholds.low) status = 'low'
+                
+                summary.needs[need] = {
+                    value: Math.round(value),
+                    status,
+                    thresholds: thresholds
+                }
+            }
+            
+            const mostUrgent = entity.needs.getMostUrgentNeed()
+            summary.mostUrgentNeed = {
+                need: mostUrgent.need,
+                value: Math.round(mostUrgent.value),
+                urgency: mostUrgent.urgency
+            }
+        }
+        
+        // Add current goal information
+        if (entity.goals) {
+            summary.currentGoal = entity.goals.currentGoal ? {
+                type: entity.goals.currentGoal.type,
+                description: entity.goals.currentGoal.description,
+                priority: entity.goals.currentGoal.priority,
+                targetType: entity.goals.currentGoal.targetType,
+                targetTags: entity.goals.currentGoal.targetTags,
+                action: entity.goals.currentGoal.action
+            } : null
+            
+            summary.goalQueue = entity.goals.goalQueue.map(goal => ({
+                type: goal.type,
+                priority: goal.priority,
+                description: goal.description
+            }))
+            
+            summary.completedGoals = entity.goals.completedGoals.length
+        }
+        
+        // Add current target information
+        if (entity.currentTarget) {
+            summary.currentTarget = {
+                id: entity.currentTarget.id,
+                name: entity.currentTarget.name,
+                position: { 
+                    x: Math.round(entity.currentTarget.x), 
+                    y: Math.round(entity.currentTarget.y) 
+                },
+                distance: Math.round(Math.sqrt(
+                    Math.pow(entity.x - entity.currentTarget.x, 2) + 
+                    Math.pow(entity.y - entity.currentTarget.y, 2)
+                ))
+            }
+        }
+    }
+    
     // Add resource-specific properties
     if (entity.type === 'resource') {
         summary.quantity = entity.quantity

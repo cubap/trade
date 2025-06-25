@@ -22,6 +22,8 @@ class EntityRenderer {
         // Animal-specific rendering
         if (entity.subtype === 'animal') {
             this.renderAnimal(entity, x, y)
+        } else if (entity.subtype === 'pawn') {
+            this.renderPawn(entity, x, y)
         } else {
             // Default rendering for other mobile entities
             this.renderDefaultMobile(entity, x, y)
@@ -129,7 +131,7 @@ class EntityRenderer {
         this.context.fillStyle = this.getColorForEntity(entity)
         
         // Different shapes based on entity type
-        if (entity.tags?.has('food')) {
+        if (entity.tags?.includes('food')) {
             // Food sources are circles
             this.context.beginPath()
             this.context.arc(x, y, size, 0, Math.PI * 2)
@@ -146,7 +148,7 @@ class EntityRenderer {
                 this.context.lineTo(x - size, y + size)
                 this.context.stroke()
             }
-        } else if (entity.tags?.has('water')) {
+        } else if (entity.tags?.includes('water')) {
             // Water sources are blue circles with wavy effect
             this.context.beginPath()
             this.context.arc(x, y, size, 0, Math.PI * 2)
@@ -160,7 +162,7 @@ class EntityRenderer {
                 this.context.arc(x, y, size - (i * 3), 0, Math.PI * 2)
                 this.context.stroke()
             }
-        } else if (entity.tags?.has('cover')) {
+        } else if (entity.tags?.includes('cover')) {
             // Cover/shelter are squares
             this.context.fillRect(x - size, y - size, size * 2, size * 2)
             
@@ -306,6 +308,130 @@ class EntityRenderer {
         } else {
             return '#00FF00'  // Green - low
         }
+    }
+    
+    renderPawn(pawn, x, y) {
+        // Set drawing style for pawns
+        this.context.fillStyle = this.getColorForEntity(pawn)
+        this.context.strokeStyle = '#333'
+        this.context.lineWidth = 2
+        
+        // Draw pawn body - use square with rounded corners
+        const size = pawn.size || 10
+        
+        // Draw the main body
+        this.context.beginPath()
+        
+        // Use roundRect if available, otherwise use regular rect
+        if (this.context.roundRect) {
+            this.context.roundRect(x - size/2, y - size/2, size, size, size/4)
+        } else {
+            this.context.rect(x - size/2, y - size/2, size, size)
+        }
+        
+        this.context.fill()
+        this.context.stroke()
+        
+        // Draw direction indicator
+        if (pawn.nextTargetX !== undefined && pawn.nextTargetY !== undefined) {
+            const dx = pawn.nextTargetX - pawn.x
+            const dy = pawn.nextTargetY - pawn.y
+            const angle = Math.atan2(dy, dx)
+            
+            // Draw arrow indicating direction
+            this.context.strokeStyle = '#FFF'
+            this.context.lineWidth = 2
+            this.context.beginPath()
+            this.context.moveTo(x, y)
+            this.context.lineTo(
+                x + Math.cos(angle) * size * 0.6,
+                y + Math.sin(angle) * size * 0.6
+            )
+            this.context.stroke()
+        }
+        
+        // Draw behavior state indicator
+        if (pawn.behaviorState) {
+            this.context.fillStyle = this.getBehaviorColor(pawn.behaviorState)
+            this.context.beginPath()
+            this.context.arc(x, y - size - 8, 3, 0, Math.PI * 2)
+            this.context.fill()
+        }
+        
+        // Draw needs indicators (safely)
+        if (pawn.needs && pawn.needs.getMostUrgentNeed) {
+            try {
+                this.renderNeedsIndicators(pawn, x, y, size)
+            } catch (error) {
+                // If needs rendering fails, skip it
+                console.warn('Needs rendering failed:', error)
+            }
+        }
+        
+        // Draw current goal indicator (safely)
+        if (pawn.goals && pawn.goals.currentGoal) {
+            try {
+                this.renderGoalIndicator(pawn, x, y, size)
+            } catch (error) {
+                // If goal rendering fails, skip it
+                console.warn('Goal rendering failed:', error)
+            }
+        }
+        
+        // Draw name/ID
+        this.context.fillStyle = '#000'
+        this.context.font = '10px Arial'
+        this.context.textAlign = 'center'
+        this.context.fillText(pawn.name || pawn.id, x, y + size + 25)
+    }
+    
+    renderNeedsIndicators(pawn, x, y, size) {
+        const mostUrgent = pawn.needs.getMostUrgentNeed()
+        
+        if (mostUrgent.urgency > 0) {
+            // Draw urgent need indicator
+            const colors = {
+                1: '#FFFF00', // Yellow for low urgency
+                2: '#FFA500', // Orange for medium urgency
+                3: '#FF6600', // Red-orange for high urgency
+                4: '#FF0000'  // Red for critical urgency
+            }
+            
+            this.context.fillStyle = colors[mostUrgent.urgency] || '#FFFF00'
+            this.context.beginPath()
+            this.context.arc(x + size/2 + 5, y - size/2 - 5, 4, 0, Math.PI * 2)
+            this.context.fill()
+            
+            // Draw need type indicator (first letter)
+            this.context.fillStyle = '#000'
+            this.context.font = '8px Arial'
+            this.context.textAlign = 'center'
+            this.context.fillText(
+                mostUrgent.need.charAt(0).toUpperCase(), 
+                x + size/2 + 5, 
+                y - size/2 - 2
+            )
+        }
+    }
+    
+    renderGoalIndicator(pawn, x, y, size) {
+        const goal = pawn.goals.currentGoal
+        
+        // Draw goal type indicator
+        const goalColors = {
+            'find_food': '#00FF00',
+            'find_water': '#0088FF',
+            'rest': '#800080',
+            'seek_shelter': '#8B4513',
+            'socialize': '#FFB6C1',
+            'work': '#FFD700',
+            'explore': '#32CD32'
+        }
+        
+        this.context.fillStyle = goalColors[goal.type] || '#808080'
+        this.context.beginPath()
+        this.context.arc(x - size/2 - 5, y - size/2 - 5, 3, 0, Math.PI * 2)
+        this.context.fill()
     }
 }
 

@@ -17,6 +17,11 @@ class World {
         entity.world = this  // Set reference to world
         entity.spawned = this.clock.currentTick
         
+        // Give pawns access to chunk manager for resource finding
+        if (entity.subtype === 'pawn' && entity.setWorldAccess) {
+            entity.setWorldAccess(this.chunkManager)
+        }
+        
         // Add entity to chunk system
         this.chunkManager.addEntity(entity)
     }

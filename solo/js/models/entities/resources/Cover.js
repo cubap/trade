@@ -4,7 +4,7 @@ class Cover extends Resource {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.subtype = 'cover'
-        this.tags.add('cover')
+        this.tags.push('cover')  // Use push instead of add for arrays
         this.color = '#228B22'  // Forest green
         this.size = 15
         this.capacity = 3       // How many animals can hide here
