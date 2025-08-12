@@ -193,7 +193,9 @@ class PawnGoals {
             // Find resources with specific tags
             const entities = Array.from(this.pawn.world.entitiesMap.values())
             const targets = entities.filter(entity => {
-                return goal.targetTags.some(tag => entity.tags?.includes(tag))
+                const t = entity?.tags
+                if (!t) return false
+                return goal.targetTags.some(tag => Array.isArray(t) ? t.includes(tag) : (typeof t.has === 'function' ? t.has(tag) : false))
             })
             
             if (targets.length > 0) {

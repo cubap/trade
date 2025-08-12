@@ -18,51 +18,58 @@ export class Tree extends Plant {
         this.logs = props.logs || 0
     }
 
-    update(world) {
-        if (!this.isAlive) return
+    update(tick) {
+        super.update?.(tick)
+        if (!this.isAlive) return true
         this.age++
-        this.tryGrowth(world)
+        this.tryGrowth()
         if (this.stage === 'adult') {
-            this.dropSticks(world)
-            this.tryReproduce(world)
-            this.checkForDeath(world)
+            this.dropSticks()
+            this.tryReproduce()
+            this.checkForDeath()
         }
+        return true
     }
+    // Override Plant.grow: use stage-based growth instead
+    grow() {}
 
-    tryGrowth(world) {
+    // Prevent base Plant default growth from interfering; trees use tryGrowth
+    grow() { /* no-op; trees handle growth with stages */ }
+
+    tryGrowth() {
         // Growth logic based on stage and crowding
         if (this.stage === 'seedling') {
-            if (this.canGrowToSapling(world)) {
+            if (this.canGrowToSapling()) {
                 this.stage = 'sapling'
                 this.age = 0
-            } else if (this.isCrowded(world) || this.isTooOld()) {
-                this.die(world)
+            } else if (this.isCrowded() || this.isTooOld()) {
+                this.die()
             }
         } else if (this.stage === 'sapling') {
-            if (this.nearbyAdultTree(world)) {
+            if (this.nearbyAdultTree()) {
                 // Remain sapling
-            } else if (this.canGrowToAdult(world)) {
+            } else if (this.canGrowToAdult()) {
                 this.stage = 'adult'
                 this.age = 0
-            } else if (this.isCrowded(world) || this.isTooOld()) {
-                this.die(world)
+            } else if (this.isCrowded() || this.isTooOld()) {
+                this.die()
             }
         }
     }
 
-    canGrowToSapling(world) {
+    canGrowToSapling() {
         // No more than 3 seedlings per meter, no adult tree in same meter
-        return !this.isCrowded(world) && !this.nearbyAdultTree(world) && this.age > 8
+        return !this.isCrowded() && !this.nearbyAdultTree() && this.age > 8
     }
 
-    canGrowToAdult(world) {
+    canGrowToAdult() {
         // No adult tree within 3m, only 1 sapling per meter
-        return !this.isCrowded(world) && !this.nearbyAdultTree(world, 3) && this.age > 16
+        return !this.isCrowded() && !this.nearbyAdultTree(3) && this.age > 16
     }
 
-    isCrowded(world) {
+    isCrowded() {
         // Count same-type entities in the same meter (1x1 area)
-        const neighbors = world?.queryEntitiesInRadius?.(this.x, this.y, 0.5) ?? []
+        const neighbors = this.world?.queryEntitiesInRadius?.(this.x, this.y, 0.5) ?? []
         if (this.stage === 'seedling') {
             // No more than 3 seedlings per meter
             const seedlings = neighbors.filter(e => e.type === 'tree' && e.stage === 'seedling')
@@ -82,9 +89,9 @@ export class Tree extends Plant {
         return false
     }
 
-    nearbyAdultTree(world, radius = 3) {
+    nearbyAdultTree(radius = 3) {
         // Returns true if any adult tree is within radius (meters)
-        const neighbors = world?.queryEntitiesInRadius?.(this.x, this.y, radius) ?? []
+        const neighbors = this.world?.queryEntitiesInRadius?.(this.x, this.y, radius) ?? []
         return neighbors.some(e => e.type === 'tree' && e.stage === 'adult' && e !== this)
     }
 
@@ -93,23 +100,23 @@ export class Tree extends Plant {
         return this.age > 1000
     }
 
-    die(world) {
+    die() {
         this.isAlive = false
         this.logs++
         // Drop logs/sticks in world
     }
 
-    dropSticks(world) {
+    dropSticks() {
         // Drop sticks regularly
         if (Math.random() < 0.05) this.sticks++
     }
 
-    tryReproduce(world) {
+    tryReproduce() {
         // Species-specific logic (to be overridden)
     }
 
-    checkForDeath(world) {
-        if (this.isTooOld()) this.die(world)
+    checkForDeath() {
+        if (this.isTooOld()) this.die()
     }
 }
 
@@ -123,22 +130,29 @@ export class Bush extends Plant {
         this.isAlive = true
     }
 
-    update(world) {
-        if (!this.isAlive) return
+    update(tick) {
+        super.update?.(tick)
+        if (!this.isAlive) return true
         this.age++
-        this.tryGrowth(world)
-        this.tryReproduce(world)
-        this.checkForDeath(world)
+        this.tryGrowth()
+        this.tryReproduce()
+        this.checkForDeath()
+        return true
     }
+    // Override Plant.grow: use stage-based growth instead
+    grow() {}
 
-    tryGrowth(world) {
+    // Prevent base Plant default growth from interfering; bushes use tryGrowth
+    grow() { /* no-op; bushes handle growth with stages */ }
+
+    tryGrowth() {
         // Growth logic for bush stages
         if (this.stage === 'sprout') {
-            if (this.canGrowToGrowing(world)) {
+            if (this.canGrowToGrowing()) {
                 this.stage = 'growing'
                 this.age = 0
             } else if (this.isTooOld()) {
-                this.die(world)
+                this.die()
             }
         } else if (this.stage === 'growing') {
             if (this.age > 30) {
@@ -148,9 +162,9 @@ export class Bush extends Plant {
         }
     }
 
-    canGrowToGrowing(world) {
+    canGrowToGrowing() {
         // If bush count < 3 in area, can grow
-        const neighbors = world?.queryEntitiesInRadius?.(this.x, this.y, 1) ?? []
+        const neighbors = this.world?.queryEntitiesInRadius?.(this.x, this.y, 1) ?? []
         const bushes = neighbors.filter(e => e.type === 'bush')
         return bushes.length < 3
     }
@@ -160,17 +174,15 @@ export class Bush extends Plant {
         return this.stage === 'sprout' && this.age > 30
     }
 
-    die(world) {
-        this.isAlive = false
-    }
+    die() { this.isAlive = false }
 
-    tryReproduce(world) {
+    tryReproduce() {
         // Berry production and seed drop logic
     }
 
-    checkForDeath(world) {
+    checkForDeath() {
         // Bushes die after 3 years (placeholder: 1000 turns)
-        if (this.stage === 'mature' && this.age > 1000) this.die(world)
+        if (this.stage === 'mature' && this.age > 1000) this.die()
     }
 }
 
@@ -181,17 +193,19 @@ export class Grass extends Plant {
         this.population = props.population || 10 // per meter
     }
 
-    update(world) {
-        this.grow(world)
-        this.handleTrampling(world)
+    update(tick) {
+        super.update?.(tick)
+        this.grow()
+        this.handleTrampling()
+        return true
     }
 
-    grow(world) {
+    grow() {
         // 2% chance to grow each hour, spread if >40/m
         if (Math.random() < 0.02) this.population = Math.min(100, this.population + 1)
         if (this.population > 40 && Math.random() < 0.2) {
             // Spread to neighbor: find a nearby meter with less grass
-            const neighbors = world?.queryEntitiesInRadius?.(this.x, this.y, 1) ?? []
+        const neighbors = this.world?.queryEntitiesInRadius?.(this.x, this.y, 1) ?? []
             const grassPatches = neighbors.filter(e => e.type === 'grass')
             // Find a patch with less than 40/m
             const sparse = grassPatches.find(g => g.population < 40)
@@ -201,7 +215,7 @@ export class Grass extends Plant {
         if (this.population > 100) this.population = 100
     }
 
-    handleTrampling(world) {
+    handleTrampling() {
         // Reduce population for trampling (not implemented)
     }
 }

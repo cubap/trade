@@ -81,6 +81,15 @@ class Animal extends MobileEntity {
         this.hiddenInventory = [] // Items dropped on death
         this.specialtyDrops = [] // e.g. feathers, tusks
     }
+
+    // Tag helper to support Array or Set-backed tags
+    hasTag(entity, tag) {
+        const t = entity?.tags
+        if (!t) return false
+        if (Array.isArray(t)) return t.includes(tag)
+        if (typeof t.has === 'function') return t.has(tag)
+        return false
+    }
     
     // Override update to properly handle cover and movement
     update(tick) {
@@ -234,8 +243,8 @@ class Animal extends MobileEntity {
         this.moveRange = originalRange * 0.6  // Shorter movements for careful searching
         
         // Look for nearby food
-        const nearbyFood = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const food = nearbyFood.filter(e => e.tags?.includes('food') && !e.depleted)
+    const nearbyFood = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
+    const food = nearbyFood.filter(e => this.hasTag(e, 'food') && !e.depleted)
         
         if (food.length > 0) {
             // Sort by distance
@@ -292,8 +301,8 @@ class Animal extends MobileEntity {
     
     seekWater() {
         // Similar to foraging but looking for water
-        const nearbyWater = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const water = nearbyWater.filter(e => e.tags?.includes('water') && !e.depleted)
+    const nearbyWater = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
+    const water = nearbyWater.filter(e => this.hasTag(e, 'water') && !e.depleted)
         
         if (water.length > 0) {
             // Sort by distance
@@ -347,8 +356,8 @@ class Animal extends MobileEntity {
     
     rest() {
         // Try to find shelter to rest in
-        const nearbyCovers = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const covers = nearbyCovers.filter(e => e.tags?.includes('cover') && e.hasSpace?.())
+    const nearbyCovers = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
+    const covers = nearbyCovers.filter(e => this.hasTag(e, 'cover') && e.hasSpace?.())
         
         if (covers.length > 0) {
             // Sort by distance and security value
@@ -436,8 +445,8 @@ class Animal extends MobileEntity {
     
     flee() {
         // Rapid movement away from threats
-        const nearbyThreats = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-        const threats = nearbyThreats.filter(e => e.predator || e.tags?.includes('threat'))
+    const nearbyThreats = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
+    const threats = nearbyThreats.filter(e => e.predator || this.hasTag(e, 'threat'))
         
         if (threats.length > 0) {
             // Calculate average threat position
@@ -467,7 +476,7 @@ class Animal extends MobileEntity {
         } else {
             // No immediate threats, seek shelter
             const nearbyCovers = this.world?.getNearbyEntities?.(this.x, this.y, this.traits.detection) || []
-            const covers = nearbyCovers.filter(e => e.tags?.includes('cover'))
+            const covers = nearbyCovers.filter(e => this.hasTag(e, 'cover'))
             
             if (covers.length > 0) {
                 const nearest = covers[0]
@@ -768,7 +777,7 @@ class Animal extends MobileEntity {
         
         // Filter for resources that are unknown to the animal
         const resourceEntities = nearbyEntities.filter(e => 
-            (e.tags?.includes('food') || e.tags?.includes('water') || e.tags?.includes('cover')) && 
+            (this.hasTag(e, 'food') || this.hasTag(e, 'water') || this.hasTag(e, 'cover')) && 
             !this.isKnownResource(e)
         )
         
@@ -780,13 +789,13 @@ class Animal extends MobileEntity {
             if (knowledge.foodScore <= knowledge.waterScore && 
                 knowledge.foodScore <= knowledge.shelterScore) {
                 // Need food knowledge most
-                targetResource = resourceEntities.find(e => e.tags?.includes('food'))
+                targetResource = resourceEntities.find(e => this.hasTag(e, 'food'))
             } else if (knowledge.waterScore <= knowledge.shelterScore) {
                 // Need water knowledge most
-                targetResource = resourceEntities.find(e => e.tags?.includes('water'))
+                targetResource = resourceEntities.find(e => this.hasTag(e, 'water'))
             } else {
                 // Need shelter knowledge most
-                targetResource = resourceEntities.find(e => e.tags?.includes('cover'))
+                targetResource = resourceEntities.find(e => this.hasTag(e, 'cover'))
             }
             
             // If didn't find priority resource, just go to the closest
@@ -816,15 +825,15 @@ class Animal extends MobileEntity {
 
     // Check if resource is already known
     isKnownResource(resource) {
-        if (resource.tags?.includes('food')) {
+    if (this.hasTag(resource, 'food')) {
             return this.memory.knownFood.some(f => f.id === resource.id)
         }
         
-        if (resource.tags?.includes('water')) {
+    if (this.hasTag(resource, 'water')) {
             return this.memory.knownWater.some(w => w.id === resource.id)
         }
         
-        if (resource.tags?.includes('cover')) {
+    if (this.hasTag(resource, 'cover')) {
             return this.memory.knownShelter.some(s => s.id === resource.id)
         }
         
@@ -833,7 +842,7 @@ class Animal extends MobileEntity {
 
     // Record resource in memory
     recordResourceInMemory(resource) {
-        if (resource.tags?.includes('food') && !this.memory.knownFood.some(f => f.id === resource.id)) {
+    if (this.hasTag(resource, 'food') && !this.memory.knownFood.some(f => f.id === resource.id)) {
             this.memory.knownFood.push({
                 id: resource.id,
                 x: resource.x,
@@ -847,7 +856,7 @@ class Animal extends MobileEntity {
             }
         }
         
-        if (resource.tags?.includes('water') && !this.memory.knownWater.some(w => w.id === resource.id)) {
+    if (this.hasTag(resource, 'water') && !this.memory.knownWater.some(w => w.id === resource.id)) {
             this.memory.knownWater.push({
                 id: resource.id,
                 x: resource.x,
@@ -861,7 +870,7 @@ class Animal extends MobileEntity {
             }
         }
         
-        if (resource.tags?.includes('cover') && !this.memory.knownShelter.some(s => s.id === resource.id)) {
+    if (this.hasTag(resource, 'cover') && !this.memory.knownShelter.some(s => s.id === resource.id)) {
             this.memory.knownShelter.push({
                 id: resource.id,
                 x: resource.x,

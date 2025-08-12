@@ -82,6 +82,15 @@ class Pawn extends MobileEntity {
         this.isAsleep = false
     }
     
+    // Helper to check tags whether Set or Array
+    hasTag(entity, tag) {
+        const t = entity?.tags
+        if (!t) return false
+        if (Array.isArray(t)) return t.includes(tag)
+        if (typeof t.has === 'function') return t.has(tag)
+        return false
+    }
+    
     decideNextMove() {
         // Use goals system to determine movement
         if (this.goals.currentGoal) {
@@ -164,7 +173,7 @@ class Pawn extends MobileEntity {
     
     consumeResource(resource, goal) {
         if (resource && resource.canConsume?.()) {
-            this.behaviorState = resource.tags?.includes('food') ? 'eating' : 'drinking'
+            this.behaviorState = this.hasTag(resource, 'food') ? 'eating' : 'drinking'
             
             // Consume the resource
             resource.consume(1)
@@ -291,9 +300,8 @@ class Pawn extends MobileEntity {
     }
     
     entityMatchesTags(entity, targetTags) {
-        if (!entity.tags || !Array.isArray(entity.tags)) return false
-        
-        return targetTags.some(tag => entity.tags.includes(tag))
+        if (!entity?.tags) return false
+        return targetTags.some(tag => this.hasTag(entity, tag))
     }
     
     increaseSkill(skill, amount = 1) {

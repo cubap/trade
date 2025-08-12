@@ -5,6 +5,7 @@ class Plant extends ImmobileEntity {
         super(id, name, x, y)
         this.subtype = 'plant'
         this.color = '#2ecc71'  // Green color for plants
+        this.tags.add('plant')
 
         // Plant-specific attributes
         this.growthStage = 'seed'  // seed, sprout, mature, flowering, dying
@@ -31,22 +32,50 @@ class Plant extends ImmobileEntity {
     update(tick, currentSeason) {
         super.update(tick)
 
-        // Adjust growth rate based on season
+        // Adjust growth rate based on season (do not permanently mutate base rate)
         this.seasonalModifier = this.getSeasonalModifier(currentSeason)
-        this.growthRate *= this.seasonalModifier
+        const effectiveGrowthRate = this.growthRate * this.seasonalModifier
 
-        // Grow over time
-        this.grow()
+        // Grow over time (no-op for subclasses that override or ignore)
+        this.grow?.(effectiveGrowthRate)
 
         // Potentially create seeds
-        this.trySeeding()
+        this.trySeeding?.()
 
-        // Check if plant has died of old age
+        // Check if plant has died of old age (basic lifecycle path)
         if (this.growthStage === 'dying' && this.growthProgress >= 100) {
             return false  // Plant dies and should be removed
         }
 
         return true
+    }
+
+    // Default growth progression for generic plants; subclasses can override.
+    grow(rate = this.growthRate) {
+        // Basic staged growth using growthProgress [0..100)
+        this.growthProgress += rate
+        if (this.growthProgress < 100) return
+
+        // Advance lifecycle stage and reset progress
+        if (this.growthStage === 'seed') {
+            this.growthStage = 'sprout'
+            this.growthProgress = 0
+            return
+        }
+        if (this.growthStage === 'sprout') {
+            this.growthStage = 'mature'
+            this.growthProgress = 0
+            return
+        }
+        if (this.growthStage === 'mature') {
+            this.growthStage = 'flowering'
+            this.growthProgress = 0
+            return
+        }
+        if (this.growthStage === 'flowering') {
+            this.growthStage = 'dying'
+            this.growthProgress = 0
+        }
     }
 
     getSeasonalModifier(season) {
