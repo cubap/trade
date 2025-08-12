@@ -143,6 +143,14 @@ class CameraController {
         context.scale(this.zoomLevel, this.zoomLevel)
         context.translate(-this.viewX, -this.viewY)
     }
+
+    // Adjust zoom so that a given world radius fits within the viewport (using the shorter dimension)
+    setZoomToShowRadius(radius, marginFactor = 0.9) {
+        if (!radius || radius <= 0) return
+        const minDim = Math.min(this.canvas.width, this.canvas.height)
+        const desired = (minDim * marginFactor) / (radius * 2)
+        this.zoomLevel = Math.max(this.minZoom, Math.min(this.maxZoom, desired))
+    }
 }
 
 export default CameraController

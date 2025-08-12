@@ -12,6 +12,7 @@ class Plant extends ImmobileEntity {
         this.growthRate = 0.1
         this.growthProgress = 0
         this.resourceValue = 10
+    this.depleted = false
         this.seedingChance = 0.01
         this.seedingRange = 100
         this.seasonalModifier = 1  // Modifier based on current season
@@ -48,6 +49,24 @@ class Plant extends ImmobileEntity {
         }
 
         return true
+    }
+
+    // Consumption API (default for edible plants using resourceValue)
+    canConsume() {
+        const hasFoodTag = Array.isArray(this.tags) ? this.tags.includes('food') : this.tags?.has?.('food')
+        return !!hasFoodTag && (this.resourceValue ?? 0) > 0 && !this.depleted
+    }
+
+    consume(amount = 1) {
+        if (!this.canConsume()) return 0
+        const available = Math.max(0, this.resourceValue ?? 0)
+        const consumed = Math.min(available, Math.max(1, Math.floor(amount)))
+        this.resourceValue = available - consumed
+        if ((this.resourceValue ?? 0) <= 0) {
+            this.resourceValue = 0
+            this.depleted = true
+        }
+        return consumed
     }
 
     // Default growth progression for generic plants; subclasses can override.

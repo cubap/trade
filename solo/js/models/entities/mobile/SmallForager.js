@@ -5,7 +5,7 @@ import Animal from './Animal.js'
 
 class SmallForager extends Animal {
     constructor(props = {}) {
-        super(props)
+        super(props.id, props.name || 'Forager', props.x ?? 0, props.y ?? 0)
         this.type = 'animal'
         this.subtype = 'forager'
         this.species = props.species || 'squirrel'
@@ -35,7 +35,7 @@ class SmallForager extends Animal {
         ]
     }
 
-    update(tick, world) {
+    update(tick, world = this.world) {
         // 1. Check instincts by priority
         for (const instinct of this.instincts.sort((a, b) => b.priority - a.priority)) {
             if (instinct.trigger.call(this, world)) {
@@ -44,11 +44,17 @@ class SmallForager extends Animal {
             }
         }
         // 2. Otherwise, follow daily queue
-        const hour = world.clock.getHour?.() ?? Math.floor((world.clock.currentTick * 48) / 2880) % 6 + 6
-        const scheduled = this.dailyQueue.find(q => q.hour === hour)
+        const hour24 = world?.clock?.getHour24?.() ?? Math.floor((world.clock.currentTick * 48) / 2880) % 24
+        const scheduled = this.selectScheduledAction(hour24)
         if (scheduled && typeof this[scheduled.action] === 'function') {
             this[scheduled.action](world)
         }
+    }
+
+    selectScheduledAction(hour24) {
+        // dailyQueue is authored with hour values; if in 6h game-day, we scaled to 24h
+        // Accepts either 0-23 or authored 6-19 windows; match nearest same hour number
+        return this.dailyQueue.find(q => q.hour === hour24)
     }
 
     // Instinct triggers

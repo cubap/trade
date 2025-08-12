@@ -52,6 +52,17 @@ class Pawn extends MobileEntity {
         
         this.idleTicks = 0 // Track idle time for planning skill
 
+        // Track when skills were last used for gentle decay
+        this.skillLastUsed = {}
+
+        // Simple idle planner configuration (unlocks expand with planning)
+        this.idlePlan = {
+            enabled: true,
+            tasks: ['study', 'explore'], // default idle tasks
+            studyDuration: 60, // ticks
+            triggers: { hunger: 35, thirst: 45, energy: 65 }
+        }
+
         // Memory map for landmarks
         this.memoryMap = [] // List of known landmarks
         this.maxLandmarks = 5 // Can be increased by skills
@@ -307,6 +318,9 @@ class Pawn extends MobileEntity {
     increaseSkill(skill, amount = 1) {
         if (this.skills[skill] !== undefined) {
             this.skills[skill] += amount
+            // Mark last used for decay tracking
+            const tick = this.world?.clock?.currentTick ?? 0
+            this.skillLastUsed[skill] = tick
         }
     }
 
@@ -323,6 +337,20 @@ class Pawn extends MobileEntity {
             this.increaseSkill('composure', 0.1)
         }
         // Add more passive skill checks as needed
+    }
+
+    decaySkills(tick) {
+        // Gentle decay for skills not used recently; run occasionally
+        if (!this._lastDecayTick) this._lastDecayTick = tick
+        if (tick - this._lastDecayTick < 200) return // every ~200 ticks
+        this._lastDecayTick = tick
+        const nowTick = tick
+        for (const [skill, value] of Object.entries(this.skills)) {
+            const last = this.skillLastUsed[skill] ?? 0
+            if (nowTick - last > 2000) {
+                this.skills[skill] = Math.max(0, value - 0.1)
+            }
+        }
     }
 
     trainSkill(skill, student, amount = 0.5) {
@@ -398,12 +426,15 @@ class Pawn extends MobileEntity {
         this.needs.updateNeeds(tick)
         this.goals.evaluateAndSetGoals()
         this.passiveSkillTick()
+        this.decaySkills(tick)
         this.updateHealthEvents()
         if (this.behaviorState === 'idle' && !this.goals.currentGoal) {
             this.idleTicks++
             if (this.idleTicks % 100 === 0) {
                 this.increasePlanningSkill()
             }
+            // Run idle planner when idle and planning available
+            this.applyIdlePlanner(tick)
         } else {
             this.idleTicks = 0
         }
@@ -413,6 +444,62 @@ class Pawn extends MobileEntity {
     increasePlanningSkill() {
         this.skills.planning++
         // Optionally, trigger events or unlock features as planning increases
+    }
+
+    applyIdlePlanner(tick) {
+        if (!this.idlePlan?.enabled) return
+        if (this.goals.currentGoal) return
+        const planning = this.skills.planning ?? 0
+        // Unlocks: with planning >= 1, enable study; >= 3, scheduled explore
+        const canStudy = planning >= 0
+        const canExplore = planning >= 3
+        // Prefer proactive survival tasks (basic scheduling idea)
+        const n = this.needs?.needs ?? {}
+        const t = this.idlePlan.triggers
+        if ((n.thirst ?? 0) >= t.thirst) {
+            this.goals.goalQueue.unshift({
+                type: 'find_water', priority: 2, description: 'Drink proactively',
+                targetType: 'resource', targetTags: ['water'], action: 'consume', completionReward: { thirst: -40 }
+            })
+            this.goals.currentGoal = this.goals.goalQueue.shift()
+            this.goals.startGoal(this.goals.currentGoal)
+            return
+        }
+        if ((n.hunger ?? 0) >= t.hunger) {
+            this.goals.goalQueue.unshift({
+                type: 'find_food', priority: 2, description: 'Eat proactively',
+                targetType: 'resource', targetTags: ['food'], action: 'consume', completionReward: { hunger: -35 }
+            })
+            this.goals.currentGoal = this.goals.goalQueue.shift()
+            this.goals.startGoal(this.goals.currentGoal)
+            return
+        }
+        if ((n.energy ?? 0) >= t.energy) {
+            this.goals.goalQueue.unshift({
+                type: 'rest', priority: 2, description: 'Rest proactively',
+                targetType: 'resource', targetTags: ['cover'], action: 'use', duration: 8, completionReward: { energy: -40 }
+            })
+            this.goals.currentGoal = this.goals.goalQueue.shift()
+            this.goals.startGoal(this.goals.currentGoal)
+            return
+        }
+        // Otherwise, pick an idle enrichment task
+        if (canStudy && this.idlePlan.tasks.includes('study')) {
+            const dur = this.idlePlan.studyDuration
+            this.goals.currentGoal = {
+                type: 'study', priority: 1, description: 'Study and plan',
+                targetType: 'activity', action: 'learn', duration: dur, completionReward: { knowledge: -10 }
+            }
+            this.goals.startGoal(this.goals.currentGoal)
+            return
+        }
+        if (canExplore && this.idlePlan.tasks.includes('explore')) {
+            this.goals.currentGoal = {
+                type: 'explore', priority: 1, description: 'Wander and observe',
+                targetType: 'location', action: 'explore'
+            }
+            this.goals.startGoal(this.goals.currentGoal)
+        }
     }
     
     // Get status information for debugging/UI

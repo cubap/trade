@@ -26,6 +26,26 @@ export function setupFollowControls(world, renderer) {
         renderer.togglePerceptionMode()
         perceptionButton.textContent = `Perception: ${renderer.perceptionMode ? 'ON' : 'OFF'}`
     }
+    // Recenter button
+    const recenterButton = document.createElement('button')
+    recenterButton.textContent = 'Recenter'
+    recenterButton.style.marginLeft = '10px'
+    recenterButton.onclick = () => {
+        // Prefer the currently followed entity; else first pawn
+        let target = renderer.followedEntity
+        if (!target) {
+            const pawns = Array.from(world.entitiesMap.values()).filter(e => e.subtype === 'pawn')
+            target = pawns[0]
+        }
+        if (target) {
+            renderer.setFollowEntity(target)
+            const perception = target.traits?.detection ?? 100
+            renderer.setZoomToShowRadius?.(perception, 0.85)
+            followButton.textContent = `Following: ${target.name}`
+        } else {
+            console.log('No entity to recenter on')
+        }
+    }
     // Perception indicator
     const perceptionIndicator = document.createElement('div')
     perceptionIndicator.id = 'perception-indicator'
@@ -50,5 +70,5 @@ export function setupFollowControls(world, renderer) {
         originalTogglePerception()
         perceptionIndicator.style.display = renderer.perceptionMode && renderer.followMode ? 'block' : 'none'
     }
-    return { followButton, perceptionButton, perceptionIndicator }
+    return { followButton, perceptionButton, recenterButton, perceptionIndicator }
 }

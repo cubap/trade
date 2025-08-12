@@ -286,6 +286,27 @@ class PawnGoals {
                 this.pawn.needs.satisfyNeed(need, Math.abs(goal.completionReward[need]))
             }
         }
+
+        // Skill gains based on goal type (lightweight for now)
+        const sg = {
+            'find_food': { orienteering: 0.2 },
+            'find_water': { orienteering: 0.2 },
+            'rest': { composure: 0.05 },
+            'seek_shelter': { composure: 0.1 },
+            'socialize': { storytelling: 0.2 },
+            'work': { manipulation: 0.1 },
+            'explore': { orienteering: 0.4, cartography: 0.1 },
+            'build_structure': { planning: 0.3 },
+            'establish_trade': { convincing: 0.3 },
+            'map_territory': { cartography: 0.4 },
+            'study': { planning: 0.3 }
+        }
+        const gains = sg[goal.type]
+        if (gains) {
+            for (const [skill, amount] of Object.entries(gains)) {
+                this.pawn.useSkill(skill, amount)
+            }
+        }
         
         // Store completed goal
         this.completedGoals.push({
@@ -319,6 +340,12 @@ class PawnGoals {
                     goal.startTime = this.pawn.world.clock.currentTick
                 }
             }
+        }
+
+        // Learning/study goals grant incremental skill use
+        if (goal.type === 'study') {
+            // Passive studying increases planning and knowledge-adjacent skills
+            this.pawn.useSkill('planning', 0.02)
         }
     }
 }

@@ -5,7 +5,7 @@ import Animal from './Animal.js'
 
 class SmallPredator extends Animal {
     constructor(props = {}) {
-        super(props)
+        super(props.id, props.name || 'Predator', props.x ?? 0, props.y ?? 0)
         this.type = 'animal'
         this.subtype = 'predator'
         this.species = props.species || 'fox'
@@ -39,15 +39,15 @@ class SmallPredator extends Animal {
         this.scentAge = 0
     }
 
-    update(tick, world) {
+    update(tick, world = this.world) {
         for (const instinct of this.instincts.sort((a, b) => b.priority - a.priority)) {
             if (instinct.trigger.call(this, world)) {
                 instinct.action.call(this, world)
                 return
             }
         }
-        const hour = world.clock.getHour?.() ?? Math.floor((world.clock.currentTick * 48) / 2880) % 6 + 6
-        const scheduled = this.dailyQueue.find(q => q.hour === hour)
+        const hour24 = world?.clock?.getHour24?.() ?? Math.floor((world.clock.currentTick * 48) / 2880) % 24
+        const scheduled = this.dailyQueue.find(q => q.hour === hour24)
         if (scheduled && typeof this[scheduled.action] === 'function') {
             this[scheduled.action](world)
         }

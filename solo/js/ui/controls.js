@@ -86,7 +86,7 @@ function setupControls(world, renderer) {
     }
     
     // Follow and perception controls
-    const { followButton, perceptionButton } = setupFollowControls(world, renderer)
+    const { followButton, perceptionButton, recenterButton } = setupFollowControls(world, renderer)
     
     // Add controls to panel
     controlPanel.appendChild(typeSelect)
@@ -97,6 +97,7 @@ function setupControls(world, renderer) {
     controlPanel.appendChild(chunkButton)
     controlPanel.appendChild(followButton)
     controlPanel.appendChild(perceptionButton)
+    controlPanel.appendChild(recenterButton)
     
     // Insert into DOM
     document.body.appendChild(controlPanel)
