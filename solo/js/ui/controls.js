@@ -41,12 +41,15 @@ function setupControls(world, renderer) {
     pauseButton.textContent = 'Pause'
     pauseButton.style.marginLeft = '10px'
     let isPaused = false
-    pauseButton.onclick = () => {
-        isPaused = !isPaused
+    const setPaused = (value) => {
+        const next = !!value
+        if (next === isPaused) return
+        isPaused = next
         pauseButton.textContent = isPaused ? 'Resume' : 'Pause'
         if (isPaused) world.clock.pause()
         else world.clock.resume()
     }
+    pauseButton.onclick = () => setPaused(!isPaused)
     
     // Add palette selector
     const paletteSelect = document.createElement('select')
@@ -138,7 +141,7 @@ function setupControls(world, renderer) {
         }
     })
     
-    return { isPaused: () => isPaused }
+    return { isPaused: () => isPaused, setPaused }
 }
 
 export default setupControls

@@ -39,17 +39,16 @@ class Chunk {
     addEntity(entity) {
         this.entities.add(entity)
         
-        // Cache resources for quick access (only if entity has tags array)
-        if (Array.isArray(entity.tags)) {
-            if (entity.tags.includes('food')) {
-                this.foodSources.push(entity)
-            }
-            if (entity.tags.includes('water')) {
-                this.waterSources.push(entity)
-            }
-            if (entity.tags.includes('cover')) {
-                this.shelters.push(entity)
-            }
+        // Cache resources for quick access (support Set or Array tags)
+        const includesTag = (tag) => Array.isArray(entity.tags) ? entity.tags.includes(tag) : entity.tags?.has?.(tag)
+        if (includesTag('food')) {
+            this.foodSources.push(entity)
+        }
+        if (includesTag('water')) {
+            this.waterSources.push(entity)
+        }
+        if (includesTag('cover')) {
+            this.shelters.push(entity)
         }
     }
     

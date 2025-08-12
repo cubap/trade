@@ -2,15 +2,15 @@ import World from './core/World.js'
 import CanvasRenderer from './rendering/CanvasRenderer.js'
 import setupControls from './ui/controls.js'
 import { Pawn, Animal } from './models/entities/index.js'
-import ResourceGenerator from './core/ResourceGenerator.js'
+import FloraGenerator from './core/FloraGenerator.js'
 
 // Create a larger world
 const world = new World(2000, 2000)
 const renderer = new CanvasRenderer(world, 'game-canvas')
 
-// Add after world initialization and before other entities
-const resourceGenerator = new ResourceGenerator(world)
-resourceGenerator.generateResources()
+// Populate world with flora instead of abstract resources
+const floraGenerator = new FloraGenerator(world)
+floraGenerator.generateFlora()
 
 // Initialize only mobile entities
 function initializeEntities() {
@@ -49,6 +49,21 @@ initializeEntities()
 
 // Setup UI controls
 const controls = setupControls(world, renderer)
+
+// Pause/resume simulation on tab blur/focus
+let pausedByTab = false
+window.addEventListener('blur', () => {
+    if (!controls.isPaused()) {
+        controls.setPaused(true)
+        pausedByTab = true
+    }
+})
+window.addEventListener('focus', () => {
+    if (pausedByTab) {
+        controls.setPaused(false)
+        pausedByTab = false
+    }
+})
 
 // Animation loop
 function simulationLoop(timestamp) {

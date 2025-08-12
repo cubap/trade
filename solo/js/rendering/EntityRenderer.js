@@ -129,9 +129,15 @@ class EntityRenderer {
         const size = entity.size || 10
         
         this.context.fillStyle = this.getColorForEntity(entity)
+
+        const hasTag = (tags, tag) => {
+            if (!tags) return false
+            if (Array.isArray(tags)) return tags.includes(tag)
+            return typeof tags.has === 'function' ? tags.has(tag) : false
+        }
         
         // Different shapes based on entity type
-        if (entity.tags?.includes('food')) {
+    if (hasTag(entity.tags, 'food')) {
             // Food sources are circles
             this.context.beginPath()
             this.context.arc(x, y, size, 0, Math.PI * 2)
@@ -148,7 +154,7 @@ class EntityRenderer {
                 this.context.lineTo(x - size, y + size)
                 this.context.stroke()
             }
-        } else if (entity.tags?.includes('water')) {
+    } else if (hasTag(entity.tags, 'water')) {
             // Water sources are blue circles with wavy effect
             this.context.beginPath()
             this.context.arc(x, y, size, 0, Math.PI * 2)
@@ -162,7 +168,7 @@ class EntityRenderer {
                 this.context.arc(x, y, size - (i * 3), 0, Math.PI * 2)
                 this.context.stroke()
             }
-        } else if (entity.tags?.includes('cover')) {
+    } else if (hasTag(entity.tags, 'cover')) {
             // Cover/shelter are squares
             this.context.fillRect(x - size, y - size, size * 2, size * 2)
             
