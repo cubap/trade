@@ -57,6 +57,34 @@ class FloraGenerator {
         }
     }
 
+    // New: place clumps of trees to simulate forests
+    placeForestClump(centerX, centerY, radius = 120, density = 0.006) {
+        // Approximate number of trees by area * density
+        const area = Math.PI * radius * radius
+        const desired = Math.max(10, Math.floor(area * density))
+        let placed = 0
+        let tries = 0
+        while (placed < desired && tries < desired * 10) {
+            tries++
+            const ang = Math.random() * Math.PI * 2
+            const r = Math.sqrt(Math.random()) * radius // bias toward center
+            const x = Math.round(centerX + Math.cos(ang) * r)
+            const y = Math.round(centerY + Math.sin(ang) * r)
+            if (x < 0 || y < 0 || x > this.world.width || y > this.world.height) continue
+            // Keep >=3m from adult trees
+            const near = this.world.getNearbyEntities(x, y, 3).filter(e => e.type === 'tree' && e.stage === 'adult')
+            if (near.length > 0) continue
+            const id = `tree_clump_${this.ids.tree++}`
+            const name = 'Tree'
+            const tree = new Tree({ id, name, x, y, stage: 'adult', variety: this.pickTreeVariety('forest') })
+            tree.tags.add('cover')
+            if (Math.random() < 0.5) tree.tags.add('food')
+            this.world.addEntity(tree)
+            placed++
+        }
+        return placed
+    }
+
     placeBushes(chunk, count) {
         for (let i = 0; i < count; i++) {
             // Prefer near treeline: try position within 10m of a tree; fallback random

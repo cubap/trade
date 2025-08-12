@@ -5,6 +5,14 @@ class EntityRenderer {
         this.activePalette = 'vivid'
     }
     
+    // Helper to read tags whether Set or Array
+    hasTag(entity, tag) {
+        const t = entity?.tags
+        if (!t) return false
+        if (Array.isArray(t)) return t.includes(tag)
+        return typeof t.has === 'function' ? t.has(tag) : false
+    }
+    
     renderMobileEntity(entity, progress) {
         // For mobile entities, we need to interpolate between previous and current positions
         let x = entity.x
@@ -126,18 +134,18 @@ class EntityRenderer {
         // Basic rendering for immobile entities
         const x = entity.x
         const y = entity.y
-        const size = entity.size || 10
+    const size = Math.max(0, entity.size ?? 10)
         
         this.context.fillStyle = this.getColorForEntity(entity)
-
-        const hasTag = (tags, tag) => {
-            if (!tags) return false
-            if (Array.isArray(tags)) return tags.includes(tag)
-            return typeof tags.has === 'function' ? tags.has(tag) : false
-        }
         
         // Different shapes based on entity type
-    if (hasTag(entity.tags, 'food')) {
+        if (entity.type === 'grass') {
+            this.renderGrassPatch(entity)
+        } else if (entity.type === 'bush') {
+            this.renderBush(entity)
+        } else if (entity.type === 'tree') {
+            this.renderTree(entity)
+        } else if (this.hasTag(entity, 'food')) {
             // Food sources are circles
             this.context.beginPath()
             this.context.arc(x, y, size, 0, Math.PI * 2)
@@ -154,21 +162,25 @@ class EntityRenderer {
                 this.context.lineTo(x - size, y + size)
                 this.context.stroke()
             }
-    } else if (hasTag(entity.tags, 'water')) {
+        } else if (this.hasTag(entity, 'water')) {
             // Water sources are blue circles with wavy effect
-            this.context.beginPath()
-            this.context.arc(x, y, size, 0, Math.PI * 2)
-            this.context.fill()
+            if (size > 0) {
+                this.context.beginPath()
+                this.context.arc(x, y, size, 0, Math.PI * 2)
+                this.context.fill()
+            }
             
-            // Add water effect
+            // Add water effect (skip rings with non-positive radius)
             this.context.strokeStyle = '#4169E1'
             this.context.lineWidth = 2
             for (let i = 0; i < 3; i++) {
+                const r = size - (i * 3)
+                if (r <= 0) continue
                 this.context.beginPath()
-                this.context.arc(x, y, size - (i * 3), 0, Math.PI * 2)
+                this.context.arc(x, y, r, 0, Math.PI * 2)
                 this.context.stroke()
             }
-    } else if (hasTag(entity.tags, 'cover')) {
+        } else if (this.hasTag(entity, 'cover')) {
             // Cover/shelter are squares
             this.context.fillRect(x - size, y - size, size * 2, size * 2)
             
@@ -190,6 +202,102 @@ class EntityRenderer {
             this.context.font = '8px Arial'
             this.context.textAlign = 'center'
             this.context.fillText(entity.name, x, y + size + 12)
+        }
+    }
+
+    // Specialized plant renderers
+    renderGrassPatch(grass) {
+        const ctx = this.context
+        const x = grass.x
+        const y = grass.y
+        const pop = Math.max(0, Math.min(100, grass.population ?? 0))
+        // Base radius and alpha scale with population
+        const r = 10 // patch radius in world units
+        const alpha = Math.min(0.75, 0.12 + (pop / 100) * 0.6)
+        // Base fill (background-like)
+        ctx.fillStyle = `rgba(60, 130, 60, ${alpha})`
+        ctx.beginPath()
+        ctx.arc(x, y, r, 0, Math.PI * 2)
+        ctx.fill()
+
+        // Dithered blades/dots proportional to population (deterministic per id)
+        const dots = Math.min(18, Math.floor(pop / 6))
+        let h = 0
+        const idStr = String(grass.id ?? `${x},${y}`)
+        for (let i = 0; i < idStr.length; i++) h = idStr.charCodeAt(i) + ((h << 5) - h)
+        const rand = () => {
+            h = (h * 9301 + 49297) % 233280
+            return h / 233280
+        }
+        ctx.fillStyle = 'rgba(34, 139, 34, 0.6)'
+        for (let i = 0; i < dots; i++) {
+            const ang = rand() * Math.PI * 2
+            const rad = rand() * r
+            const px = x + Math.cos(ang) * rad
+            const py = y + Math.sin(ang) * rad
+            ctx.fillRect(px - 0.5, py - 0.5, 1, 1)
+        }
+    }
+
+    renderBush(bush) {
+        const ctx = this.context
+        const x = bush.x
+        const y = bush.y
+        const stage = bush.stage || 'mature' // sprout, growing, mature
+        const sizeMap = { sprout: 6, growing: 10, mature: 14 }
+        const r = sizeMap[stage] ?? 12
+        // Main clump
+        ctx.fillStyle = '#3d7a3d'
+        ctx.beginPath()
+        ctx.arc(x, y, r, 0, Math.PI * 2)
+        ctx.fill()
+        // Textured edge
+        ctx.strokeStyle = '#2e6a2e'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.arc(x, y, r - 1, 0, Math.PI * 2)
+        ctx.stroke()
+        // Berries if food-bearing
+        if (this.hasTag(bush, 'food')) {
+            ctx.fillStyle = '#b03060' // berry accent
+            for (let i = 0; i < 3; i++) {
+                const ang = (i * 2 * Math.PI) / 3
+                ctx.beginPath()
+                ctx.arc(x + Math.cos(ang) * (r * 0.5), y + Math.sin(ang) * (r * 0.5), 2, 0, Math.PI * 2)
+                ctx.fill()
+            }
+        }
+    }
+
+    renderTree(tree) {
+        const ctx = this.context
+        const x = tree.x
+        const y = tree.y
+        const stage = tree.stage || 'adult' // seedling, sapling, adult
+        // Sizes by stage
+        const canopyMap = { seedling: 6, sapling: 10, adult: 16 }
+        const trunkHMap = { seedling: 6, sapling: 10, adult: 16 }
+        const trunkWMap = { seedling: 2, sapling: 3, adult: 4 }
+        const canopyR = canopyMap[stage] ?? 14
+        const trunkH = trunkHMap[stage] ?? 14
+        const trunkW = trunkWMap[stage] ?? 3
+        // Trunk
+        ctx.fillStyle = '#8B5A2B'
+        ctx.fillRect(x - trunkW / 2, y, trunkW, trunkH)
+        // Canopy
+        ctx.fillStyle = '#2e8b57'
+        ctx.beginPath()
+        ctx.arc(x, y, canopyR, 0, Math.PI * 2)
+        ctx.fill()
+        // Food-bearing accent (fruit) if tagged as food
+        if (this.hasTag(tree, 'food')) {
+            ctx.fillStyle = '#ffbf00'
+            for (let i = 0; i < 4; i++) {
+                const ang = (i * 2 * Math.PI) / 4 + 0.5
+                ctx.beginPath()
+                ctx.arc(x + Math.cos(ang) * (canopyR * 0.6), y + Math.sin(ang) * (canopyR * 0.4), 2, 0, Math.PI * 2)
+                ctx.fill()
+            }
         }
     }
     

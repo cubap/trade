@@ -107,6 +107,43 @@ class World {
     queryEntitiesInRadius(x, y, radius) {
         return this.getNearbyEntities(x, y, radius)
     }
+
+    // Run N ticks instantly (no real-time gating) to stabilize simulation
+    fastForwardTicks(ticks) {
+        const entitiesToRemove = []
+        for (let i = 0; i < ticks; i++) {
+            // Advance clock tick without timing
+            this.clock.currentTick++
+            const currentTick = this.clock.currentTick
+
+            // Process scheduled actions for this tick
+            this.actionQueue.processTick(currentTick)
+
+            // Update all entities (minimal overhead, no logging)
+            for (const [id, entity] of this.entitiesMap.entries()) {
+                const oldX = entity.x
+                const oldY = entity.y
+                const alive = entity.update(currentTick)
+                if (alive === false) {
+                    entitiesToRemove.push(id)
+                    continue
+                }
+                this.keepEntityInBounds(entity)
+                if (entity.x !== oldX || entity.y !== oldY) {
+                    this.chunkManager.updateEntityChunk(entity, oldX, oldY)
+                }
+            }
+
+            // Remove dead this tick
+            if (entitiesToRemove.length) {
+                for (const id of entitiesToRemove.splice(0)) {
+                    const e = this.entitiesMap.get(id)
+                    if (e?.currentChunk) e.currentChunk.removeEntity(e)
+                    this.entitiesMap.delete(id)
+                }
+            }
+        }
+    }
 }
 
 export default World

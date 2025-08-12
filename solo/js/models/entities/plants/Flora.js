@@ -218,4 +218,20 @@ export class Grass extends Plant {
     handleTrampling() {
         // Reduce population for trampling (not implemented)
     }
+
+    canConsume() {
+        // Edible when population is above a minimal threshold
+        return (this.population ?? 0) > 0 && !this.depleted
+    }
+
+    consume(amount = 5) {
+        if (!this.canConsume()) return 0
+        const take = Math.min(this.population, Math.max(1, Math.floor(amount)))
+        this.population -= take
+        if (this.population <= 0) {
+            this.population = 0
+            this.depleted = true
+        }
+        return take
+    }
 }

@@ -77,6 +77,11 @@ class CanvasRenderer {
     setFollowEntity(entity) {
         this.camera.setFollowEntity(entity)
     }
+
+    // Allow external callers to set zoom to show a radius around the target
+    setZoomToShowRadius(radius, marginFactor) {
+        this.camera.setZoomToShowRadius(radius, marginFactor)
+    }
     
     // Delegation methods for perception
     get perceptionMode() { return this.perception.perceptionMode }

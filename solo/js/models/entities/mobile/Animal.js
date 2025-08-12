@@ -977,33 +977,25 @@ class Animal extends MobileEntity {
         return quadrantY * quadrantHeight + quadrantHeight / 2
     }
 
-    // Override update to include pregnancy and reproduction
+    // Override update to include pregnancy and ensure leaving cover when behavior changes
     update(tick) {
-        // If our behavior is changing from resting, leave any cover
-        if (this.behaviorState === 'resting') {
-            const oldBehavior = this.behaviorState
-            
-            // Call parent update which will also call move()
-            const result = super.update(tick)
-            
-            // If behavior changed from resting, leave cover
-            if (oldBehavior === 'resting' && this.behaviorState !== 'resting') {
-                this.leaveCover()
-            }
-            
-            return result
-        }
-        
-        // Pregnancy/egg laying
+        // Pregnancy/egg laying proceeds regardless of behavior
         if (this.isPregnant) {
             this.pregnancyTimer--
             if (this.pregnancyTimer <= 0) {
                 this.layEggs()
             }
         }
-        
-        // Standard update otherwise, which will also handle movement
-        return super.update(tick)
+
+        const wasResting = this.behaviorState === 'resting'
+        const result = super.update(tick)
+
+        // If we were resting and behavior changed, leave cover
+        if (wasResting && this.behaviorState !== 'resting') {
+            this.leaveCover()
+        }
+
+        return result
     }
     
     // Reproduction methods
