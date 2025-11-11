@@ -1,6 +1,8 @@
 import MobileEntity from './MobileEntity.js'
 import PawnNeeds from './PawnNeeds.js'
 import PawnGoals from './PawnGoals.js'
+import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
+import { emitUnlocks } from '../../skills/UnlockEvents.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -211,6 +213,8 @@ class Pawn extends MobileEntity {
             const gathered = resource.gather(1)
             if (gathered) {
                 this.inventory.push(gathered)
+                // Examination-based learning: require interaction with the gathered item
+                this.examineItem?.(gathered)
             }
             
             // Apply rewards
@@ -228,6 +232,10 @@ class Pawn extends MobileEntity {
     
     interactWithTarget(target, goal) {
         this.behaviorState = 'socializing'
+        // Observation requires interaction: learn a bit about what we directly engage with
+        if (target) {
+            this.observeInteraction?.(target)
+        }
         
         // Basic interaction logic
         if (goal.completionReward) {
@@ -328,6 +336,88 @@ class Pawn extends MobileEntity {
         this.increaseSkill(skill, amount)
     }
 
+    // --- Interaction-based observation and examination helpers ---
+    observeInteraction(target, amount = 0.1) {
+        // Learn based on what we interacted with
+        const tags = target?.tags
+        const subtype = target?.subtype
+        // Interacting with plants improves herbalism slightly
+        if ((Array.isArray(tags) ? tags.includes('plant') : (typeof tags?.has === 'function' ? tags.has('plant') : false)) || subtype === 'plant') {
+            this.increaseSkill('herbalism', amount)
+        }
+        // Interacting with structures (e.g., school) improves planning/cartography a bit
+        if ((Array.isArray(tags) ? tags.includes('structure') : (typeof tags?.has === 'function' ? tags.has('structure') : false)) || subtype === 'structure') {
+            this.increaseSkill('planning', amount * 0.8)
+            this.increaseSkill('cartography', amount * 0.4)
+        }
+        // Interacting with another pawn improves social skills slightly
+        if (subtype === 'pawn') {
+            this.increaseSkill('storytelling', amount * 0.5)
+            this.increaseSkill('convincing', amount * 0.3)
+            this.increaseSkill('manipulation', amount * 0.2)
+        }
+        // Light unlock evaluation on interaction
+        this.evaluateSkillUnlocks?.()
+    }
+
+    examineItem(item, amount = 0.2) {
+        if (!item) return
+        // Track exposure to item types to support unlocks later
+        const type = item.type ?? item.name ?? 'unknown'
+        this.itemExposure = this.itemExposure ?? {}
+        this.itemExposure[type] = (this.itemExposure[type] ?? 0) + 1
+
+        // Heuristics: herbs/food/water inform herbalism/alchemy/medicine
+        const tags = item.tags ?? []
+        const has = t => Array.isArray(tags) ? tags.includes(t) : (typeof tags?.has === 'function' ? tags.has(t) : false)
+        if (has('herb') || /herb|leaf|flower/i.test(String(type))) {
+            this.increaseSkill('herbalism', amount)
+        }
+        if (has('potion') || /potion|elixir/i.test(String(type))) {
+            this.increaseSkill('alchemy', amount)
+        }
+        if (has('medical') || has('bandage') || /salve|bandage|medicine/i.test(String(type))) {
+            this.increaseSkill('medicine', amount * 0.8)
+        }
+        // Food/drink inform basic survival
+        if (has('food') || item.type === 'food') {
+            this.increaseSkill('planning', amount * 0.2)
+        }
+        if (has('drink') || item.type === 'drink' || has('water')) {
+            this.increaseSkill('planning', amount * 0.2)
+        }
+
+        this.addItemExperience?.(type, 1)
+        this.evaluateSkillUnlocks?.()
+    }
+
+    observeStructure(structure, amount = 0.1) {
+        if (!structure) return
+        const tags = structure.tags
+        const isSchool = Array.isArray(tags) ? tags.includes('school') : (typeof tags?.has === 'function' ? tags.has('school') : false)
+        const isStructure = Array.isArray(tags) ? tags.includes('structure') : (typeof tags?.has === 'function' ? tags.has('structure') : false)
+        // Track exposure by structure tags
+        this.structureExposure = this.structureExposure ?? {}
+        if (isStructure) this.structureExposure.structure = (this.structureExposure.structure ?? 0) + 1
+        if (isSchool) this.structureExposure.school = (this.structureExposure.school ?? 0) + 1
+        if (isStructure) {
+            this.increaseSkill('planning', amount)
+            if (isSchool) {
+                // Studying environment nudges cartography/intuition a bit
+                this.increaseSkill('cartography', amount * 0.5)
+                this.increaseSkill('intuition', amount * 0.2)
+            }
+        }
+        this.evaluateSkillUnlocks?.()
+    }
+
+    examineInventoryDuringStudy(amount = 0.02) {
+        if (!this.inventory?.length) return
+        for (const item of this.inventory) {
+            this.examineItem(item, amount)
+        }
+    }
+
     passiveSkillTick() {
         // Example: exploring increases orienteering, guarding increases composure
         if (this.behaviorState === 'exploring') {
@@ -337,6 +427,7 @@ class Pawn extends MobileEntity {
             this.increaseSkill('composure', 0.1)
         }
         // Add more passive skill checks as needed
+        // Observation now requires interaction/training, not mere proximity
     }
 
     decaySkills(tick) {
@@ -446,6 +537,60 @@ class Pawn extends MobileEntity {
         // Optionally, trigger events or unlock features as planning increases
     }
 
+    scheduleNextDay() {
+        // Build a basic next-day plan into the goal queue based on planning level
+        const planning = this.skills.planning ?? 0
+        if (planning < 1) return
+        // Ensure survival tasks are present
+        const base = [
+            { type: 'find_water', priority: 2, description: 'Morning drink', targetType: 'resource', targetTags: ['water'], action: 'consume', completionReward: { thirst: -30 } },
+            { type: 'find_food', priority: 2, description: 'Breakfast', targetType: 'resource', targetTags: ['food'], action: 'consume', completionReward: { hunger: -25 } }
+        ]
+        // Add enrichment based on skills
+        if (planning >= 2) base.push({ type: 'explore', priority: 1, description: 'Survey nearby', targetType: 'location', action: 'explore' })
+        if (planning >= 3) base.push({ type: 'study', priority: 1, description: 'Study at school', targetType: 'activity', action: 'learn', duration: 60 })
+        // Prepend to tomorrow queue if empty
+        this.goals.goalQueue.push(...base)
+    }
+
+    evaluateSkillUnlocks() {
+        // Data-driven unlocks using SKILL_UNLOCKS table
+        this.unlocked = this.unlocked ?? { skills: new Set(), goals: new Set(), recipes: new Set() }
+        const newly = { skills: [], goals: [], recipes: [] }
+        for (const unlock of SKILL_UNLOCKS) {
+            // Skip if all unlock targets already granted
+            const already = (
+                (unlock.unlocks?.skills ?? []).every(sk => this.unlocked.skills.has(sk)) &&
+                (unlock.unlocks?.goals ?? []).every(g => this.unlocked.goals.has(g)) &&
+                (unlock.unlocks?.recipes ?? []).every(r => this.unlocked.recipes.has(r))
+            )
+            if (already) continue
+            if (isUnlockSatisfied(this, unlock)) {
+                for (const sk of (unlock.unlocks?.skills ?? [])) {
+                    if (!this.unlocked.skills.has(sk)) {
+                        this.unlocked.skills.add(sk)
+                        newly.skills.push(sk)
+                    }
+                }
+                for (const g of (unlock.unlocks?.goals ?? [])) {
+                    if (!this.unlocked.goals.has(g)) {
+                        this.unlocked.goals.add(g)
+                        newly.goals.push(g)
+                    }
+                }
+                for (const r of (unlock.unlocks?.recipes ?? [])) {
+                    if (!this.unlocked.recipes.has(r)) {
+                        this.unlocked.recipes.add(r)
+                        newly.recipes.push(r)
+                    }
+                }
+            }
+        }
+        if (newly.skills.length || newly.goals.length || newly.recipes.length) {
+            emitUnlocks({ pawn: this, ...newly })
+        }
+    }
+
     applyIdlePlanner(tick) {
         if (!this.idlePlan?.enabled) return
         if (this.goals.currentGoal) return
@@ -514,6 +659,11 @@ class Pawn extends MobileEntity {
             urgency: mostUrgent.urgency,
             inventoryCount: this.inventory.length
         }
+    }
+
+    setPriorityBias(bias) {
+        // bias: { nextGoal?: {type, description, targetType, ...} }
+        this.priorityBias = bias
     }
     
     // Method to set world reference for resource finding
@@ -685,33 +835,68 @@ class Pawn extends MobileEntity {
         return null
     }
 
-    craft(recipe, ingredients) {
-        // Attempt to craft an item using a recipe and ingredients
-        // Recipe: { name, requiredSkills, requiredExperience, result, qualityBase }
-        // Ingredients: array of items
-        let skillOk = true
-        let expOk = true
-        for (const req of recipe.requiredSkills ?? []) {
-            if ((this.skills[req.skill] ?? 0) < req.level) skillOk = false
+    craft(recipe) {
+        // Modern craft using Recipe data structure from Recipes.js
+        // Check skills
+        for (const [skill, level] of Object.entries(recipe.requiredSkills ?? {})) {
+            if ((this.skills?.[skill] ?? 0) < level) {
+                console.warn(`${this.name} lacks skill ${skill} (need ${level})`)
+                return null
+            }
         }
-        for (const req of recipe.requiredExperience ?? []) {
-            if ((this.getItemExperience(req.item) ?? 0) < req.amount) expOk = false
+
+        // Collect and remove required items from inventory
+        const consumed = []
+        for (const req of recipe.requiredItems) {
+            const items = this.inventory.filter(item => item.type === req.type)
+            if (items.length < req.count) {
+                console.warn(`${this.name} lacks ${req.type} (need ${req.count}, have ${items.length})`)
+                // Return previously consumed items
+                for (const item of consumed) this.inventory.push(item)
+                return null
+            }
+            // Remove required count
+            for (let i = 0; i < req.count; i++) {
+                const item = items[i]
+                this.removeItemFromInventory(item.id)
+                consumed.push(item)
+            }
         }
-        // If not skilled or experienced, allow but with low quality
-        let quality = recipe.qualityBase ?? 1
-        if (!skillOk || !expOk) quality *= 0.5
-        else quality += (this.skills[recipe.primarySkill] ?? 0) * 0.05
-        // Use up ingredients
-        for (const ing of ingredients) {
-            this.removeItemFromInventory(ing.id)
+
+        // Calculate quality based on primary skill
+        const primarySkill = this.skills?.[recipe.primarySkill] ?? 0
+        const baseQuality = recipe.output.baseQuality ?? 1
+        const skillBonus = primarySkill * 0.1
+        const quality = baseQuality + skillBonus + (Math.random() * 0.3 - 0.15)
+
+        // Create output item
+        const output = {
+            ...recipe.output,
+            id: `${recipe.id}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            quality: Math.max(0.5, quality),
+            craftedBy: this.id,
+            craftedAt: this.world?.clock?.currentTick ?? 0
         }
-        // Gain experience with used items
-        for (const ing of ingredients) {
-            this.addItemExperience(ing.type)
+
+        // Track crafted counts for unlock conditions
+        this.craftedCounts = this.craftedCounts ?? {}
+        this.craftedCounts[recipe.id] = (this.craftedCounts[recipe.id] ?? 0) + 1
+
+        // Gain item experience for consumed materials
+        for (const item of consumed) {
+            this.addItemExperience(item.type, 0.5)
         }
-        // Increase skill
-        if (recipe.primarySkill) this.increaseSkill(recipe.primarySkill, 0.5)
-        return { ...recipe.result, quality }
+
+        // Gain skill experience
+        if (recipe.primarySkill && recipe.experience) {
+            this.increaseSkill(recipe.primarySkill, recipe.experience)
+        }
+
+        // Evaluate unlocks after crafting
+        this.evaluateSkillUnlocks?.()
+
+        console.log(`${this.name} crafted ${output.name} (quality: ${output.quality.toFixed(2)})`)
+        return output
     }
 
     getItemExperience(itemType) {

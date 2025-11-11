@@ -2,6 +2,7 @@ import World from './core/World.js'
 import CanvasRenderer from './rendering/CanvasRenderer.js'
 import setupControls from './ui/controls.js'
 import { Animal, Pawn } from './models/entities/index.js'
+import { School } from './models/entities/immobile/index.js'
 // Focus on world simulation (no pawns, animals OK)
 import FloraGenerator from './core/FloraGenerator.js'
 import WaterGenerator from './core/WaterGenerator.js'
@@ -60,6 +61,40 @@ function seedAnimals() {
     world.addEntity(fox)
 }
 
+// Seed harvestable crafting resources (rocks, sticks, fiber plants)
+async function seedCraftingResources() {
+    const { Rock, Stick, FiberPlant } = await import('./models/entities/resources/index.js')
+    
+    // Scatter rocks (30-40)
+    const rockCount = 30 + Math.floor(Math.random() * 10)
+    for (let i = 0; i < rockCount; i++) {
+        const x = Math.round(Math.random() * world.width)
+        const y = Math.round(Math.random() * world.height)
+        const rock = new Rock(`rock_${i}`, x, y)
+        world.addEntity(rock)
+    }
+    
+    // Scatter sticks (40-60, more common)
+    const stickCount = 40 + Math.floor(Math.random() * 20)
+    for (let i = 0; i < stickCount; i++) {
+        const x = Math.round(Math.random() * world.width)
+        const y = Math.round(Math.random() * world.height)
+        const stick = new Stick(`stick_${i}`, x, y)
+        world.addEntity(stick)
+    }
+    
+    // Fiber plants in clusters (20-30)
+    const fiberCount = 20 + Math.floor(Math.random() * 10)
+    for (let i = 0; i < fiberCount; i++) {
+        const x = Math.round(Math.random() * world.width)
+        const y = Math.round(Math.random() * world.height)
+        const fiber = new FiberPlant(`fiber_${i}`, x, y)
+        world.addEntity(fiber)
+    }
+    
+    console.log(`Seeded ${rockCount} rocks, ${stickCount} sticks, ${fiberCount} fiber plants`)
+}
+
 // Simple overlay to show presimulation progress
 function createPreSimOverlay() {
     const overlay = document.createElement('div')
@@ -113,7 +148,7 @@ function preSimulateAndStart() {
         }
     }
 
-    function step() {
+    async function step() {
         const n = Math.min(batch, totalTicks - processed)
         if (n > 0) {
             world.fastForwardTicks(n)
@@ -134,6 +169,7 @@ function preSimulateAndStart() {
             if (deltaTicks > 0) world.fastForwardTicks(deltaTicks)
 
             seedAnimals()
+            await seedCraftingResources()
             // Add one player pawn and auto-follow
             const spawnX = Math.round(world.width * 0.5)
             const spawnY = Math.round(world.height * 0.5)
@@ -143,6 +179,9 @@ function preSimulateAndStart() {
             // Zoom to pawn perception distance (use detection as proxy)
             const perception = player.traits?.detection ?? 100
             renderer.camera.setZoomToShowRadius?.(perception, 0.85)
+            // Place a school structure nearby for midlevel skill development
+            const school = new School('school_1', 'School', spawnX + 60, spawnY + 40)
+            world.addEntity(school)
             console.log(`Pre-sim complete in ${(performance.now() - start).toFixed(0)} ms`)
             overlay.remove()
             startMainLoop()
