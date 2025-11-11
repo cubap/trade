@@ -180,6 +180,27 @@ class EntityRenderer {
                 this.context.arc(x, y, r, 0, Math.PI * 2)
                 this.context.stroke()
             }
+        } else if (this.hasTag(entity, 'school')) {
+            // School structure: stylized building with roof
+            const w = size * 2
+            const h = size * 1.6
+            this.context.fillStyle = '#6b8e23'
+            this.context.fillRect(x - w/2, y - h/2, w, h)
+            // Roof
+            this.context.fillStyle = '#556b2f'
+            this.context.beginPath()
+            this.context.moveTo(x - w/2, y - h/2)
+            this.context.lineTo(x, y - h/2 - size * 0.6)
+            this.context.lineTo(x + w/2, y - h/2)
+            this.context.closePath()
+            this.context.fill()
+            // Occupancy indicator
+            if (entity.occupants?.size) {
+                this.context.fillStyle = '#FFD700'
+                this.context.font = '8px Arial'
+                this.context.textAlign = 'center'
+                this.context.fillText(String(entity.occupants.size), x, y + 4)
+            }
         } else if (this.hasTag(entity, 'cover')) {
             // Cover/shelter are squares
             this.context.fillRect(x - size, y - size, size * 2, size * 2)

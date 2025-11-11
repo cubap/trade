@@ -4,6 +4,7 @@ import { setupFollowControls } from './followControls.js'
 import { setupCanvasInteractions } from './canvasInteractions.js'
 import { createEntitySummary } from './entitySummary.js'
 import { setupKeyboardShortcuts } from './keyboardShortcuts.js'
+import { setUnlockListener } from '../models/skills/UnlockEvents.js'
 
 function setupControls(world, renderer) {
     const controlPanel = document.createElement('div')
@@ -140,6 +141,51 @@ function setupControls(world, renderer) {
         if (event.key.toLowerCase() === 'h') {
             helpText.style.display = helpText.style.display === 'none' ? 'block' : 'none'
         }
+    })
+
+    // --- Unlock hint UI ---
+    const unlockContainer = document.createElement('div')
+    unlockContainer.id = 'unlock-hints'
+    unlockContainer.style.cssText = `
+        position: fixed;
+        bottom: 10px;
+        right: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        z-index: 1200;
+        max-width: 240px;
+    `
+    document.body.appendChild(unlockContainer)
+
+    function pushUnlockHint(type, name) {
+        const el = document.createElement('div')
+        el.style.cssText = `
+            background: rgba(30,30,40,0.85);
+            color: #fff;
+            padding: 6px 10px;
+            border-left: 4px solid ${type === 'skill' ? '#2ecc71' : type === 'goal' ? '#3498db' : '#f1c40f'};
+            font-size: 12px;
+            font-family: monospace;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        `
+        el.textContent = `${type.toUpperCase()} unlocked: ${name}`
+        unlockContainer.appendChild(el)
+        requestAnimationFrame(() => { el.style.opacity = '1' })
+        // Auto-remove after 6s
+        setTimeout(() => {
+            el.style.opacity = '0'
+            setTimeout(() => el.remove(), 500)
+        }, 6000)
+    }
+
+    setUnlockListener(({ skills = [], goals = [], recipes = [], pawn }) => {
+        for (const sk of skills) pushUnlockHint('skill', sk)
+        for (const g of goals) pushUnlockHint('goal', g)
+        for (const r of recipes) pushUnlockHint('recipe', r)
     })
     
     return { isPaused: () => isPaused, setPaused }

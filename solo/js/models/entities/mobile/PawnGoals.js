@@ -24,6 +24,13 @@ class PawnGoals {
             this.addLongTermGoals()
         }
         
+        // Allow UI-set bias to inject a next goal once
+        if (this.pawn.priorityBias?.nextGoal) {
+            this.goalQueue.unshift({ ...this.pawn.priorityBias.nextGoal })
+            // one-shot bias
+            this.pawn.priorityBias.nextGoal = null
+        }
+
         // Set current goal if none exists
         if (!this.currentGoal && this.goalQueue.length > 0) {
             this.currentGoal = this.goalQueue.shift()
@@ -106,6 +113,17 @@ class PawnGoals {
                     duration: 15,
                     completionReward: { purpose: -35 }
                 })
+                // Add crafting as a purpose-fulfilling activity
+                if (this.pawn.unlocked?.recipes?.size > 0) {
+                    goals.push({
+                        type: 'craft_item',
+                        priority: priority - 1,
+                        description: 'Craft something useful',
+                        targetType: 'activity',
+                        action: 'craft',
+                        completionReward: { purpose: -25, knowledge: -10 }
+                    })
+                }
                 break
                 
             case 'knowledge':
@@ -182,7 +200,13 @@ class PawnGoals {
             'explore': 'exploring',
             'build_structure': 'building',
             'establish_trade': 'trading',
-            'map_territory': 'surveying'
+            'map_territory': 'surveying',
+            'train_skill': 'teaching',
+            'apprentice_skill': 'learning',
+            'craft_item': 'crafting',
+            'craft_cordage': 'crafting',
+            'craft_sharp_stone': 'crafting',
+            'craft_poultice': 'crafting'
         }
         
         return behaviorMap[goal.type] || 'idle'
@@ -308,6 +332,9 @@ class PawnGoals {
             }
         }
         
+        // Evaluate skill unlocks after goal completion
+        this.pawn.evaluateSkillUnlocks?.()
+
         // Store completed goal
         this.completedGoals.push({
             ...goal,
@@ -321,6 +348,10 @@ class PawnGoals {
             this.startGoal(this.currentGoal)
         } else {
             this.pawn.behaviorState = 'idle'
+            // If rest completed, schedule next day plan
+            if (goal.type === 'rest') {
+                this.pawn.scheduleNextDay?.()
+            }
         }
     }
     
@@ -338,6 +369,11 @@ class PawnGoals {
                 
                 if (distance <= (this.pawn.size + goal.target.size + 5)) {
                     goal.startTime = this.pawn.world.clock.currentTick
+                    // Observation on entering/resting at a structure (e.g., school)
+                    if (!goal._observedStructure) {
+                        this.pawn.observeStructure?.(goal.target)
+                        goal._observedStructure = true
+                    }
                 }
             }
         }
@@ -346,6 +382,80 @@ class PawnGoals {
         if (goal.type === 'study') {
             // Passive studying increases planning and knowledge-adjacent skills
             this.pawn.useSkill('planning', 0.02)
+            // Examine carried items while studying to convert exposure into insight
+            this.pawn.examineInventoryDuringStudy?.(0.01)
+        }
+
+        // Crafting goals: attempt to craft the specified item
+        if (goal.type.startsWith('craft_') || goal.type === 'craft_item') {
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+            
+            // Import recipes dynamically
+            import('../../crafting/Recipes.js').then(module => {
+                const { getRecipe, getAvailableRecipes, canCraftRecipe } = module
+                
+                let recipe = null
+                if (goal.recipeId) {
+                    recipe = getRecipe(goal.recipeId)
+                } else if (goal.type !== 'craft_item') {
+                    // Extract recipe id from goal type (e.g., craft_cordage -> cordage)
+                    const recipeId = goal.type.replace('craft_', '')
+                    recipe = getRecipe(recipeId)
+                } else {
+                    // Pick first available recipe
+                    const available = getAvailableRecipes(this.pawn).filter(r => canCraftRecipe(this.pawn, r))
+                    recipe = available[0]
+                }
+                
+                if (recipe && canCraftRecipe(this.pawn, recipe)) {
+                    // Wait for craft time
+                    if (elapsed >= (recipe.craftTime ?? 20)) {
+                        const crafted = this.pawn.craft(recipe)
+                        if (crafted) {
+                            this.pawn.addItemToInventory(crafted)
+                            this.completeCurrentGoal()
+                        }
+                    }
+                } else if (elapsed > 100) {
+                    // Give up after 100 ticks if can't craft
+                    console.warn(`${this.pawn.name} cannot craft, abandoning goal`)
+                    this.completeCurrentGoal()
+                }
+            }).catch(err => {
+                console.error('Failed to load recipes:', err)
+                this.completeCurrentGoal()
+            })
+        }
+
+        // Training/apprenticing: both must be near each other; grant per-tick gains
+        if (goal.type === 'train_skill' || goal.type === 'apprentice_skill') {
+            const target = goal.target
+            if (target && target.subtype === 'pawn') {
+                const dx = this.pawn.x - target.x
+                const dy = this.pawn.y - target.y
+                const close = (dx*dx + dy*dy) <= (this.pawn.size + target.size + 10) ** 2
+                if (close) {
+                    const skill = goal.skill || 'manipulation'
+                    if (goal.type === 'train_skill') {
+                        this.pawn.trainSkill(skill, target, 0.05)
+                    } else {
+                        this.pawn.apprenticeSkill(skill, target, 0.04)
+                    }
+                    if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+                    // Auto-complete after duration if specified
+                    if (goal.duration) {
+                        const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+                        if (elapsed >= goal.duration) {
+                            this.completeCurrentGoal()
+                        }
+                    }
+                } else {
+                    // Move towards target if not close
+                    this.pawn.nextTargetX = target.x
+                    this.pawn.nextTargetY = target.y
+                }
+            }
         }
     }
 }
