@@ -6,6 +6,11 @@ import { School } from './models/entities/immobile/index.js'
 // Focus on world simulation (no pawns, animals OK)
 import FloraGenerator from './core/FloraGenerator.js'
 import WaterGenerator from './core/WaterGenerator.js'
+import RECIPES from './models/crafting/Recipes.js'
+import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
+
+// Initialize goal planner with recipes
+injectRecipes(RECIPES)
 
 // Create a larger world
 const world = new World(2000, 2000)
