@@ -1,9 +1,12 @@
+import { decomposeGoal, isGoalReachable } from './GoalPlanner.js'
+
 class PawnGoals {
     constructor(pawn) {
         this.pawn = pawn
         this.currentGoal = null
         this.goalQueue = []
         this.completedGoals = []
+        this.deferredGoals = [] // Goals on hold due to missing prerequisites
     }
     
     evaluateAndSetGoals() {
@@ -24,6 +27,17 @@ class PawnGoals {
             this.addLongTermGoals()
         }
         
+        // Re-evaluate deferred goals periodically
+        if (this.deferredGoals.length > 0 && Math.random() < 0.1) {
+            for (const deferred of [...this.deferredGoals]) {
+                const check = isGoalReachable(this.pawn, deferred)
+                if (check.reachable) {
+                    this.deferredGoals = this.deferredGoals.filter(g => g !== deferred)
+                    this.goalQueue.push(deferred)
+                }
+            }
+        }
+        
         // Allow UI-set bias to inject a next goal once
         if (this.pawn.priorityBias?.nextGoal) {
             this.goalQueue.unshift({ ...this.pawn.priorityBias.nextGoal })
@@ -34,7 +48,7 @@ class PawnGoals {
         // Set current goal if none exists
         if (!this.currentGoal && this.goalQueue.length > 0) {
             this.currentGoal = this.goalQueue.shift()
-            this.startGoal(this.currentGoal)
+            this.planAndStartGoal(this.currentGoal)
         }
     }
     
@@ -145,6 +159,12 @@ class PawnGoals {
         // Add some aspirational goals when basic needs are met
         const longTermGoals = [
             {
+                type: 'gather_materials',
+                priority: 1,
+                description: 'Gather crafting materials',
+                completionReward: { purpose: -15, knowledge: -5 }
+            },
+            {
                 type: 'build_structure',
                 priority: 1,
                 description: 'Build a permanent structure',
@@ -172,9 +192,66 @@ class PawnGoals {
             }
         ]
         
+        // Prioritize gathering if inventory is low
+        if ((this.pawn.inventory?.length ?? 0) < 3) {
+            longTermGoals[0].priority = 2
+        }
+        
         // Add 1-2 random long-term goals
         const selected = longTermGoals.slice(0, 1 + Math.floor(Math.random() * 2))
         this.goalQueue.push(...selected)
+    }
+    
+    planAndStartGoal(goal) {
+        // Check if goal is reachable
+        const reachability = isGoalReachable(this.pawn, goal)
+        
+        if (!reachability.reachable) {
+            console.log(`${this.pawn.name} deferring goal "${goal.description}": ${reachability.reason}`)
+            
+            // Handle unreachable goals
+            if (reachability.needsExploration) {
+                // Trigger exploration to find resources
+                this.goalQueue.unshift({
+                    type: 'explore',
+                    priority: goal.priority + 1,
+                    description: 'Explore to find resources',
+                    targetType: 'location',
+                    action: 'explore',
+                    parentGoal: goal.type
+                })
+                this.deferredGoals.push(goal)
+                this.currentGoal = this.goalQueue.shift()
+                this.startGoal(this.currentGoal)
+            } else if (reachability.canResearch) {
+                // Trigger pondering/research
+                console.log(`${this.pawn.name} needs to research solution for ${goal.description}`)
+                this.deferredGoals.push(goal)
+                // Maybe add a "ponder" or "study" goal here
+            } else {
+                // Defer for later
+                this.deferredGoals.push(goal)
+            }
+            return
+        }
+        
+        // Decompose goal into subgoals
+        const subgoals = decomposeGoal(this.pawn, goal)
+        
+        if (subgoals.length > 0) {
+            console.log(`${this.pawn.name} decomposing "${goal.description}" into ${subgoals.length} subgoals`)
+            // Insert subgoals before main goal
+            this.goalQueue.unshift(goal)
+            for (let i = subgoals.length - 1; i >= 0; i--) {
+                this.goalQueue.unshift(subgoals[i])
+            }
+            // Start first subgoal
+            this.currentGoal = this.goalQueue.shift()
+            this.startGoal(this.currentGoal)
+        } else {
+            // No prerequisites, start goal directly
+            this.startGoal(goal)
+        }
     }
     
     startGoal(goal) {
@@ -186,6 +263,10 @@ class PawnGoals {
             this.findTargetForGoal(goal)
         } else if (goal.targetType === 'location') {
             this.selectExplorationTarget()
+        } else if (goal.targetLocation) {
+            // Specific location target from memory
+            this.pawn.nextTargetX = goal.targetLocation.x
+            this.pawn.nextTargetY = goal.targetLocation.y
         }
     }
     
@@ -206,7 +287,10 @@ class PawnGoals {
             'craft_item': 'crafting',
             'craft_cordage': 'crafting',
             'craft_sharp_stone': 'crafting',
-            'craft_poultice': 'crafting'
+            'craft_poultice': 'crafting',
+            'gather_materials': 'gathering',
+            'gather_specific': 'gathering',
+            'search_resource': 'exploring'
         }
         
         return behaviorMap[goal.type] || 'idle'
@@ -454,6 +538,246 @@ class PawnGoals {
                     // Move towards target if not close
                     this.pawn.nextTargetX = target.x
                     this.pawn.nextTargetY = target.y
+                }
+            }
+        }
+
+        // Gather specific resource from known location
+        if (goal.type === 'gather_specific') {
+            if (!goal.gatheredCount) goal.gatheredCount = 0
+            
+            // Navigate to target location
+            if (goal.targetLocation) {
+                const dx = this.pawn.x - goal.targetLocation.x
+                const dy = this.pawn.y - goal.targetLocation.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist > 50) {
+                    // Move towards remembered location
+                    this.pawn.nextTargetX = goal.targetLocation.x
+                    this.pawn.nextTargetY = goal.targetLocation.y
+                } else {
+                    // Search nearby for the resource
+                    const entities = Array.from(this.pawn.world.entitiesMap.values())
+                    const nearby = entities.filter(e => {
+                        if (e.type !== goal.targetResourceType) return false
+                        const edx = e.x - this.pawn.x
+                        const edy = e.y - this.pawn.y
+                        return Math.sqrt(edx * edx + edy * edy) <= 80
+                    })
+                    
+                    if (nearby.length > 0) {
+                        // Find closest resource
+                        nearby.sort((a, b) => {
+                            const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
+                            const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
+                            return distA - distB
+                        })
+                        
+                        const resource = nearby[0]
+                        const rdx = this.pawn.x - resource.x
+                        const rdy = this.pawn.y - resource.y
+                        const rdist = Math.sqrt(rdx * rdx + rdy * rdy)
+                        
+                        if (rdist <= (this.pawn.size + resource.size + 5)) {
+                            // Gather the resource
+                            if (resource.gather) {
+                                const gathered = resource.gather(this.pawn)
+                                if (gathered) {
+                                    this.pawn.addItemToInventory(gathered)
+                                    goal.gatheredCount++
+                                    console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
+                                    
+                                    // Update memory with fresh location
+                                    this.pawn.rememberResource(resource)
+                                    
+                                    // Check if we've gathered enough
+                                    if (goal.gatheredCount >= (goal.count || 1)) {
+                                        console.log(`${this.pawn.name} completed gathering ${goal.targetResourceType}`)
+                                        this.completeCurrentGoal()
+                                    } else {
+                                        // Look for another resource nearby first
+                                        const moreNearby = nearby.filter(e => 
+                                            e !== resource && 
+                                            Math.sqrt((e.x - this.pawn.x) ** 2 + (e.y - this.pawn.y) ** 2) <= 80
+                                        )
+                                        
+                                        if (moreNearby.length > 0) {
+                                            // Go to next closest resource
+                                            this.pawn.nextTargetX = moreNearby[0].x
+                                            this.pawn.nextTargetY = moreNearby[0].y
+                                        } else {
+                                            // Search for more in memory
+                                            const memories = this.pawn.recallResourcesByType(goal.targetResourceType)
+                                            if (memories.length > 0) {
+                                                // Go to next remembered location
+                                                goal.targetLocation = { x: memories[0].x, y: memories[0].y }
+                                            } else {
+                                                // Need to search for more
+                                                goal.type = 'search_resource'
+                                                goal.targetLocation = null
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Move towards resource
+                            this.pawn.nextTargetX = resource.x
+                            this.pawn.nextTargetY = resource.y
+                        }
+                    } else {
+                        // Resource not found at remembered location, search memory for another location
+                        const memories = this.pawn.recallResourcesByType(goal.targetResourceType)
+                        if (memories.length > 0) {
+                            // Try next remembered location
+                            goal.targetLocation = { x: memories[0].x, y: memories[0].y }
+                            console.log(`${this.pawn.name} trying another remembered ${goal.targetResourceType} location`)
+                        } else {
+                            // No more known locations, switch to search
+                            console.log(`${this.pawn.name} no more known ${goal.targetResourceType} locations, searching...`)
+                            goal.type = 'search_resource'
+                            goal.targetLocation = null
+                        }
+                    }
+                }
+            } else {
+                // No location known, switch to search
+                goal.type = 'search_resource'
+            }
+        }
+
+        // Search for unknown resource type
+        if (goal.type === 'search_resource') {
+            // Scan nearby for the target resource type
+            const entities = Array.from(this.pawn.world.entitiesMap.values())
+            const found = entities.find(e => {
+                if (e.type !== goal.targetResourceType) return false
+                const dx = e.x - this.pawn.x
+                const dy = e.y - this.pawn.y
+                return Math.sqrt(dx * dx + dy * dy) <= 100
+            })
+            
+            if (found) {
+                console.log(`${this.pawn.name} found ${goal.targetResourceType} at (${Math.round(found.x)}, ${Math.round(found.y)})`)
+                
+                // Remember this location
+                this.pawn.rememberResource(found)
+                
+                // Switch to gather_specific with this location
+                goal.type = 'gather_specific'
+                goal.targetLocation = { x: found.x, y: found.y }
+                goal.gatheredCount = 0
+                
+                // Update behavior state and immediately navigate to resource
+                this.pawn.behaviorState = 'gathering'
+                this.pawn.nextTargetX = found.x
+                this.pawn.nextTargetY = found.y
+                
+                // Check if already close enough to gather
+                const dx = this.pawn.x - found.x
+                const dy = this.pawn.y - found.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist <= (this.pawn.size + found.size + 5) && found.gather) {
+                    // Immediately gather if close enough
+                    const gathered = found.gather(this.pawn)
+                    if (gathered) {
+                        this.pawn.addItemToInventory(gathered)
+                        goal.gatheredCount++
+                        console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
+                        
+                        // Check if done
+                        if (goal.gatheredCount >= (goal.count || 1)) {
+                            this.completeCurrentGoal()
+                        }
+                    }
+                }
+            } else {
+                // Continue exploring
+                if (!this.pawn.nextTargetX || !this.pawn.nextTargetY) {
+                    this.selectExplorationTarget()
+                }
+                
+                // Check if we're close to exploration target
+                const dx = this.pawn.x - this.pawn.nextTargetX
+                const dy = this.pawn.y - this.pawn.nextTargetY
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist < 20) {
+                    // Pick new exploration target
+                    this.selectExplorationTarget()
+                }
+            }
+        }
+
+        // Gathering materials (general): look for any harvestable resources nearby
+        if (goal.type === 'gather_materials') {
+            const entities = Array.from(this.pawn.world.entitiesMap.values())
+            const harvestable = entities.filter(e => {
+                if (!e.gather || typeof e.gather !== 'function') return false
+                const dx = e.x - this.pawn.x
+                const dy = e.y - this.pawn.y
+                return Math.sqrt(dx * dx + dy * dy) <= 100
+            })
+            
+            if (harvestable.length > 0) {
+                // Find closest harvestable
+                harvestable.sort((a, b) => {
+                    const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
+                    const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
+                    return distA - distB
+                })
+                
+                const resource = harvestable[0]
+                const dx = this.pawn.x - resource.x
+                const dy = this.pawn.y - resource.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist <= (this.pawn.size + resource.size + 5)) {
+                    // Gather the resource
+                    if (resource.gather) {
+                        const gathered = resource.gather(this.pawn)
+                        if (gathered) {
+                            this.pawn.addItemToInventory(gathered)
+                            console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/10`)
+                            
+                            // Remember this resource location
+                            this.pawn.rememberResource(resource)
+                            
+                            // Complete if inventory getting full OR if gathered enough variety
+                            if (this.pawn.inventory.length >= 10) {
+                                console.log(`${this.pawn.name} inventory full, completing gathering goal`)
+                                this.completeCurrentGoal()
+                            } else if (this.pawn.inventory.length >= 5 && Math.random() < 0.3) {
+                                // 30% chance to finish early if we have decent materials
+                                console.log(`${this.pawn.name} gathered enough materials, completing goal`)
+                                this.completeCurrentGoal()
+                            }
+                            // Continue gathering more if not done
+                        } else {
+                            console.log(`${this.pawn.name} failed to gather from ${resource.subtype || resource.type}`)
+                        }
+                    }
+                } else {
+                    // Move towards resource
+                    this.pawn.nextTargetX = resource.x
+                    this.pawn.nextTargetY = resource.y
+                }
+            } else {
+                // No harvestables nearby, explore to find more
+                if (!this.pawn.nextTargetX || !this.pawn.nextTargetY) {
+                    this.selectExplorationTarget()
+                }
+                
+                // Check if we're close to exploration target
+                const dx = this.pawn.x - (this.pawn.nextTargetX || this.pawn.x)
+                const dy = this.pawn.y - (this.pawn.nextTargetY || this.pawn.y)
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist < 20) {
+                    // Reached exploration point, pick new target
+                    this.selectExplorationTarget()
                 }
             }
         }

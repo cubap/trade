@@ -69,6 +69,10 @@ class Pawn extends MobileEntity {
         this.memoryMap = [] // List of known landmarks
         this.maxLandmarks = 5 // Can be increased by skills
 
+        // Resource memory: tracks seen resources for planning
+        this.resourceMemory = [] // { type, tags, x, y, lastSeen, amount }
+        this.maxResourceMemory = 20 // Can be increased by skills
+
         // Reputation system
         this.reputation = { alignment: 0, aggression: 0, membership: {} }
         this.reputationMemory = {} // { pawnId: { alignment, aggression, source, strength, timestamp } }
@@ -422,12 +426,44 @@ class Pawn extends MobileEntity {
         // Example: exploring increases orienteering, guarding increases composure
         if (this.behaviorState === 'exploring') {
             this.increaseSkill('orienteering', 0.1)
+            // Remember resources while exploring
+            this.observeNearbyResources()
         }
         if (this.behaviorState === 'guarding') {
             this.increaseSkill('composure', 0.1)
         }
         // Add more passive skill checks as needed
         // Observation now requires interaction/training, not mere proximity
+    }
+
+    observeNearbyResources(radius = 50) {
+        // Remember resources in perception range
+        if (!this.chunkManager) return
+        const pawnChunkX = Math.floor(this.x / this.chunkManager.chunkSize)
+        const pawnChunkY = Math.floor(this.y / this.chunkManager.chunkSize)
+        
+        let observed = 0
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const chunk = this.chunkManager.getChunk(pawnChunkX + dx, pawnChunkY + dy)
+                if (chunk) {
+                    for (const entity of chunk.entities) {
+                        const dist = Math.sqrt((this.x - entity.x) ** 2 + (this.y - entity.y) ** 2)
+                        // Check for harvestable tag OR gather method
+                        const isHarvestable = this.hasTag(entity, 'harvestable') || typeof entity.gather === 'function'
+                        if (dist <= radius && isHarvestable) {
+                            this.rememberResource(entity)
+                            observed++
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (observed > 0 && Math.random() < 0.1) {
+            // Occasional logging (10% chance to avoid spam)
+            console.log(`${this.name} observed ${observed} harvestable resources`)
+        }
     }
 
     decaySkills(tick) {
@@ -629,6 +665,18 @@ class Pawn extends MobileEntity {
             return
         }
         // Otherwise, pick an idle enrichment task
+        // Prioritize gathering if inventory is low
+        const invCount = this.inventory?.length ?? 0
+        if (invCount < 5 && Math.random() < 0.4) {
+            this.goals.currentGoal = {
+                type: 'gather_materials',
+                priority: 1,
+                description: 'Gather resources',
+                completionReward: { purpose: -10 }
+            }
+            this.goals.startGoal(this.goals.currentGoal)
+            return
+        }
         if (canStudy && this.idlePlan.tasks.includes('study')) {
             const dur = this.idlePlan.studyDuration
             this.goals.currentGoal = {
@@ -721,6 +769,85 @@ class Pawn extends MobileEntity {
                 fog: dist > range * 2
             }
         })
+    }
+
+    rememberResource(entity) {
+        // Remember resource location for future planning
+        if (!entity?.x || !entity?.y) return
+        
+        const tick = this.world?.clock?.currentTick ?? 0
+        const resourceType = entity.subtype || entity.type
+        
+        if (!resourceType) {
+            console.warn(`${this.name} tried to remember resource without type:`, entity)
+            return
+        }
+        
+        // Check if already remembered (same location and type)
+        const existing = this.resourceMemory.find(r => {
+            const dx = Math.abs(r.x - entity.x)
+            const dy = Math.abs(r.y - entity.y)
+            return dx < 5 && dy < 5 && r.type === resourceType
+        })
+        
+        if (existing) {
+            existing.lastSeen = tick
+            existing.amount = entity.amount ?? 1
+            existing.x = entity.x // Update to exact location
+            existing.y = entity.y
+            return
+        }
+        
+        // Add new memory
+        if (this.resourceMemory.length >= this.maxResourceMemory) {
+            // Remove oldest memory
+            this.resourceMemory.sort((a, b) => a.lastSeen - b.lastSeen)
+            this.resourceMemory.shift()
+        }
+        
+        this.resourceMemory.push({
+            type: resourceType,
+            tags: entity.tags ? (Array.isArray(entity.tags) ? [...entity.tags] : Array.from(entity.tags)) : [],
+            x: entity.x,
+            y: entity.y,
+            lastSeen: tick,
+            amount: entity.amount ?? 1,
+            id: entity.id
+        })
+        
+        if (Math.random() < 0.05) {
+            // Occasional logging (5% chance)
+            console.log(`${this.name} remembered ${resourceType} at (${Math.round(entity.x)}, ${Math.round(entity.y)}). Total memory: ${this.resourceMemory.length}`)
+        }
+    }
+
+    recallResourcesByType(type) {
+        // Find remembered resources matching type
+        const tick = this.world?.clock?.currentTick ?? 0
+        const maxAge = 2000 // Forget after ~2000 ticks
+        return this.resourceMemory
+            .filter(r => r.type === type && (tick - r.lastSeen) < maxAge)
+            .sort((a, b) => {
+                // Prioritize by recency and distance
+                const distA = Math.sqrt((this.x - a.x) ** 2 + (this.y - a.y) ** 2)
+                const distB = Math.sqrt((this.x - b.x) ** 2 + (this.y - b.y) ** 2)
+                const ageA = tick - a.lastSeen
+                const ageB = tick - b.lastSeen
+                return (distA + ageA * 0.1) - (distB + ageB * 0.1)
+            })
+    }
+
+    recallResourcesByTag(tag) {
+        // Find remembered resources with matching tag
+        const tick = this.world?.clock?.currentTick ?? 0
+        const maxAge = 2000
+        return this.resourceMemory
+            .filter(r => r.tags?.includes(tag) && (tick - r.lastSeen) < maxAge)
+            .sort((a, b) => {
+                const distA = Math.sqrt((this.x - a.x) ** 2 + (this.y - a.y) ** 2)
+                const distB = Math.sqrt((this.x - b.x) ** 2 + (this.y - b.y) ** 2)
+                return distA - distB
+            })
     }
 
     recordReputationEvent({ type, value, witnesses = [], context = {} }) {
