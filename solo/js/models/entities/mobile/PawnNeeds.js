@@ -145,8 +145,11 @@ class PawnNeeds {
         const priorities = []
         
         for (const need in this.needs) {
-            const value = this.needs[need]
+            let value = this.needs[need]
             const thresholds = this.thresholds[need]
+            
+            // Apply user-defined priority adjustments
+            value = this.pawn.getAdjustedNeedPriority?.(need, value) ?? value
             
             if (value >= thresholds.low) {
                 let priority = 1

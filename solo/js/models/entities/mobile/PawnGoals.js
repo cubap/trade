@@ -189,6 +189,32 @@ class PawnGoals {
                 targetType: 'activity',
                 action: 'survey',
                 completionReward: { knowledge: -40, purpose: -10 }
+            },
+            {
+                type: 'teach_skill',
+                priority: 1,
+                description: 'Teach a skill to another pawn',
+                targetType: 'entity',
+                targetSubtype: 'pawn',
+                action: 'teach',
+                duration: 100,
+                completionReward: { social: -15, purpose: -20 }
+            },
+            {
+                type: 'collaborative_craft',
+                priority: 1,
+                description: 'Work with others on a large project',
+                targetType: 'activity',
+                action: 'collaborate',
+                completionReward: { social: -25, purpose: -30, knowledge: -15 }
+            },
+            {
+                type: 'accumulate_valuables',
+                priority: 1,
+                description: 'Craft high-quality items for trade',
+                targetType: 'activity',
+                action: 'craft_valuable',
+                completionReward: { purpose: -25, comfort: -15 }
             }
         ]
         
@@ -197,9 +223,47 @@ class PawnGoals {
             longTermGoals[0].priority = 2
         }
         
-        // Add 1-2 random long-term goals
-        const selected = longTermGoals.slice(0, 1 + Math.floor(Math.random() * 2))
+        // Prioritize teaching if highly skilled in something
+        const hasHighSkill = Object.values(this.pawn.skills).some(v => v > 15)
+        if (hasHighSkill) {
+            longTermGoals.find(g => g.type === 'teach_skill').priority = 2
+        }
+        
+        // Prioritize collaboration if social need is moderate
+        const socialNeed = this.pawn.needs.needs.social ?? 0
+        if (socialNeed > 20 && socialNeed < 60) {
+            longTermGoals.find(g => g.type === 'collaborative_craft').priority = 2
+        }
+        
+        // Add 1-3 random long-term goals
+        const count = 1 + Math.floor(Math.random() * 3)
+        const selected = this.selectRandomGoals(longTermGoals, count)
         this.goalQueue.push(...selected)
+    }
+    
+    selectRandomGoals(goals, count) {
+        // Weighted random selection based on priority
+        const weighted = []
+        for (const goal of goals) {
+            for (let i = 0; i < goal.priority; i++) {
+                weighted.push(goal)
+            }
+        }
+        
+        const selected = []
+        const used = new Set()
+        
+        for (let i = 0; i < count && weighted.length > 0; i++) {
+            const idx = Math.floor(Math.random() * weighted.length)
+            const goal = weighted[idx]
+            
+            if (!used.has(goal.type)) {
+                selected.push(goal)
+                used.add(goal.type)
+            }
+        }
+        
+        return selected
     }
     
     planAndStartGoal(goal) {
@@ -283,6 +347,7 @@ class PawnGoals {
             'establish_trade': 'trading',
             'map_territory': 'surveying',
             'train_skill': 'teaching',
+            'teach_skill': 'teaching',
             'apprentice_skill': 'learning',
             'craft_item': 'crafting',
             'craft_cordage': 'crafting',
@@ -290,7 +355,9 @@ class PawnGoals {
             'craft_poultice': 'crafting',
             'gather_materials': 'gathering',
             'gather_specific': 'gathering',
-            'search_resource': 'exploring'
+            'search_resource': 'exploring',
+            'collaborative_craft': 'collaborating',
+            'accumulate_valuables': 'crafting'
         }
         
         return behaviorMap[goal.type] || 'idle'
@@ -581,15 +648,18 @@ class PawnGoals {
                         
                         if (rdist <= (this.pawn.size + resource.size + 5)) {
                             // Gather the resource
-                            if (resource.gather) {
-                                const gathered = resource.gather(this.pawn)
+                            if (resource.gather && typeof resource.gather === 'function') {
+                                const gathered = resource.gather(1) // Gather 1 unit
                                 if (gathered) {
                                     this.pawn.addItemToInventory(gathered)
+                                    this.pawn.updateResourceMemoryConfidence(resource, true)
                                     goal.gatheredCount++
                                     console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
                                     
                                     // Update memory with fresh location
                                     this.pawn.rememberResource(resource)
+                                } else {
+                                    this.pawn.updateResourceMemoryConfidence(resource, false)
                                     
                                     // Check if we've gathered enough
                                     if (goal.gatheredCount >= (goal.count || 1)) {
@@ -679,11 +749,12 @@ class PawnGoals {
                 const dy = this.pawn.y - found.y
                 const dist = Math.sqrt(dx * dx + dy * dy)
                 
-                if (dist <= (this.pawn.size + found.size + 5) && found.gather) {
+                if (dist <= (this.pawn.size + found.size + 5) && found.gather && typeof found.gather === 'function') {
                     // Immediately gather if close enough
-                    const gathered = found.gather(this.pawn)
+                    const gathered = found.gather(1) // Gather 1 unit
                     if (gathered) {
                         this.pawn.addItemToInventory(gathered)
+                        this.pawn.updateResourceMemoryConfidence(found, true)
                         goal.gatheredCount++
                         console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
                         
@@ -691,6 +762,8 @@ class PawnGoals {
                         if (goal.gatheredCount >= (goal.count || 1)) {
                             this.completeCurrentGoal()
                         }
+                    } else {
+                        this.pawn.updateResourceMemoryConfidence(found, false)
                     }
                 }
             } else {
@@ -721,6 +794,10 @@ class PawnGoals {
                 return Math.sqrt(dx * dx + dy * dy) <= 100
             })
             
+            if (Math.random() < 0.05) {
+                console.log(`${this.pawn.name} sees ${harvestable.length} harvestable resources nearby`)
+            }
+            
             if (harvestable.length > 0) {
                 // Find closest harvestable
                 harvestable.sort((a, b) => {
@@ -734,22 +811,26 @@ class PawnGoals {
                 const dy = this.pawn.y - resource.y
                 const dist = Math.sqrt(dx * dx + dy * dy)
                 
+                if (Math.random() < 0.1) {
+                    console.log(`${this.pawn.name} approaching ${resource.subtype || resource.type} at distance ${Math.round(dist)}`)
+                }
+                
                 if (dist <= (this.pawn.size + resource.size + 5)) {
                     // Gather the resource
-                    if (resource.gather) {
-                        const gathered = resource.gather(this.pawn)
+                    if (resource.gather && typeof resource.gather === 'function') {
+                        const gathered = resource.gather(1) // Gather 1 unit
                         if (gathered) {
                             this.pawn.addItemToInventory(gathered)
-                            console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/10`)
+                            console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/${this.pawn.inventorySlots}`)
                             
-                            // Remember this resource location
-                            this.pawn.rememberResource(resource)
+                            // Update memory: success!
+                            this.pawn.updateResourceMemoryConfidence(resource, true)
                             
                             // Complete if inventory getting full OR if gathered enough variety
-                            if (this.pawn.inventory.length >= 10) {
+                            if (this.pawn.inventory.length >= this.pawn.inventorySlots) {
                                 console.log(`${this.pawn.name} inventory full, completing gathering goal`)
                                 this.completeCurrentGoal()
-                            } else if (this.pawn.inventory.length >= 5 && Math.random() < 0.3) {
+                            } else if (this.pawn.inventory.length >= Math.floor(this.pawn.inventorySlots / 2) && Math.random() < 0.3) {
                                 // 30% chance to finish early if we have decent materials
                                 console.log(`${this.pawn.name} gathered enough materials, completing goal`)
                                 this.completeCurrentGoal()
@@ -757,6 +838,8 @@ class PawnGoals {
                             // Continue gathering more if not done
                         } else {
                             console.log(`${this.pawn.name} failed to gather from ${resource.subtype || resource.type}`)
+                            // Update memory: failed to gather (depleted)
+                            this.pawn.updateResourceMemoryConfidence(resource, false)
                         }
                     }
                 } else {
@@ -779,6 +862,136 @@ class PawnGoals {
                     // Reached exploration point, pick new target
                     this.selectExplorationTarget()
                 }
+            }
+        }
+        
+        // Collaborative crafting: find another pawn and work together
+        if (goal.type === 'collaborative_craft') {
+            if (!goal.partner) {
+                // Find another pawn to collaborate with
+                const entities = Array.from(this.pawn.world.entitiesMap.values())
+                const otherPawns = entities.filter(e => 
+                    e.subtype === 'pawn' && 
+                    e !== this.pawn &&
+                    e.behaviorState !== 'busy'
+                )
+                
+                if (otherPawns.length > 0) {
+                    goal.partner = otherPawns[Math.floor(Math.random() * otherPawns.length)]
+                    console.log(`${this.pawn.name} seeks to collaborate with ${goal.partner.name}`)
+                }
+            }
+            
+            if (goal.partner) {
+                // Move towards partner
+                const dx = this.pawn.x - goal.partner.x
+                const dy = this.pawn.y - goal.partner.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist > 20) {
+                    this.pawn.nextTargetX = goal.partner.x
+                    this.pawn.nextTargetY = goal.partner.y
+                } else {
+                    // Close enough to collaborate
+                    if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+                    
+                    // Work together for duration
+                    if (!goal.duration) goal.duration = 200 // Default collaboration duration
+                    const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+                    
+                    if (elapsed >= goal.duration) {
+                        console.log(`${this.pawn.name} completed collaboration with ${goal.partner.name}`)
+                        // Both gain social and skill benefits
+                        this.pawn.increaseSkill('cooperation', 1)
+                        goal.partner.increaseSkill?.('cooperation', 1)
+                        this.completeCurrentGoal()
+                    } else {
+                        // Periodic skill gains during collaboration
+                        if (elapsed % 20 === 0) {
+                            this.pawn.increaseSkill('cooperation', 0.1)
+                            this.pawn.increaseSkill('planning', 0.05)
+                        }
+                    }
+                }
+            } else {
+                // No partner available, complete anyway
+                this.completeCurrentGoal()
+            }
+        }
+        
+        // Accumulate valuables: craft high-quality items
+        if (goal.type === 'accumulate_valuables') {
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            
+            // Try to craft the best available recipe
+            import('../../crafting/Recipes.js').then(module => {
+                const { getAvailableRecipes, canCraftRecipe } = module
+                
+                const available = getAvailableRecipes(this.pawn)
+                    .filter(r => canCraftRecipe(this.pawn, r))
+                    .sort((a, b) => (b.output.baseQuality ?? 1) - (a.output.baseQuality ?? 1))
+                
+                if (available.length > 0) {
+                    const recipe = available[0]
+                    const crafted = this.pawn.craft(recipe)
+                    
+                    if (crafted && crafted.quality >= 1.2) {
+                        console.log(`${this.pawn.name} crafted valuable ${crafted.name} (quality: ${crafted.quality.toFixed(2)})`)
+                        this.pawn.addItemToInventory(crafted)
+                        this.completeCurrentGoal()
+                    } else if (crafted) {
+                        // Try again for higher quality
+                        this.pawn.addItemToInventory(crafted)
+                    }
+                } else {
+                    // Can't craft anything, complete goal
+                    this.completeCurrentGoal()
+                }
+            }).catch(err => {
+                console.error('Failed to load recipes:', err)
+                this.completeCurrentGoal()
+            })
+        }
+        
+        // Teaching: both teacher and student gain
+        if (goal.type === 'teach_skill') {
+            const target = goal.target
+            if (!goal.skill) {
+                // Choose highest skill to teach
+                const skills = Object.entries(this.pawn.skills).sort((a, b) => b[1] - a[1])
+                goal.skill = skills[0]?.[0] || 'gathering'
+            }
+            
+            if (target && target.subtype === 'pawn') {
+                const dx = this.pawn.x - target.x
+                const dy = this.pawn.y - target.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                
+                if (dist > 20) {
+                    this.pawn.nextTargetX = target.x
+                    this.pawn.nextTargetY = target.y
+                } else {
+                    // Teaching in progress
+                    if (!goal.startTime) {
+                        goal.startTime = this.pawn.world.clock.currentTick
+                        console.log(`${this.pawn.name} begins teaching ${goal.skill} to ${target.name}`)
+                    }
+                    
+                    // Periodic skill transfer
+                    const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+                    if (elapsed % 10 === 0) {
+                        this.pawn.trainSkill(goal.skill, target, 0.2)
+                        this.pawn.increaseSkill('storytelling', 0.05) // Teacher also improves
+                    }
+                    
+                    if (elapsed >= (goal.duration || 100)) {
+                        console.log(`${this.pawn.name} finished teaching ${goal.skill} to ${target.name}`)
+                        this.completeCurrentGoal()
+                    }
+                }
+            } else {
+                // No valid target
+                this.completeCurrentGoal()
             }
         }
     }
