@@ -764,6 +764,62 @@ class Pawn extends MobileEntity {
         this.priorityBias = bias
     }
     
+    // === User Intervention Methods ===
+    
+    setGoalPriorities(priorities) {
+        // User can reorder goal priorities
+        // priorities: { needType: multiplier }
+        // Example: { hunger: 1.5, social: 0.5 } makes hunger 50% more urgent, social 50% less
+        this.goalPriorityMultipliers = priorities
+    }
+    
+    getAdjustedNeedPriority(need, baseValue) {
+        const multiplier = this.goalPriorityMultipliers?.[need] ?? 1.0
+        return baseValue * multiplier
+    }
+    
+    assignArbitraryGoal(goalConfig) {
+        // User can directly assign a goal
+        // goalConfig: { type, description, priority, targetType, ... }
+        console.log(`${this.name} received user-assigned goal: ${goalConfig.description}`)
+        
+        // Add to front of goal queue with high priority
+        this.goals.goalQueue.unshift({
+            ...goalConfig,
+            priority: 10, // Override priority
+            userAssigned: true
+        })
+        
+        // If idle, start immediately
+        if (!this.goals.currentGoal || this.behaviorState === 'idle') {
+            this.goals.currentGoal = this.goals.goalQueue.shift()
+            this.goals.startGoal(this.goals.currentGoal)
+        }
+    }
+    
+    setResourceValuePreferences(preferences) {
+        // User can adjust how valuable different resources are perceived
+        // preferences: { resourceType: value } where value is 0-1
+        // Example: { fiber: 0.9, rock: 0.5 } makes fiber highly valued, rock less so
+        this.resourceValuePreferences = preferences
+    }
+    
+    getResourceValue(resourceType) {
+        return this.resourceValuePreferences?.[resourceType] ?? 0.5
+    }
+    
+    adjustInventionRate(multiplier) {
+        // User can speed up or slow down invention discoveries
+        // multiplier: 0.5 = half as fast, 2.0 = twice as fast
+        this.inventionRateMultiplier = Math.max(0.1, Math.min(5.0, multiplier))
+    }
+    
+    // Enhanced pondering with user intervention support
+    getEffectiveInventionChance(baseChance) {
+        const multiplier = this.inventionRateMultiplier ?? 1.0
+        return baseChance * multiplier
+    }
+    
     // Method to set world reference for resource finding
     setWorldAccess(chunkManager) {
         this.chunkManager = chunkManager
@@ -1087,7 +1143,10 @@ class Pawn extends MobileEntity {
         // Lateral learning bonus: easier if we know similar things
         const lateralBonus = this.calculateLateralLearningBonus(problem.type, problem.context)
         
-        const totalChance = baseChance + attemptBonus + successBonus + observationBonus + lateralBonus
+        let totalChance = baseChance + attemptBonus + successBonus + observationBonus + lateralBonus
+        
+        // Apply user intervention multiplier
+        totalChance = this.getEffectiveInventionChance(totalChance)
         
         // Try to solve the problem
         if (Math.random() < totalChance) {

@@ -76,70 +76,139 @@ Discovered solutions unlock recipes in the crafting system:
 - Can be used to gate recipe availability in UI
 
 
+## Implementation Status
+
+✅ **IMPLEMENTED**: The autonomous invention system is now fully functional with the following features:
+
+### User Intervention Points
+
+Users can control pawn behavior through:
+
+1. **Priority Adjustments**: `pawn.setGoalPriorities({ hunger: 1.5, social: 0.5 })`
+   - Adjust relative importance of needs (0.1x to 3.0x)
+   - Pawns will prioritize or deprioritize needs accordingly
+
+2. **Arbitrary Goal Assignment**: `pawn.assignArbitraryGoal({ type: 'craft_item', description: '...' })`
+   - Directly assign goals to pawns
+   - High priority, executed immediately if pawn is idle
+
+3. **Resource Value Preferences**: `pawn.setResourceValuePreferences({ fiber: 0.9, rock: 0.5 })`
+   - Adjust perceived value of resources (0.0 to 1.0)
+   - Influences gathering and trading decisions
+
+4. **Invention Rate**: `pawn.adjustInventionRate(2.0)`
+   - Speed up (2.0) or slow down (0.5) discoveries
+   - Range: 0.1x to 5.0x normal rate
+
+### Configuration File
+
+All balancing parameters are centralized in `InventionConfig.js`:
+- Discovery rates and bonuses
+- Quality and durability thresholds  
+- Skill synergies and material groups
+- User intervention ranges
+- Enable/disable skill decay
+
 ## Next-Generation Invention System: Design Sketch
 
-### 1. Quality, Durability, and Effectiveness
+### 1. Quality, Durability, and Effectiveness ✅ IMPLEMENTED
 - **Quality** is not a separate stat, but determines where an item starts on its degradation curve.
-- Poor quality = starts partly degraded, wears out faster, less effective.
-- Excellent quality = starts above max durability, provides bonuses (e.g. comfort, gather speed).
-- Example:
-  - `durability: 0.6` (poor, 40% degraded)
-  - `durability: 1.2` (excellent, 20% above max, bonus effects)
+- Poor quality (< 0.8) = starts partly degraded (0.6-0.9 durability), wears out faster, less effective.
+- Excellent quality (> 1.2) = starts above max durability (1.0-1.5), provides bonuses
+- Quality is calculated from: base quality + skill bonus + synergy bonus + variance
+- Skill bonus: 1% per skill level
+- Synergy bonus: up to 30% from related skills (e.g., weaving helps basketry)
+- Variance: ±15-30% (less variance with higher skill)
+- Items track `currentDurability` / `maxDurability` 
+- Effectiveness: `currentDurability / maxDurability` (min 30%)
+- Quality > 1.2 items provide bonus effectiveness even when worn
 
-### 2. Lateral Learning & Material Substitution
-- Pawns track `observedCrafts` (items they've seen) and `knownMaterials` (materials encountered).
-- If a pawn knows how to make a reed basket and sees a linen basket, and has found linen, they can easily invent a linen basket.
-- Lateral steps are easier if the pawn has seen the result or the material.
-- Observing others' crafts can inspire new solutions.
+### 2. Lateral Learning & Material Substitution ✅ IMPLEMENTED
+- Pawns track `observedCrafts` (Set of items seen) and `knownMaterials` (Set of materials)
+- Materials auto-tracked when gathered, examined, or used in crafting
+- Material groups: fibers, stones, woods, hides, metals, herbs
+- If a pawn knows a recipe and encounters a material from the same group, 10% chance to ponder substitution
+- Example: knows reed_basket, finds linen (both in fibers group) → may discover linen_basket
+- Observed crafts give 15% discovery bonus when pondering that craft
+- Lateral learning bonus: 10% if pawn knows the material type
 
-### 3. Social Learning & Inspiration
-- Pawns can learn by observing others craft or use items.
-- When a pawn sees a new item, it is added to `observedCrafts`.
-- If the item is related to known solutions, the pawn may ponder how to replicate it.
-- Hearing stories about heroes, events, or legendary items can inspire new inventions (e.g. better weapons after hearing a hero's tale).
+### 3. Social Learning & Inspiration ✅ IMPLEMENTED
+- Pawns observe crafts within 100 unit range automatically
+- When crafting completes, nearby pawns add item to `observedCrafts`
+- Observed crafts trigger pondering with easier discovery (15% bonus)
+- Small skill gain from observation (0.1 in relevant skill)
+- Story system: `pawn.hearStory(story)` can inspire inventions
+- Inspiration chance: (invention + storytelling) * 0.5%
+- Inspired inventions unlock legendary/special recipes
+- Teaches or demonstrates items to others through proximity
 
-### 4. Skill Synergies & Cross-Domain Transfer
-- Skills are grouped into domains with synergies (e.g. weaving helps basketry, tailoring, rope-making).
-- High skill in one domain makes related inventions easier to discover.
-- Example synergy table:
-  - `weaving: [basket_making, textile_work, rope_craft]`
-  - `tailoring: [leather_work, armor_repair, tent_making]`
-  - `hunting: [archery, spear_fighting, tracking]`
+### 4. Skill Synergies & Cross-Domain Transfer ✅ IMPLEMENTED
+- 12+ skill synergy relationships defined in `getSkillSynergies()`
+- Key domains: textiles, stonework, medicine, construction, hunting, survival
+- Example synergies:
+  - `weaving → basketry, textile_work, rope_craft, gathering`
+  - `knapping → stonework, tool_making, mining`
+  - `herbalism → gathering, alchemy, medicine, foraging`
+  - `hunting → tracking, archery, spear_fighting, butchery`
+- Synergy bonus in crafting: 0.5% quality per related skill level (max 30%)
+- Cross-domain transfer makes learning related skills easier
+- Natural specialization emerges through synergy chains
 
-### 5. Preference for Successful Paths
-- Pawns are more likely to pursue invention paths where they've had past success.
-- Each solution tracks a `successCount` (uses, crafts, positive outcomes).
-- Discovery chance is boosted for related problems if the pawn has succeeded in similar solutions.
-- This creates natural specialization and tech tree branching.
+### 5. Preference for Successful Paths ✅ IMPLEMENTED
+- `solutionSuccessCount` tracks successful uses of each discovered solution
+- Success count increments when crafting with discovered recipes
+- Related solutions boost discovery: 2% per success (max 20%)
+- Example domains:
+  - `inventory_full` related to: basket_concept, container_concept, storage_concept
+  - `need_better_tools` related to: stone_tool_concept, advanced_tool_concept
+- Success tracking creates natural specialization over time
+- Pawns become experts in areas where they've succeeded
+- Tech tree naturally branches based on individual success paths
 
-### 6. Multiple Paths to Value
-- Each invention path should allow pawns to:
-  - Accumulate valuables (e.g. rare crafts, trade goods)
-  - Group together (collaborative projects, shared tech)
-  - Learn and grow (skill XP, new recipes)
-  - Manage basic needs (food, shelter, safety)
-- Paths can be social (teaching, group projects), material (rare resources), or skill-based (mastery, innovation).
+### 6. Multiple Paths to Value ✅ PARTIALLY IMPLEMENTED
+Multiple value paths implemented through new goal types:
+- **Accumulate Valuables**: `accumulate_valuables` goal crafts high-quality items (quality > 1.2) for trade
+- **Collaborative Projects**: `collaborative_craft` goal finds partner, works together 200 ticks, grants cooperation skill
+- **Teaching & Learning**: `teach_skill` goal shares highest skill with others, both gain experience
+- **Basic Needs**: Existing food/water/shelter goals continue to work
+- **Social Paths**: Teaching, collaboration, and trade goals satisfy social needs
+- **Material Paths**: Resource value preferences guide gathering priorities
+- **Skill Mastery**: Success tracking creates specialization, synergies encourage skill exploration
 
-### 7. Skill Decay (Optional)
-- Skills can decay if unused, but never below a floor (e.g. 50% of peak).
-- Some skills (intuition, memory) may be exempt.
-- Decay is configurable and can be toggled for playtesting.
+### 7. Skill Decay (Optional) ✅ IMPLEMENTED
+- Skill decay already implemented in `decaySkills()` method
+- Runs every 200 ticks
+- Skills decay by 0.1 if unused for 2000 ticks
+- Configurable through `InventionConfig.js`:
+  - `enableSkillDecay`: true/false toggle
+  - `skillDecayRate`: 0.1 per period
+  - `skillDecayFloor`: 0.5 (50% of peak minimum)
+  - `skillDecayPeriod`: 200 ticks between checks
+  - `skillDecayInactiveThreshold`: 2000 ticks before decay starts
+- Can disable entirely for playtesting: `INVENTION_CONFIG.enableSkillDecay = false`
 
-### 8. Example Flow: Lateral & Social Learning
+### 8. Example Flow: Lateral & Social Learning ✅ WORKING
 1. Pawn A invents a reed basket and crafts it.
 2. Pawn B sees the basket, adds 'reed_basket' to `observedCrafts`.
 3. Pawn B finds linen, knows weaving, and ponders making a linen basket.
 4. Pawn B invents 'linen_basket' with a lower difficulty due to prior knowledge.
 5. Pawn C hears a story about a legendary backpack, ponders making one if they know basketry and tailoring.
 
-### 9. Implementation Roadmap
-- Add `observedCrafts` and `knownMaterials` to Pawn.
-- Implement `observeCraftedItem()` and `hearStory()` methods.
-- Expand `discoverSolution()` to support lateral and inspired discoveries.
-- Track `successCount` for each solution and boost related discovery chances.
-- Add durability/quality to crafted items.
-- Create synergy table for cross-domain skill bonuses.
-- (Optional) Add skill decay system.
+### 9. Implementation Status ✅ COMPLETE
+- ✅ Added `observedCrafts`, `knownMaterials`, `craftingHistory` to Pawn
+- ✅ Implemented `observeCraftedItem()`, `hearStory()`, `trackMaterialEncounter()` methods
+- ✅ Expanded `discoverSolution()` to support:
+  - Material substitution discoveries
+  - Inspired inventions from stories
+  - Observed craft learning
+  - Dynamic problem types
+- ✅ Track `solutionSuccessCount` for each solution
+- ✅ Success path bonuses: 2% per success, max 20%
+- ✅ Added quality and durability to crafted items with degradation
+- ✅ Created comprehensive synergy table with 12+ relationships
+- ✅ Skill decay system with configurable parameters
+- ✅ User intervention methods for priorities, goals, and resource values
+- ✅ Centralized configuration in `InventionConfig.js`
 
 ## Example Flow
 
