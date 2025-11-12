@@ -44,8 +44,14 @@ class Pawn extends MobileEntity {
         // Invention/pondering system
         this.ponderingQueue = [] // Problems to think about: { problem, context, priority, timestamp }
         this.discoveredSolutions = new Set() // Track what this pawn has figured out
+        this.solutionSuccessCount = {} // Track success with each solution for specialization
         this.ponderingCooldown = 0 // Ticks before can ponder again
         this.behaviorState = 'idle'  // Current activity state
+        
+        // Lateral learning and social observation
+        this.observedCrafts = new Set() // Items seen being crafted or used
+        this.knownMaterials = new Set() // Materials encountered/gathered
+        this.craftingHistory = [] // Recent crafts: {recipe, quality, timestamp, success}
         
         // Initialize sophisticated needs and goals systems
         this.needs = new PawnNeeds(this)
@@ -237,6 +243,8 @@ class Pawn extends MobileEntity {
                 this.inventory.push(gathered)
                 // Examination-based learning: require interaction with the gathered item
                 this.examineItem?.(gathered)
+                // Track material for lateral learning
+                this.trackMaterialEncounter(gathered)
                 
                 // Update memory confidence: success!
                 this.updateResourceMemoryConfidence(resource, true)
@@ -397,6 +405,9 @@ class Pawn extends MobileEntity {
         const type = item.type ?? item.name ?? 'unknown'
         this.itemExposure = this.itemExposure ?? {}
         this.itemExposure[type] = (this.itemExposure[type] ?? 0) + 1
+        
+        // Track as known material for lateral learning
+        this.trackMaterialEncounter(item)
 
         // Heuristics: herbs/food/water inform herbalism/alchemy/medicine
         const tags = item.tags ?? []
@@ -1062,12 +1073,21 @@ class Pawn extends MobileEntity {
         const experimentation = this.skills.experimentation ?? 0
         
         // Base chance: 1% per invention level + 0.5% per experimentation level
-        const baseChance = (invention * 0.01) + (experimentation * 0.005)
+        let baseChance = (invention * 0.01) + (experimentation * 0.005)
         
         // Bonus from attempts (persistence pays off)
-        const attemptBonus = Math.min(0.1, problem.attempts * 0.01)
+        const attemptBonus = Math.min(0.15, problem.attempts * 0.01)
         
-        const totalChance = baseChance + attemptBonus
+        // Success path preference: boost chance if we've succeeded with similar solutions
+        const successBonus = this.calculateSuccessPathBonus(problem.type)
+        
+        // Observation bonus: easier if we've seen it done
+        const observationBonus = problem.context?.inspiration === 'observed' ? 0.1 : 0
+        
+        // Lateral learning bonus: easier if we know similar things
+        const lateralBonus = this.calculateLateralLearningBonus(problem.type, problem.context)
+        
+        const totalChance = baseChance + attemptBonus + successBonus + observationBonus + lateralBonus
         
         // Try to solve the problem
         if (Math.random() < totalChance) {
@@ -1076,9 +1096,13 @@ class Pawn extends MobileEntity {
                 console.log(`💡 ${this.name} has an epiphany: ${solution.name}!`)
                 this.discoveredSolutions.add(solution.id)
                 
-                // Grant experience
-                this.addExperience('invention', 10 + problem.attempts * 2)
-                this.addExperience('experimentation', 5 + problem.attempts)
+                // Initialize success tracking
+                this.solutionSuccessCount[solution.id] = 0
+                
+                // Grant experience (more for harder discoveries)
+                const xpMultiplier = 1 + (problem.attempts * 0.1)
+                this.increaseSkill('invention', (10 + problem.attempts * 2) * xpMultiplier)
+                this.increaseSkill('experimentation', (5 + problem.attempts) * xpMultiplier)
                 
                 // Remove from queue
                 this.ponderingQueue.shift()
@@ -1102,6 +1126,46 @@ class Pawn extends MobileEntity {
         return null
     }
     
+    calculateSuccessPathBonus(problemType) {
+        // Boost discovery if we've had success with related solutions
+        const relatedDomains = {
+            'inventory_full': ['basket_concept', 'container_concept', 'storage_concept'],
+            'need_water_container': ['container_concept', 'basket_concept'],
+            'need_better_tools': ['stone_tool_concept', 'advanced_tool_concept'],
+            'need_shelter': ['shelter_concept', 'construction_basics'],
+            'material_substitution': ['basket_concept', 'cordage_concept']
+        }
+        
+        const related = relatedDomains[problemType] || []
+        let totalSuccess = 0
+        
+        for (const solutionId of related) {
+            totalSuccess += this.solutionSuccessCount[solutionId] ?? 0
+        }
+        
+        // 2% bonus per success, capped at 20%
+        return Math.min(0.2, totalSuccess * 0.02)
+    }
+    
+    calculateLateralLearningBonus(problemType, context) {
+        // Easier if we know similar materials/crafts
+        if (problemType.startsWith('learn_craft_')) {
+            const itemType = context?.itemType
+            if (this.observedCrafts.has(itemType)) {
+                return 0.15 // 15% bonus if observed
+            }
+        }
+        
+        if (problemType === 'material_substitution') {
+            const newMaterial = context?.newMaterial
+            if (this.knownMaterials.has(newMaterial)) {
+                return 0.1 // 10% bonus if we know the material
+            }
+        }
+        
+        return 0
+    }
+    
     discoverSolution(problemType, context) {
         // Map problems to their solutions
         const solutions = {
@@ -1110,29 +1174,71 @@ class Pawn extends MobileEntity {
                 name: 'Basket Weaving',
                 type: 'recipe',
                 description: 'Could weave plant fibers into a basket for carrying',
-                unlocks: 'basket'
+                unlocks: 'basket',
+                domain: 'weaving'
             },
             need_water_container: {
                 id: 'container_concept',
                 name: 'Container Crafting',
                 type: 'recipe',
                 description: 'Need something to hold water... perhaps a woven container?',
-                unlocks: 'water_basket'
+                unlocks: 'water_basket',
+                domain: 'weaving'
             },
             need_better_tools: {
                 id: 'stone_tool_concept',
                 name: 'Stone Tool Making',
                 type: 'recipe',
                 description: 'Shaping stones could make better tools',
-                unlocks: 'stone_axe'
+                unlocks: 'sharp_stone',
+                domain: 'knapping'
             },
             need_shelter: {
                 id: 'shelter_concept',
                 name: 'Basic Shelter',
                 type: 'recipe',
                 description: 'Arranging sticks and cover could provide shelter',
-                unlocks: 'lean_to'
+                unlocks: 'basic_shelter',
+                domain: 'construction_basics'
+            },
+            material_substitution: {
+                id: `${context?.originalSolution}_variant_${context?.newMaterial}`,
+                name: `Alternative ${context?.originalSolution} Method`,
+                type: 'recipe_variant',
+                description: `Could use ${context?.newMaterial} instead...`,
+                unlocks: `${context?.originalSolution}_${context?.newMaterial}`,
+                domain: 'experimentation'
+            },
+            inspired_invention: {
+                id: `inspired_${context?.inspiration}`,
+                name: `${context?.inspiration} Innovation`,
+                type: 'inspired',
+                description: `Inspired by stories of ${context?.inspiration}`,
+                unlocks: this.findInspiredRecipe(context),
+                domain: 'invention'
             }
+        }
+        
+        // Handle dynamic problem types (e.g., learn_craft_cordage)
+        if (problemType.startsWith('learn_craft_')) {
+            const itemType = problemType.replace('learn_craft_', '')
+            const solution = {
+                id: `${itemType}_concept`,
+                name: `${itemType} Crafting`,
+                type: 'observed_recipe',
+                description: `Learned by observing ${context?.crafter || 'others'}`,
+                unlocks: itemType,
+                domain: 'observation'
+            }
+            
+            // Check requirements
+            if (this.discoveredSolutions.has(solution.id)) return null
+            
+            // Easier requirements for observed crafts
+            const observationSkill = this.skills.invention ?? 0
+            if (observationSkill < 2) return null
+            
+            return solution
         }
         
         const solution = solutions[problemType]
@@ -1143,10 +1249,28 @@ class Pawn extends MobileEntity {
         
         // Check if has necessary knowledge/skills
         const requirements = {
-            basket_concept: () => this.skills.gathering >= 5,
-            container_concept: () => this.skills.gathering >= 5 && this.skills.invention >= 3,
-            stone_tool_concept: () => this.skills.crafting >= 10,
-            shelter_concept: () => this.skills.crafting >= 5 && this.skills.invention >= 5
+            basket_concept: () => {
+                const gathering = this.skills.gathering ?? 0
+                const weaving = this.skills.weaving ?? 0
+                return gathering >= 3 || weaving >= 1
+            },
+            container_concept: () => {
+                const gathering = this.skills.gathering ?? 0
+                const weaving = this.skills.weaving ?? 0
+                const invention = this.skills.invention ?? 0
+                return (gathering >= 5 || weaving >= 2) && invention >= 2
+            },
+            stone_tool_concept: () => {
+                const knapping = this.skills.knapping ?? 0
+                const crafting = this.skills.crafting ?? 0
+                return knapping >= 1 || crafting >= 5
+            },
+            shelter_concept: () => {
+                const construction = this.skills.construction_basics ?? 0
+                const crafting = this.skills.crafting ?? 0
+                const invention = this.skills.invention ?? 0
+                return (construction >= 1 || crafting >= 3) && invention >= 3
+            }
         }
         
         const meetsRequirements = requirements[solution.id]?.() ?? true
@@ -1155,8 +1279,168 @@ class Pawn extends MobileEntity {
         return solution
     }
     
+    findInspiredRecipe(context) {
+        // Map legendary stories to potential recipes
+        const inspirationMap = {
+            'hero': 'legendary_weapon',
+            'builder': 'advanced_structure',
+            'healer': 'potent_medicine',
+            'explorer': 'navigation_tool'
+        }
+        
+        return inspirationMap[context?.tags?.[0]] || 'special_craft'
+    }
+    
     hasSolution(solutionId) {
         return this.discoveredSolutions.has(solutionId)
+    }
+    
+    // === Skill Synergy System ===
+    
+    // Skill synergy table: related skills that boost each other
+    getSkillSynergies() {
+        return {
+            weaving: ['basketry', 'textile_work', 'rope_craft', 'gathering'],
+            basketry: ['weaving', 'gathering', 'construction_basics'],
+            knapping: ['stonework', 'tool_making', 'mining'],
+            herbalism: ['gathering', 'alchemy', 'medicine', 'foraging'],
+            alchemy: ['herbalism', 'medicine', 'poisoncraft', 'chemistry'],
+            medicine: ['herbalism', 'alchemy', 'surgery', 'anatomy'],
+            construction_basics: ['carpentry', 'engineering', 'planning'],
+            tailoring: ['weaving', 'leather_work', 'armor_repair'],
+            leather_work: ['tailoring', 'hunting', 'skinning'],
+            hunting: ['tracking', 'archery', 'spear_fighting', 'butchery'],
+            tracking: ['hunting', 'orienteering', 'survival'],
+            gathering: ['herbalism', 'foraging', 'weaving', 'survival']
+        }
+    }
+    
+    calculateSynergyBonus(primarySkill) {
+        const synergies = this.getSkillSynergies()
+        const relatedSkills = synergies[primarySkill] || []
+        
+        let bonus = 0
+        for (const skill of relatedSkills) {
+            const level = this.skills[skill] ?? 0
+            bonus += level * 0.005 // 0.5% per level of related skill
+        }
+        
+        return Math.min(0.3, bonus) // Cap at 30% bonus
+    }
+    
+    // === Social Learning & Observation ===
+    
+    observeCraftedItem(item, crafter = null) {
+        // Learn from seeing an item being crafted or used
+        if (!item?.type) return
+        
+        this.observedCrafts.add(item.type)
+        
+        // If we haven't discovered this ourselves, add to pondering queue
+        const relatedSolution = this.findRelatedSolution(item.type)
+        if (relatedSolution && !this.discoveredSolutions.has(relatedSolution.id)) {
+            // Easier to discover if we've seen it
+            this.ponderProblem(`learn_craft_${item.type}`, {
+                itemType: item.type,
+                inspiration: 'observed',
+                crafter: crafter?.name,
+                observedQuality: item.quality
+            })
+        }
+        
+        // Gain small skill insight from observation
+        if (crafter && item.craftedBy === crafter.id) {
+            const recipe = this.getRecipeForItemType(item.type)
+            if (recipe?.primarySkill) {
+                this.increaseSkill(recipe.primarySkill, 0.1)
+            }
+        }
+    }
+    
+    findRelatedSolution(itemType) {
+        // Map item types to solution concepts
+        const mapping = {
+            'cordage': { id: 'cordage_concept', name: 'Cordage Making' },
+            'basket': { id: 'basket_concept', name: 'Basket Weaving' },
+            'sharp_stone': { id: 'stone_tool_concept', name: 'Stone Tool Making' },
+            'stone_knife': { id: 'advanced_tool_concept', name: 'Advanced Tool Crafting' },
+            'poultice': { id: 'medicine_concept', name: 'Herbal Medicine' },
+            'shelter': { id: 'shelter_concept', name: 'Basic Shelter' }
+        }
+        return mapping[itemType]
+    }
+    
+    getRecipeForItemType(itemType) {
+        // Helper to find recipe by output type
+        // This would import from Recipes.js in practice
+        return null // Placeholder
+    }
+    
+    trackMaterialEncounter(material) {
+        // Track materials we've seen/gathered for lateral learning
+        if (!material?.type) return
+        
+        this.knownMaterials.add(material.type)
+        
+        // If we know how to make something with similar materials, ponder variations
+        this.considerMaterialSubstitution(material.type)
+    }
+    
+    considerMaterialSubstitution(newMaterial) {
+        // Check if we can make lateral connections
+        // Example: if we know reed_basket and now have linen, consider linen_basket
+        const materialGroups = {
+            fibers: ['fiber', 'reed', 'linen', 'grass', 'hemp'],
+            stones: ['rock', 'stone', 'flint', 'obsidian'],
+            woods: ['stick', 'branch', 'log', 'plank'],
+            hides: ['leather', 'fur', 'skin', 'hide']
+        }
+        
+        // Find group for this material
+        let materialGroup = null
+        for (const [group, materials] of Object.entries(materialGroups)) {
+            if (materials.includes(newMaterial)) {
+                materialGroup = group
+                break
+            }
+        }
+        
+        if (!materialGroup) return
+        
+        // Check if we know recipes using similar materials
+        for (const solution of this.discoveredSolutions) {
+            // If this solution uses materials from the same group, we might discover a variant
+            if (Math.random() < 0.1) { // 10% chance to ponder
+                this.ponderProblem('material_substitution', {
+                    originalSolution: solution,
+                    newMaterial,
+                    materialGroup
+                })
+            }
+        }
+    }
+    
+    hearStory(story) {
+        // Stories can inspire invention
+        // story: { subject, tags, legendary, heroic }
+        if (!story) return
+        
+        const invention = this.skills.invention ?? 0
+        const storytelling = this.skills.storytelling ?? 0
+        
+        // Higher invention/storytelling = more likely to be inspired
+        const inspirationChance = (invention + storytelling) * 0.005
+        
+        if (Math.random() < inspirationChance) {
+            console.log(`${this.name} was inspired by a story about ${story.subject}`)
+            
+            // Add inspired problem to pondering
+            this.ponderProblem('inspired_invention', {
+                inspiration: story.subject,
+                tags: story.tags,
+                legendary: story.legendary
+            })
+        }
     }
 
     recordReputationEvent({ type, value, witnesses = [], context = {} }) {
@@ -1214,6 +1498,9 @@ class Pawn extends MobileEntity {
 
     addItemToInventory(item) {
         // item: { id, name, weight, size, slotType, increasesCapacity, ... }
+        // Track as known material
+        this.trackMaterialEncounter(item)
+        
         // Prevent water from being added unless pawn has a container
         if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
             // Can't carry water without a container - trigger pondering!
@@ -1244,6 +1531,40 @@ class Pawn extends MobileEntity {
         this.inventory.push(item)
         this.inventoryWeight += item.weight ?? 1
         return true
+    }
+    
+    // Item durability and degradation
+    degradeItem(item, amount = 1) {
+        if (!item.currentDurability) return false
+        
+        item.currentDurability = Math.max(0, item.currentDurability - amount)
+        
+        // Quality affects effectiveness
+        const effectiveness = item.currentDurability / item.maxDurability
+        
+        // Item breaks if durability reaches 0
+        if (item.currentDurability <= 0) {
+            console.log(`${this.name}'s ${item.name} has broken!`)
+            return true // Item broken
+        }
+        
+        // Warn if getting low
+        if (effectiveness < 0.3 && effectiveness > 0.2) {
+            console.log(`${this.name}'s ${item.name} is nearly broken (${Math.floor(effectiveness * 100)}%)`)
+        }
+        
+        return false // Still functional
+    }
+    
+    getItemEffectiveness(item) {
+        if (!item.currentDurability || !item.maxDurability) return 1.0
+        
+        const durabilityRatio = item.currentDurability / item.maxDurability
+        
+        // Quality above 1.2 provides bonus even when worn
+        const qualityBonus = item.quality > 1.2 ? (item.quality - 1.2) * 0.5 : 0
+        
+        return Math.max(0.3, durabilityRatio + qualityBonus) // Minimum 30% effectiveness
     }
 
     removeItemFromInventory(itemId) {
@@ -1321,14 +1642,36 @@ class Pawn extends MobileEntity {
         // Calculate quality based on primary skill
         const primarySkill = this.skills?.[recipe.primarySkill] ?? 0
         const baseQuality = recipe.output.baseQuality ?? 1
-        const skillBonus = primarySkill * 0.1
-        const quality = baseQuality + skillBonus + (Math.random() * 0.3 - 0.15)
+        const skillBonus = primarySkill * 0.01 // 1% per skill level
+        
+        // Add synergy bonuses from related skills
+        const synergyBonus = this.calculateSynergyBonus(recipe.primarySkill)
+        
+        // Quality variance: better skill reduces variance
+        const variance = 0.3 - (primarySkill * 0.002) // Less variance as skill increases
+        const randomFactor = (Math.random() * variance * 2) - variance
+        
+        const quality = baseQuality + skillBonus + synergyBonus + randomFactor
+
+        // Determine durability based on quality
+        // Quality < 0.8: starts degraded (0.6-0.9 durability)
+        // Quality 0.8-1.2: normal (1.0 durability)
+        // Quality > 1.2: enhanced (1.0-1.5 durability, with bonuses)
+        let durability = 1.0
+        if (quality < 0.8) {
+            durability = 0.6 + (quality * 0.375) // Maps 0.5->0.79 to 0.6->0.9
+        } else if (quality > 1.2) {
+            durability = 1.0 + ((quality - 1.2) * 0.5) // Bonus durability
+        }
 
         // Create output item
         const output = {
             ...recipe.output,
             id: `${recipe.id}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            quality: Math.max(0.5, quality),
+            quality: Math.max(0.5, Math.min(2.0, quality)),
+            durability: Math.max(0.5, Math.min(1.5, durability)),
+            maxDurability: recipe.output.durability || 100,
+            currentDurability: Math.floor((recipe.output.durability || 100) * durability),
             craftedBy: this.id,
             craftedAt: this.world?.clock?.currentTick ?? 0
         }
@@ -1340,18 +1683,67 @@ class Pawn extends MobileEntity {
         // Gain item experience for consumed materials
         for (const item of consumed) {
             this.addItemExperience(item.type, 0.5)
+            this.trackMaterialEncounter(item) // Track for lateral learning
         }
 
         // Gain skill experience
         if (recipe.primarySkill && recipe.experience) {
             this.increaseSkill(recipe.primarySkill, recipe.experience)
         }
+        
+        // Track crafting success for specialization
+        const solutionId = `${recipe.id}_concept`
+        if (this.solutionSuccessCount[solutionId] !== undefined) {
+            this.solutionSuccessCount[solutionId]++
+        }
+        
+        // Record craft in history
+        this.craftingHistory.push({
+            recipe: recipe.id,
+            quality: output.quality,
+            timestamp: this.world?.clock?.currentTick ?? 0,
+            success: true
+        })
+        
+        // Trim history to last 20 crafts
+        if (this.craftingHistory.length > 20) {
+            this.craftingHistory.shift()
+        }
+        
+        // Nearby pawns can observe this craft
+        this.broadcastCraftObservation(output)
 
         // Evaluate unlocks after crafting
         this.evaluateSkillUnlocks?.()
 
-        console.log(`${this.name} crafted ${output.name} (quality: ${output.quality.toFixed(2)})`)
+        console.log(`${this.name} crafted ${output.name} (quality: ${output.quality.toFixed(2)}, durability: ${output.durability.toFixed(2)})`)
         return output
+    }
+    
+    broadcastCraftObservation(item) {
+        // Let nearby pawns observe this craft
+        if (!this.chunkManager) return
+        
+        const pawnChunkX = Math.floor(this.x / this.chunkManager.chunkSize)
+        const pawnChunkY = Math.floor(this.y / this.chunkManager.chunkSize)
+        
+        // Check nearby chunks for other pawns
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const chunk = this.chunkManager.getChunk(pawnChunkX + dx, pawnChunkY + dy)
+                if (chunk) {
+                    for (const entity of chunk.entities) {
+                        if (entity.subtype === 'pawn' && entity !== this) {
+                            const dist = Math.sqrt((this.x - entity.x) ** 2 + (this.y - entity.y) ** 2)
+                            if (dist <= 100) { // Observation range
+                                entity.observeCraftedItem?.(item, this)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     }
 
     getItemExperience(itemType) {
