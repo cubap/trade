@@ -581,15 +581,18 @@ class PawnGoals {
                         
                         if (rdist <= (this.pawn.size + resource.size + 5)) {
                             // Gather the resource
-                            if (resource.gather) {
-                                const gathered = resource.gather(this.pawn)
+                            if (resource.gather && typeof resource.gather === 'function') {
+                                const gathered = resource.gather(1) // Gather 1 unit
                                 if (gathered) {
                                     this.pawn.addItemToInventory(gathered)
+                                    this.pawn.updateResourceMemoryConfidence(resource, true)
                                     goal.gatheredCount++
                                     console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
                                     
                                     // Update memory with fresh location
                                     this.pawn.rememberResource(resource)
+                                } else {
+                                    this.pawn.updateResourceMemoryConfidence(resource, false)
                                     
                                     // Check if we've gathered enough
                                     if (goal.gatheredCount >= (goal.count || 1)) {
@@ -679,11 +682,12 @@ class PawnGoals {
                 const dy = this.pawn.y - found.y
                 const dist = Math.sqrt(dx * dx + dy * dy)
                 
-                if (dist <= (this.pawn.size + found.size + 5) && found.gather) {
+                if (dist <= (this.pawn.size + found.size + 5) && found.gather && typeof found.gather === 'function') {
                     // Immediately gather if close enough
-                    const gathered = found.gather(this.pawn)
+                    const gathered = found.gather(1) // Gather 1 unit
                     if (gathered) {
                         this.pawn.addItemToInventory(gathered)
+                        this.pawn.updateResourceMemoryConfidence(found, true)
                         goal.gatheredCount++
                         console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
                         
@@ -691,6 +695,8 @@ class PawnGoals {
                         if (goal.gatheredCount >= (goal.count || 1)) {
                             this.completeCurrentGoal()
                         }
+                    } else {
+                        this.pawn.updateResourceMemoryConfidence(found, false)
                     }
                 }
             } else {
@@ -721,6 +727,10 @@ class PawnGoals {
                 return Math.sqrt(dx * dx + dy * dy) <= 100
             })
             
+            if (Math.random() < 0.05) {
+                console.log(`${this.pawn.name} sees ${harvestable.length} harvestable resources nearby`)
+            }
+            
             if (harvestable.length > 0) {
                 // Find closest harvestable
                 harvestable.sort((a, b) => {
@@ -734,22 +744,26 @@ class PawnGoals {
                 const dy = this.pawn.y - resource.y
                 const dist = Math.sqrt(dx * dx + dy * dy)
                 
+                if (Math.random() < 0.1) {
+                    console.log(`${this.pawn.name} approaching ${resource.subtype || resource.type} at distance ${Math.round(dist)}`)
+                }
+                
                 if (dist <= (this.pawn.size + resource.size + 5)) {
                     // Gather the resource
-                    if (resource.gather) {
-                        const gathered = resource.gather(this.pawn)
+                    if (resource.gather && typeof resource.gather === 'function') {
+                        const gathered = resource.gather(1) // Gather 1 unit
                         if (gathered) {
                             this.pawn.addItemToInventory(gathered)
-                            console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/10`)
+                            console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/${this.pawn.inventorySlots}`)
                             
-                            // Remember this resource location
-                            this.pawn.rememberResource(resource)
+                            // Update memory: success!
+                            this.pawn.updateResourceMemoryConfidence(resource, true)
                             
                             // Complete if inventory getting full OR if gathered enough variety
-                            if (this.pawn.inventory.length >= 10) {
+                            if (this.pawn.inventory.length >= this.pawn.inventorySlots) {
                                 console.log(`${this.pawn.name} inventory full, completing gathering goal`)
                                 this.completeCurrentGoal()
-                            } else if (this.pawn.inventory.length >= 5 && Math.random() < 0.3) {
+                            } else if (this.pawn.inventory.length >= Math.floor(this.pawn.inventorySlots / 2) && Math.random() < 0.3) {
                                 // 30% chance to finish early if we have decent materials
                                 console.log(`${this.pawn.name} gathered enough materials, completing goal`)
                                 this.completeCurrentGoal()
@@ -757,6 +771,8 @@ class PawnGoals {
                             // Continue gathering more if not done
                         } else {
                             console.log(`${this.pawn.name} failed to gather from ${resource.subtype || resource.type}`)
+                            // Update memory: failed to gather (depleted)
+                            this.pawn.updateResourceMemoryConfidence(resource, false)
                         }
                     }
                 } else {
