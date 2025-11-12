@@ -13,7 +13,7 @@ class Pawn extends MobileEntity {
         
         // Pawn-specific attributes
         this.inventory = [] // Carried items
-        this.inventorySlots = 10 // Default slot count
+        this.inventorySlots = 2 // Hands-only: 2 slots at start
         this.inventoryWeight = 0 // Current total weight
         this.maxWeight = 50 // Default max weight
         this.maxSize = 100 // Default max size (volume)
@@ -35,8 +35,16 @@ class Pawn extends MobileEntity {
             herbalism: 0, // Identifying and using herbs
             alchemy: 0, // Creating potions and elixirs
             poisoncraft: 0, // Making and handling poisons
+            // Invention and problem-solving
+            invention: 0, // Ability to discover new solutions
+            experimentation: 0, // Willingness to try new things
             // Add more skills here for future skill tree
         }
+        
+        // Invention/pondering system
+        this.ponderingQueue = [] // Problems to think about: { problem, context, priority, timestamp }
+        this.discoveredSolutions = new Set() // Track what this pawn has figured out
+        this.ponderingCooldown = 0 // Ticks before can ponder again
         this.behaviorState = 'idle'  // Current activity state
         
         // Initialize sophisticated needs and goals systems
@@ -70,8 +78,12 @@ class Pawn extends MobileEntity {
         this.maxLandmarks = 5 // Can be increased by skills
 
         // Resource memory: tracks seen resources for planning
-        this.resourceMemory = [] // { type, tags, x, y, lastSeen, amount }
+        // Phase 1: Egocentric (direction-based, must update as pawn moves)
+        // Phase 2: Allocentric (compass directions, fixed origin, compressed vectors)
+        this.resourceMemory = [] // { type, tags, x, y, lastSeen, amount, successCount, failCount, confidence, memoryPhase }
         this.maxResourceMemory = 20 // Can be increased by skills
+        this.memoryOrigin = { x, y } // Origin point for allocentric memory (spawn location)
+        this.memoryPhase = 1 // 1=egocentric, 2=allocentric, 3=clusters, 4=conceptual
 
         // Reputation system
         this.reputation = { alignment: 0, aggression: 0, membership: {} }
@@ -106,6 +118,12 @@ class Pawn extends MobileEntity {
         if (Array.isArray(t)) return t.includes(tag)
         if (typeof t.has === 'function') return t.has(tag)
         return false
+    }
+    
+    // Check if pawn has a container in inventory
+    hasContainer() {
+        // For now, any item with slotType === 'container' counts
+        return this.inventory.some(item => item.slotType === 'container')
     }
     
     decideNextMove() {
@@ -219,6 +237,12 @@ class Pawn extends MobileEntity {
                 this.inventory.push(gathered)
                 // Examination-based learning: require interaction with the gathered item
                 this.examineItem?.(gathered)
+                
+                // Update memory confidence: success!
+                this.updateResourceMemoryConfidence(resource, true)
+            } else {
+                // Gather failed (depleted resource)
+                this.updateResourceMemoryConfidence(resource, false)
             }
             
             // Apply rewards
@@ -231,6 +255,9 @@ class Pawn extends MobileEntity {
             this.goals.completeCurrentGoal()
             this.currentTarget = null
             this.behaviorState = 'idle'
+        } else {
+            // Resource couldn't be gathered (depleted or gone)
+            this.updateResourceMemoryConfidence(resource, false)
         }
     }
     
@@ -552,9 +579,21 @@ class Pawn extends MobileEntity {
         super.update(tick)
         this.needs.updateNeeds(tick)
         this.goals.evaluateAndSetGoals()
+        this.goals.updateGoalProgress() // Execute current goal logic
         this.passiveSkillTick()
         this.decaySkills(tick)
         this.updateHealthEvents()
+        
+        // Update memory phase every 100 ticks based on skills
+        if (tick % 100 === 0) {
+            this.updateMemoryPhase()
+        }
+        
+        // Process pondering queue periodically (especially when idle)
+        if (tick % 50 === 0 || (this.behaviorState === 'idle' && tick % 20 === 0)) {
+            this.processPonderingQueue()
+        }
+        
         if (this.behaviorState === 'idle' && !this.goals.currentGoal) {
             this.idleTicks++
             if (this.idleTicks % 100 === 0) {
@@ -800,10 +839,27 @@ class Pawn extends MobileEntity {
         
         // Add new memory
         if (this.resourceMemory.length >= this.maxResourceMemory) {
-            // Remove oldest memory
-            this.resourceMemory.sort((a, b) => a.lastSeen - b.lastSeen)
-            this.resourceMemory.shift()
+            // Phase 1-2: Remove based on confidence or age
+            // Phase 3+: Cluster compression will handle this differently
+            if (this.memoryPhase <= 2) {
+                // Remove least confident or oldest
+                this.resourceMemory.sort((a, b) => {
+                    const confA = a.confidence ?? 0.5
+                    const confB = b.confidence ?? 0.5
+                    const ageA = tick - a.lastSeen
+                    const ageB = tick - b.lastSeen
+                    // Prioritize removing low confidence and old memories
+                    return (confA - ageA * 0.001) - (confB - ageB * 0.001)
+                })
+                this.resourceMemory.shift()
+            }
         }
+        
+        // Calculate initial confidence based on observation
+        const initialConfidence = 0.7 // Start optimistic
+        
+        // Determine memory phase for this entry
+        const memPhase = this.memoryPhase
         
         this.resourceMemory.push({
             type: resourceType,
@@ -812,28 +868,142 @@ class Pawn extends MobileEntity {
             y: entity.y,
             lastSeen: tick,
             amount: entity.amount ?? 1,
-            id: entity.id
+            id: entity.id,
+            successCount: 0,
+            failCount: 0,
+            confidence: initialConfidence,
+            memoryPhase: memPhase
         })
         
         if (Math.random() < 0.05) {
             // Occasional logging (5% chance)
-            console.log(`${this.name} remembered ${resourceType} at (${Math.round(entity.x)}, ${Math.round(entity.y)}). Total memory: ${this.resourceMemory.length}`)
+            console.log(`${this.name} remembered ${resourceType} at (${Math.round(entity.x)}, ${Math.round(entity.y)}). Total memory: ${this.resourceMemory.length}, Phase: ${memPhase}`)
         }
+    }
+
+    updateResourceMemoryConfidence(resource, success) {
+        // Update confidence when gathering succeeds or fails
+        if (!resource?.x || !resource?.y) return
+        
+        const resourceType = resource.subtype || resource.type
+        const memory = this.resourceMemory.find(r => {
+            const dx = Math.abs(r.x - resource.x)
+            const dy = Math.abs(r.y - resource.y)
+            return dx < 5 && dy < 5 && r.type === resourceType
+        })
+        
+        if (memory) {
+            if (success) {
+                memory.successCount = (memory.successCount ?? 0) + 1
+                memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.15)
+            } else {
+                memory.failCount = (memory.failCount ?? 0) + 1
+                memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - 0.25)
+            }
+            
+            // Remove if confidence drops too low
+            if (memory.confidence < 0.2) {
+                this.resourceMemory = this.resourceMemory.filter(r => r !== memory)
+                if (Math.random() < 0.1) {
+                    console.log(`${this.name} forgot unreliable ${resourceType} location (confidence: ${memory.confidence.toFixed(2)})`)
+                }
+            }
+        }
+    }
+
+    updateMemoryPhase() {
+        // Advance memory phase based on orienteering and cartography skills
+        const orienteering = this.skills.orienteering ?? 0
+        const cartography = this.skills.cartography ?? 0
+        
+        if (cartography >= 50) {
+            this.memoryPhase = 4 // Conceptual maps
+            this.maxResourceMemory = 100 // Can remember almost everything
+        } else if (cartography >= 25) {
+            this.memoryPhase = 3 // Cluster memory
+            this.maxResourceMemory = 60
+        } else if (orienteering >= 15) {
+            this.memoryPhase = 2 // Allocentric (compass directions)
+            this.maxResourceMemory = 40
+        } else {
+            this.memoryPhase = 1 // Egocentric (direction-based)
+            this.maxResourceMemory = 20
+        }
+    }
+
+    getResourceDirection(memory) {
+        // Get direction description based on memory phase
+        const dx = memory.x - this.x
+        const dy = memory.y - this.y
+        const distance = Math.sqrt(dx * dx + dy * dy)
+        
+        if (this.memoryPhase === 1) {
+            // Phase 1: Egocentric - relative to current facing
+            // "behind me at 5 o'clock"
+            const angle = Math.atan2(dy, dx)
+            const clockPos = Math.round(((angle + Math.PI) / (Math.PI * 2)) * 12) % 12 || 12
+            const ahead = clockPos >= 11 || clockPos <= 1
+            const behind = clockPos >= 5 && clockPos <= 7
+            const left = clockPos >= 2 && clockPos <= 4
+            const right = clockPos >= 8 && clockPos <= 10
+            
+            let dir = ''
+            if (ahead) dir = 'ahead'
+            else if (behind) dir = 'behind'
+            else if (left) dir = 'to the left'
+            else if (right) dir = 'to the right'
+            
+            return `${dir} at ${clockPos} o'clock, ~${Math.round(distance)} steps`
+        } else if (this.memoryPhase >= 2) {
+            // Phase 2+: Allocentric - compass directions from origin
+            const originDx = memory.x - this.memoryOrigin.x
+            const originDy = memory.y - this.memoryOrigin.y
+            const compass = this.getCompassDirection(originDx, originDy)
+            const dist = Math.round(Math.sqrt(originDx * originDx + originDy * originDy))
+            
+            return `~${dist}m ${compass} of origin`
+        }
+        
+        return `~${Math.round(distance)} steps away`
+    }
+
+    getCompassDirection(dx, dy) {
+        // Convert dx/dy to compass direction (N, NE, E, SE, S, SW, W, NW)
+        const angle = Math.atan2(dy, dx) * (180 / Math.PI)
+        const normalized = (angle + 360 + 90) % 360 // Rotate so N is 0
+        
+        if (normalized < 22.5 || normalized >= 337.5) return 'N'
+        if (normalized < 67.5) return 'NE'
+        if (normalized < 112.5) return 'E'
+        if (normalized < 157.5) return 'SE'
+        if (normalized < 202.5) return 'S'
+        if (normalized < 247.5) return 'SW'
+        if (normalized < 292.5) return 'W'
+        return 'NW'
     }
 
     recallResourcesByType(type) {
         // Find remembered resources matching type
         const tick = this.world?.clock?.currentTick ?? 0
         const maxAge = 2000 // Forget after ~2000 ticks
+        const minConfidence = 0.2 // Don't recall low-confidence memories
+        
         return this.resourceMemory
-            .filter(r => r.type === type && (tick - r.lastSeen) < maxAge)
+            .filter(r => {
+                const conf = r.confidence ?? 0.5
+                return r.type === type && (tick - r.lastSeen) < maxAge && conf >= minConfidence
+            })
             .sort((a, b) => {
-                // Prioritize by recency and distance
+                // Prioritize by confidence, recency, and distance
                 const distA = Math.sqrt((this.x - a.x) ** 2 + (this.y - a.y) ** 2)
                 const distB = Math.sqrt((this.x - b.x) ** 2 + (this.y - b.y) ** 2)
                 const ageA = tick - a.lastSeen
                 const ageB = tick - b.lastSeen
-                return (distA + ageA * 0.1) - (distB + ageB * 0.1)
+                const confA = a.confidence ?? 0.5
+                const confB = b.confidence ?? 0.5
+                
+                // Weight: confidence most important, then distance, then age
+                return (distA + ageA * 0.1 - confA * 100) - (distB + ageB * 0.1 - confB * 100)
             })
     }
 
@@ -841,13 +1011,152 @@ class Pawn extends MobileEntity {
         // Find remembered resources with matching tag
         const tick = this.world?.clock?.currentTick ?? 0
         const maxAge = 2000
+        const minConfidence = 0.2
+        
         return this.resourceMemory
-            .filter(r => r.tags?.includes(tag) && (tick - r.lastSeen) < maxAge)
+            .filter(r => {
+                const conf = r.confidence ?? 0.5
+                return r.tags?.includes(tag) && (tick - r.lastSeen) < maxAge && conf >= minConfidence
+            })
             .sort((a, b) => {
                 const distA = Math.sqrt((this.x - a.x) ** 2 + (this.y - a.y) ** 2)
                 const distB = Math.sqrt((this.x - b.x) ** 2 + (this.y - b.y) ** 2)
-                return distA - distB
+                const confA = a.confidence ?? 0.5
+                const confB = b.confidence ?? 0.5
+                
+                // Confidence-weighted distance
+                return (distA - confA * 50) - (distB - confB * 50)
             })
+    }
+
+    // === Invention & Pondering ===
+    
+    ponderProblem(problemType, context = {}) {
+        // Check if already pondering this problem
+        const alreadyQueued = this.ponderingQueue.some(p => p.type === problemType)
+        if (alreadyQueued) return
+        
+        // Add to pondering queue
+        this.ponderingQueue.push({
+            type: problemType,
+            context,
+            timestamp: Date.now(),
+            attempts: 0
+        })
+        
+        console.log(`${this.name} begins pondering: ${problemType}`)
+    }
+    
+    processPonderingQueue() {
+        if (this.ponderingQueue.length === 0) return
+        if (this.ponderingCooldown > 0) {
+            this.ponderingCooldown--
+            return
+        }
+        
+        // Take first problem from queue
+        const problem = this.ponderingQueue[0]
+        problem.attempts++
+        
+        const invention = this.skills.invention ?? 0
+        const experimentation = this.skills.experimentation ?? 0
+        
+        // Base chance: 1% per invention level + 0.5% per experimentation level
+        const baseChance = (invention * 0.01) + (experimentation * 0.005)
+        
+        // Bonus from attempts (persistence pays off)
+        const attemptBonus = Math.min(0.1, problem.attempts * 0.01)
+        
+        const totalChance = baseChance + attemptBonus
+        
+        // Try to solve the problem
+        if (Math.random() < totalChance) {
+            const solution = this.discoverSolution(problem.type, problem.context)
+            if (solution) {
+                console.log(`💡 ${this.name} has an epiphany: ${solution.name}!`)
+                this.discoveredSolutions.add(solution.id)
+                
+                // Grant experience
+                this.addExperience('invention', 10 + problem.attempts * 2)
+                this.addExperience('experimentation', 5 + problem.attempts)
+                
+                // Remove from queue
+                this.ponderingQueue.shift()
+                
+                // Set cooldown before next pondering
+                this.ponderingCooldown = 100
+                
+                return solution
+            }
+        }
+        
+        // If spent too long on this problem, give up for now
+        if (problem.attempts > 20) {
+            console.log(`${this.name} sets aside the problem of ${problem.type} for now`)
+            this.ponderingQueue.shift()
+        }
+        
+        // Small cooldown between attempts
+        this.ponderingCooldown = 10
+        
+        return null
+    }
+    
+    discoverSolution(problemType, context) {
+        // Map problems to their solutions
+        const solutions = {
+            inventory_full: {
+                id: 'basket_concept',
+                name: 'Basket Weaving',
+                type: 'recipe',
+                description: 'Could weave plant fibers into a basket for carrying',
+                unlocks: 'basket'
+            },
+            need_water_container: {
+                id: 'container_concept',
+                name: 'Container Crafting',
+                type: 'recipe',
+                description: 'Need something to hold water... perhaps a woven container?',
+                unlocks: 'water_basket'
+            },
+            need_better_tools: {
+                id: 'stone_tool_concept',
+                name: 'Stone Tool Making',
+                type: 'recipe',
+                description: 'Shaping stones could make better tools',
+                unlocks: 'stone_axe'
+            },
+            need_shelter: {
+                id: 'shelter_concept',
+                name: 'Basic Shelter',
+                type: 'recipe',
+                description: 'Arranging sticks and cover could provide shelter',
+                unlocks: 'lean_to'
+            }
+        }
+        
+        const solution = solutions[problemType]
+        if (!solution) return null
+        
+        // Check if already discovered
+        if (this.discoveredSolutions.has(solution.id)) return null
+        
+        // Check if has necessary knowledge/skills
+        const requirements = {
+            basket_concept: () => this.skills.gathering >= 5,
+            container_concept: () => this.skills.gathering >= 5 && this.skills.invention >= 3,
+            stone_tool_concept: () => this.skills.crafting >= 10,
+            shelter_concept: () => this.skills.crafting >= 5 && this.skills.invention >= 5
+        }
+        
+        const meetsRequirements = requirements[solution.id]?.() ?? true
+        if (!meetsRequirements) return null
+        
+        return solution
+    }
+    
+    hasSolution(solutionId) {
+        return this.discoveredSolutions.has(solutionId)
     }
 
     recordReputationEvent({ type, value, witnesses = [], context = {} }) {
@@ -905,12 +1214,31 @@ class Pawn extends MobileEntity {
 
     addItemToInventory(item) {
         // item: { id, name, weight, size, slotType, increasesCapacity, ... }
+        // Prevent water from being added unless pawn has a container
+        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
+            // Can't carry water without a container - trigger pondering!
+            this.ponderProblem('need_water_container', {
+                itemType: 'water',
+                reason: 'Cannot carry water without container',
+                possibleSolutions: ['waterskin', 'clay_pot', 'gourd']
+            })
+            return false
+        }
         if (item.increasesCapacity) {
             this.inventorySlots += item.increasesCapacity.slots ?? 0
             this.maxWeight += item.increasesCapacity.weight ?? 0
             this.maxSize += item.increasesCapacity.size ?? 0
         }
-        if (this.inventory.length >= this.inventorySlots) return false
+        if (this.inventory.length >= this.inventorySlots) {
+            // Inventory full - trigger pondering!
+            this.ponderProblem('inventory_full', {
+                itemType: item.type,
+                currentSlots: this.inventorySlots,
+                reason: 'No more hands to carry items',
+                possibleSolutions: ['basket', 'backpack', 'pouch', 'drop_items']
+            })
+            return false
+        }
         if ((this.inventoryWeight + (item.weight ?? 1)) > this.maxWeight) return false
         if ((this.getInventorySize() + (item.size ?? 1)) > this.maxSize) return false
         this.inventory.push(item)
