@@ -879,13 +879,13 @@ class Pawn extends MobileEntity {
 
     rememberResource(entity) {
         // Remember resource location for future planning
-        if (!entity?.x || !entity?.y) return
+        if (!entity?.x || !entity?.y || !Number.isFinite(entity.x) || !Number.isFinite(entity.y)) return
         
         const tick = this.world?.clock?.currentTick ?? 0
         const resourceType = entity.subtype || entity.type
         
-        if (!resourceType) {
-            console.warn(`${this.name} tried to remember resource without type:`, entity)
+        if (!resourceType || typeof resourceType !== 'string') {
+            console.warn(`${this.name} tried to remember resource without valid type:`, entity)
             return
         }
         
@@ -918,7 +918,8 @@ class Pawn extends MobileEntity {
                     // Prioritize removing low confidence and old memories
                     return (confA - ageA * 0.001) - (confB - ageB * 0.001)
                 })
-                this.resourceMemory.shift()
+                const removed = this.resourceMemory.shift()
+                if (!removed) return // Safety check: ensure we removed something
             }
         }
         
@@ -1050,10 +1051,18 @@ class Pawn extends MobileEntity {
     }
 
     recallResourcesByType(type) {
-        // Find remembered resources matching type
+        // Find remembered resources of the specified type
         const tick = this.world?.clock?.currentTick ?? 0
-        const maxAge = 2000 // Forget after ~2000 ticks
-        const minConfidence = 0.2 // Don't recall low-confidence memories
+        const maxAge = 2000
+        const minConfidence = 0.2
+        
+        // Memory decay: remove very stale or low-confidence memories
+        this.resourceMemory = this.resourceMemory.filter(r => {
+            if ((tick - r.lastSeen) > maxAge) return false // Remove stale memories
+            const conf = r.confidence ?? 0.5
+            if (conf < 0.1) return false // Remove very low confidence memories
+            return true
+        })
         
         return this.resourceMemory
             .filter(r => {
@@ -1802,7 +1811,6 @@ class Pawn extends MobileEntity {
                 }
             }
         }
-    }
     }
 
     getItemExperience(itemType) {
