@@ -1,0 +1,104 @@
+Debugger listening on ws://127.0.0.1:58284/b53a7c74-fa2f-4ad6-bd14-3349a48e0a7c
+For help, see: https://nodejs.org/en/docs/inspector
+Debugger attached.
+Server running on http://localhost:5000
+Solo game: http://localhost:5000/solo/index.html
+[DEV LOG] craft-inject injected craft goal for Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] craft-inject injected craft goal for Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] craft-inject injected craft goal for Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 0,
+  currentGoalType: null
+}
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 0,
+  currentGoalType: null
+}
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 0,
+  currentGoalType: null
+}
+[DEV LOG] test-unlock unlocked recipe Simple Cordage for Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 1,
+  currentGoalType: null
+}
+[DEV LOG] test-unlock unlocked recipe Simple Cordage for Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 1,
+  currentGoalType: null
+}
+[DEV LOG] test-unlock unlocked recipe Simple Cordage for Player
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 1,
+  currentGoalType: null
+}
+[DEV LOG] test-unlock unlocked recipe Simple Cordage for Player
+[DEV LOG] test-inject-material { pawn: 'Player', item: 'stick', added: true }
+[DEV LOG] test-inject-material { pawn: 'Player', item: 'fiber', added: true }
+[DEV LOG] client-ready player:Player
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [ 'synthetic_stick', 'synthetic_fiber' ],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 1,
+  currentGoalType: null
+}
+[DEV LOG] test-inject-material { pawn: 'Player', item: 'stick', added: true }
+[DEV LOG] test-inject-material { pawn: 'Player', item: 'fiber', added: true }
+[DEV LOG] test-unlock unlocked recipe Simple Cordage for Player
+[DEV LOG] test-inject-material { pawn: 'Player', item: 'stick', added: false }
+[DEV LOG] test-inject-material { pawn: 'Player', item: 'fiber', added: false }
+[DEV LOG] force-dump {
+  pawn: 'Player',
+  inventory: [ 'synthetic_stick', 'synthetic_fiber' ],
+  inventorySlots: 2,
+  hasCraftMethod: true,
+  hasAddItemMethod: true,
+  unlockedRecipesCount: 1,
+  currentGoalType: null
+}
+[DEV LOG] client-ready player:Player
+Debugger ending on ws://127.0.0.1:58284/b53a7c74-fa2f-4ad6-bd14-3349a48e0a7c
+For help, see: https://nodejs.org/en/docs/inspector

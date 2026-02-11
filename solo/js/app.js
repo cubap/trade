@@ -12,6 +12,13 @@ import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
 
+// Expose recipes for testing hooks
+try {
+    window.RECIPES = RECIPES
+} catch (e) {
+    // ignore when not in browser
+}
+
 // Create a larger world
 const world = new World(2000, 2000)
 const renderer = new CanvasRenderer(world, 'game-canvas')
@@ -194,6 +201,69 @@ function preSimulateAndStart() {
             } catch (e) {
                 // Ignore when not in browser
             }
+            // TEST MODE: inject synthetic materials immediately so crafting can proceed
+            try {
+                const params = new URLSearchParams(location.search)
+                if (params.get('testMode') === '1') {
+                    player.inventory = player.inventory || []
+                    const synthetic = [ { type: 'stick', name: 'synthetic_stick' }, { type: 'fiber', name: 'synthetic_fiber' } ]
+                    for (const item of synthetic) {
+                        try {
+                            let added = false
+                            if (typeof player.addItemToInventory === 'function') {
+                                try { added = !!player.addItemToInventory(item) } catch (e) { added = false }
+                            }
+                            if (!added && player.inventory.length < (player.inventorySlots || 2)) {
+                                player.inventory.push(item)
+                                added = true
+                            }
+                            fetch('/_dev/log', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ tag: 'test-inject-material', message: { pawn: player.name || player.id, item: item.type, added } })
+                            }).catch(() => {})
+                        } catch (e) { /* ignore per-test errors */ }
+                    }
+                }
+            } catch (e) { }
+            // In test mode, unlock a nearby-gatherable recipe for the player
+            try {
+                const params = new URLSearchParams(location.search)
+                if (params.get('testMode') === '1') {
+                    const recipesList = Array.isArray(RECIPES) ? RECIPES : Object.values(RECIPES || {})
+                    const recipe = recipesList[0]
+                    if (recipe) {
+                        if (!player.unlocked) player.unlocked = { recipes: new Set() }
+                        if (!player.unlocked.recipes) player.unlocked.recipes = new Set()
+                        const key = recipe.name || recipe.id || (recipe.output && recipe.output.name) || JSON.stringify(recipe)
+                        player.unlocked.recipes.add(key)
+                        // Inform server for visibility
+                        try { fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'test-unlock', message: `unlocked recipe ${key} for ${player.name}` }) }).catch(()=>{}) } catch(e){}
+                    }
+                }
+                // In test mode, also inject synthetic materials into inventory to enable crafting
+                try {
+                    const params2 = new URLSearchParams(location.search)
+                    if (params2.get('testMode') === '1') {
+                        const synthetic = [{ type: 'stick', name: 'synthetic_stick' }, { type: 'fiber', name: 'synthetic_fiber' }]
+                        for (const s of synthetic) {
+                            try {
+                                let added = false
+                                if (typeof player.addItemToInventory === 'function') {
+                                    added = !!player.addItemToInventory(s)
+                                } else {
+                                    player.inventory = player.inventory || []
+                                    if (player.inventory.length < (player.inventorySlots || 2)) {
+                                        player.inventory.push(s)
+                                        added = true
+                                    }
+                                }
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'test-inject-material', message: { pawn: player.name||player.id, item: s.type, added } }) }).catch(()=>{})
+                            } catch (e) {}
+                        }
+                    }
+                } catch (e) {}
+            } catch (e) {}
             // Zoom to pawn perception distance (use detection as proxy)
             const perception = player.traits?.detection ?? 100
             renderer.camera.setZoomToShowRadius?.(perception, 0.85)
@@ -202,6 +272,56 @@ function preSimulateAndStart() {
             world.addEntity(school)
             console.log(`Pre-sim complete in ${(performance.now() - start).toFixed(0)} ms`)
             overlay.remove()
+            // Notify server that client finished presim and created player
+            try {
+                fetch('/_dev/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tag: 'client-ready', message: `player:${player?.name || player?.id || 'unknown'}` })
+                }).catch(() => {})
+
+                // Also send a safe, minimal dump of the player's craft-related state
+                const safeDump = {
+                    pawn: player?.name || player?.id || null,
+                    inventory: (player?.inventory || []).map(i => i?.name || i?.type || null),
+                    inventorySlots: player?.inventorySlots || 0,
+                    hasCraftMethod: typeof player?.craft === 'function',
+                    hasAddItemMethod: typeof player?.addItemToInventory === 'function',
+                    unlockedRecipesCount: player?.unlocked?.recipes ? (player.unlocked.recipes.size || Object.keys(player.unlocked.recipes || {}).length) : 0,
+                    currentGoalType: player?.goals?.currentGoal?.type || player?.currentGoal?.type || null
+                }
+                fetch('/_dev/log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tag: 'force-dump', message: safeDump })
+                }).catch(() => {})
+            } catch (e) {}
+            // If running in test mode, attempt a deterministic craft shortly after
+            try {
+                const paramsCraft = new URLSearchParams(location.search)
+                if (paramsCraft.get('testMode') === '1') {
+                    setTimeout(() => {
+                        try {
+                            const recipesList = Array.isArray(RECIPES) ? RECIPES : Object.values(RECIPES || {})
+                            const recipe = recipesList[0]
+                            if (!recipe) {
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-fail', message: 'no-recipe-available' }) }).catch(()=>{})
+                                return
+                            }
+                            let returned
+                            try {
+                                // Try invoking craft with the recipe object (implementations vary)
+                                returned = player.craft(recipe)
+                            } catch (err) {
+                                try { returned = player.craft(recipe.name || recipe.id) } catch (err2) { returned = { error: String(err2 || err) } }
+                            }
+                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-invoked', message: { pawn: player?.name || player?.id, recipe: recipe.name || recipe.id || null, returned } }) }).catch(()=>{})
+                        } catch (e) {
+                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-error', message: String(e) }) }).catch(()=>{})
+                        }
+                    }, 2500)
+                }
+            } catch (e) {}
             startMainLoop()
         }
     }

@@ -16,5 +16,301 @@
         <div id="pawn-status"></div>
     </div>
     <script type="module" src="js/app.js"></script>
+        <script>
+        // Temporary test helper: trigger a craft goal on first available pawn after startup
+        (function triggerCraftForTesting() {
+            const tryTrigger = () => {
+                try {
+                    const w = window.world || window.__world || null
+                    if (!w) return false
+                    const pawns = Array.from(w.entitiesMap?.values?.() || []).filter(e => e.subtype === 'pawn')
+                    if (!pawns || pawns.length === 0) return false
+                    const pawn = pawns[0]
+
+                    // If pawn already crafting, skip
+                    if (pawn && pawn.goals && pawn.goals.currentGoal && pawn.goals.currentGoal.type && pawn.goals.currentGoal.type.startsWith('craft')) return true
+
+                    // Push a simple craft goal onto the pawn's goal queue if possible
+                    const pg = pawn.goals || pawn.goals === undefined ? pawn.goals : null
+                    const craftGoal = {
+                        type: 'craft_item',
+                        description: 'Test craft',
+                        priority: 2,
+                        targetType: 'activity',
+                        action: 'craft',
+                        recipeName: null
+                    }
+
+                    if (pawn.goalManager && typeof pawn.goalManager === 'object') {
+                        pawn.goalManager.goalQueue.unshift(craftGoal)
+                    } else if (pawn.goals && Array.isArray(pawn.goals.goalQueue)) {
+                        pawn.goals.goalQueue.unshift(craftGoal)
+                    } else if (pawn.goals && Array.isArray(pawn.goals)) {
+                        pawn.goals.unshift(craftGoal)
+                    }
+
+                    // notify server for automated test visibility
+                    fetch('/_dev/log', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tag: 'craft-inject', message: `injected craft goal for ${pawn.name || pawn.id || 'pawn'}` })
+                    }).catch(() => {})
+
+                    // Instrument pawn methods to report craft and inventory events back to server
+                    try {
+                        if (!pawn.__devInstrumented) {
+                            pawn.__devInstrumented = true
+
+                            // Wrap craft
+                            if (pawn.craft && typeof pawn.craft === 'function') {
+                                const origCraft = pawn.craft.bind(pawn)
+                                pawn.craft = function (...args) {
+                                    try {
+                                        const result = origCraft(...args)
+                                        const handle = (res) => {
+                                            try {
+                                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft', message: `pawn:${pawn.name||pawn.id} crafted:${res?.name||JSON.stringify(res)}` }) }).catch(()=>{})
+                                            } catch(e) {}
+                                            return res
+                                        }
+                                        if (result && typeof result.then === 'function') return result.then(handle)
+                                        return handle(result)
+                                    } catch (e) {
+                                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-error', message: `pawn:${pawn.name||pawn.id} craft error:${e?.message||e}` }) }).catch(()=>{})
+                                        throw e
+                                    }
+                                }
+                            }
+
+                            // Wrap addItemToInventory
+                            if (pawn.addItemToInventory && typeof pawn.addItemToInventory === 'function') {
+                                const origAdd = pawn.addItemToInventory.bind(pawn)
+                                pawn.addItemToInventory = function (item) {
+                                    try {
+                                        const res = origAdd(item)
+                                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'addItem', message: `pawn:${pawn.name||pawn.id} addItem:${item?.name||item?.type||JSON.stringify(item)} success:${!!res}` }) }).catch(()=>{})
+                                        return res
+                                    } catch (e) {
+                                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'addItem-error', message: `pawn:${pawn.name||pawn.id} addItem error:${e?.message||e}` }) }).catch(()=>{})
+                                        throw e
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // ignore instrumentation errors
+                    }
+                    return true
+                } catch (e) {
+                    console.warn('TestScript: craft injection failed', e)
+                    fetch('/_dev/log', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tag: 'craft-inject', message: `injection failed: ${e?.message || e}` })
+                    }).catch(() => {})
+                    return false
+                }
+            }
+
+            let attempts = 0
+            const id = setInterval(() => {
+                attempts++
+                const ok = tryTrigger()
+                if (ok || attempts > 30) clearInterval(id)
+            }, 1000)
+        })()
+        // Test-mode: force-gather nearby resources into pawn inventory, then attempt a craft
+        (function forceGatherAndCraft() {
+            const params = new URLSearchParams(location.search)
+            if (params.get('testMode') !== '1') return
+
+            setTimeout(() => {
+                try {
+                    const w = window.world || window.__world || null
+                    const pawn = window.player || (w && Array.from(w.entitiesMap?.values?.() || []).find(e => e.subtype === 'pawn'))
+                    if (!pawn || !w) return
+
+                      // find harvestable resources (sticks, fiber, rock) within larger radius
+                      const entities = Array.from(w.entitiesMap.values())
+                      const candidates = entities.filter(e => e.gather && typeof e.gather === 'function' && Math.hypot((e.x||0) - (pawn.x||0), (e.y||0) - (pawn.y||0)) <= 300)
+                    let addedCount = 0
+
+                    for (const resource of candidates) {
+                        if (addedCount >= pawn.inventorySlots) break
+                        try {
+                            const gathered = resource.gather(1)
+                            if (gathered) {
+                                const added = pawn.addItemToInventory(gathered)
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-gather', message: { pawn: pawn.name||pawn.id, resource: resource.subtype||resource.type, gathered: gathered?.type||gathered?.name, added: !!added } }) }).catch(()=>{})
+                                if (added) addedCount++
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
+                    }
+
+                    // If nothing gathered, inject synthetic materials into inventory for test
+                    if (addedCount === 0) {
+                        try {
+                            const synthetic = [{ type: 'stick', name: 'synthetic_stick' }, { type: 'fiber', name: 'synthetic_fiber' }]
+                            for (const s of synthetic) {
+                                try {
+                                    const added = pawn.addItemToInventory(s)
+                                    fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-inject-item', message: { pawn: pawn.name||pawn.id, item: s.type, added: !!added } }) }).catch(()=>{})
+                                } catch (e) {}
+                            }
+                        } catch (err) {}
+                    }
+
+                    // Attempt craft with first recipe in RECIPES
+                    const recipesObj = window.RECIPES || null
+                    const recipes = recipesObj ? (Array.isArray(recipesObj) ? recipesObj : Object.values(recipesObj)) : []
+                    if (recipes.length > 0) {
+                        const recipe = recipes[0]
+                        try {
+                            const res = pawn.craft?.(recipe)
+                            if (res && typeof res.then === 'function') {
+                                res.then(r => fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-final', message: { pawn: pawn.name||pawn.id, recipe: recipe.name||recipe.id, result: r?.name||r } }) }).catch(()=>{})).catch(()=>{})
+                            } else {
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-final', message: { pawn: pawn.name||pawn.id, recipe: recipe.name||recipe.id, result: res?.name||res } }) }).catch(()=>{})
+                            }
+                        } catch (e) {
+                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-exception-final', message: e?.message||String(e) }) }).catch(()=>{})
+                        }
+                    } else {
+                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-final', message: 'no recipes available' }) }).catch(()=>{})
+                    }
+                } catch (e) {
+                    fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-gather-error', message: e?.message||String(e) }) }).catch(()=>{})
+                }
+            }, 3000)
+        })()
+        // Test-mode: force crafting attempts on a timer when `?testMode=1` is present
+        (function forceCraftInTestMode() {
+            const params = new URLSearchParams(location.search)
+            if (params.get('testMode') !== '1') return
+
+            let tries = 0
+            const maxTries = 12 // try for up to ~1 minute
+            const interval = setInterval(() => {
+                tries++
+                try {
+                    const w = window.world || window.__world || null
+                    const recipes = window.RECIPES || null
+                    const pawn = window.player || (w && Array.from(w.entitiesMap?.values?.() || []).find(e => e.subtype === 'pawn'))
+                    if (!pawn) return
+
+                    // If the pawn has a current craft goal or crafting is in progress, skip
+                    const isCrafting = pawn.goals?.currentGoal?.type?.startsWith?.('craft') || false
+                    if (isCrafting) return
+
+                    // Try direct crafting with available recipe candidates
+                    const recipeList = recipes ? (Array.isArray(recipes) ? recipes : Object.values(recipes)) : []
+                    for (const r of recipeList) {
+                        try {
+                            // attempt to craft; instrumentation will report results
+                            const result = pawn.craft?.(r)
+                            if (result && typeof result.then === 'function') {
+                                result.then(res => {
+                                    fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft', message: `pawn:${pawn.name||pawn.id} async crafted:${res?.name||JSON.stringify(res)}` }) }).catch(()=>{})
+                                }).catch(err => {})
+                            } else if (result) {
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft', message: `pawn:${pawn.name||pawn.id} crafted:${result?.name||JSON.stringify(result)}` }) }).catch(()=>{})
+                            }
+                        } catch (e) {
+                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-error', message: `pawn:${pawn.name||pawn.id} craft error:${e?.message||e}` }) }).catch(()=>{})
+                        }
+                    }
+
+                    if (tries >= maxTries) clearInterval(interval)
+                } catch (e) {
+                    // ignore
+                }
+            }, 5000)
+        })()
+        // One-shot state dump and forced craft attempt for test visibility
+        (function dumpStateAndForceCraftOnce() {
+            const params = new URLSearchParams(location.search)
+            if (params.get('testMode') !== '1') return
+
+            setTimeout(() => {
+                try {
+                    const w = window.world || window.__world || null
+                    const pawn = window.player || (w && Array.from(w.entitiesMap?.values?.() || []).find(e => e.subtype === 'pawn'))
+                    const recipesObj = window.RECIPES || null
+                    const recipes = recipesObj ? (Array.isArray(recipesObj) ? recipesObj : Object.values(recipesObj)) : []
+
+                    if (!pawn) {
+                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-dump', message: 'no pawn found' }) }).catch(()=>{})
+                        return
+                    }
+
+                    const inventory = (pawn.inventory || []).map(i => ({ name: i?.name || i?.type || null }))
+                    const unlocked = pawn.unlocked?.recipes ? Array.from(pawn.unlocked.recipes.keys?.?.() || []) : []
+                    const currentGoal = pawn.goals?.currentGoal || pawn.currentGoal || null
+
+                    fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-dump', message: { pawn: pawn.name || pawn.id || 'pawn', inventory, inventorySlots: pawn.inventorySlots, unlocked, currentGoal } }) }).catch(()=>{})
+
+                    if (recipes.length === 0) {
+                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-dump', message: 'no recipes available to force craft' }) }).catch(()=>{})
+                        return
+                    }
+
+                    // Attempt to craft first available recipe once
+                    const recipe = recipes[0]
+                    try {
+                        const result = pawn.craft?.(recipe)
+                        if (result && typeof result.then === 'function') {
+                            result.then(res => {
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-result', message: { pawn: pawn.name || pawn.id, recipe: recipe.name || recipe.id || null, result: res?.name || res } }) }).catch(()=>{})
+                            }).catch(err => {
+                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-error', message: err?.message || String(err) }) }).catch(()=>{})
+                            })
+                        } else {
+                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-result', message: { pawn: pawn.name || pawn.id, recipe: recipe.name || recipe.id || null, result: result?.name || result } }) }).catch(()=>{})
+                        }
+                    } catch (e) {
+                        fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-craft-exception', message: e?.message || String(e) }) }).catch(()=>{})
+                    }
+                } catch (err) {
+                    fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-dump-exception', message: err?.message || String(err) }) }).catch(()=>{})
+                }
+            }, 1500)
+        })()
+        // Repeated safe dump attempts to ensure we capture pawn state once it's available
+        (function repeatedSafeDump() {
+            const params = new URLSearchParams(location.search)
+            if (params.get('testMode') !== '1') return
+
+            let attempts = 0
+            const maxAttempts = 10
+            const id = setInterval(() => {
+                attempts++
+                try {
+                    const w = window.world || window.__world || null
+                    const pawn = window.player || (w && Array.from(w.entitiesMap?.values?.() || []).find(e => e.subtype === 'pawn'))
+                    if (!pawn) {
+                        // still not ready
+                        if (attempts >= maxAttempts) clearInterval(id)
+                        return
+                    }
+
+                    const safe = {
+                        pawn: pawn?.name || pawn?.id || null,
+                        inventory: (pawn.inventory || []).map(i => i?.name || i?.type || null),
+                        inventorySlots: pawn.inventorySlots || 0,
+                        hasCraft: typeof pawn.craft === 'function',
+                        hasAddItem: typeof pawn.addItemToInventory === 'function',
+                        currentGoal: pawn.goals?.currentGoal?.type || pawn.currentGoal?.type || null
+                    }
+
+                    fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'repeated-dump', message: safe }) }).catch(()=>{})
+                    clearInterval(id)
+                } catch (e) {
+                    if (attempts >= maxAttempts) clearInterval(id)
+                }
+            }, 2000)
+        })()
+        </script>
 </body>
 </html>
