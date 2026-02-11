@@ -16,6 +16,14 @@ injectRecipes(RECIPES)
 const world = new World(2000, 2000)
 const renderer = new CanvasRenderer(world, 'game-canvas')
 
+// Expose runtime objects for debugging in DevTools
+try {
+    window.world = world
+    window.renderer = renderer
+} catch (e) {
+    // Not running in browser context (e.g., tests) - ignore
+}
+
 // Add water features: a river, a couple lakes, and scattered puddles
 const waterGen = new WaterGenerator(world)
 // Long meandering river from west to east
@@ -181,6 +189,11 @@ function preSimulateAndStart() {
             const player = new Pawn('player_1', 'Player', spawnX, spawnY)
             world.addEntity(player)
             renderer.setFollowEntity?.(player)
+            try {
+                window.player = player
+            } catch (e) {
+                // Ignore when not in browser
+            }
             // Zoom to pawn perception distance (use detection as proxy)
             const perception = player.traits?.detection ?? 100
             renderer.camera.setZoomToShowRadius?.(perception, 0.85)

@@ -47,6 +47,8 @@ class CanvasRenderer {
         // Entity highlighting
         this.highlightedEntity = null
         this.highlightEndTime = 0
+        // Track last logged tick to avoid duplicate logs per animation frame
+        this._lastLoggedTick = -1
     }
 
     setupResizeHandler() {
@@ -142,9 +144,11 @@ class CanvasRenderer {
         // Get entities to render based on perception mode
         const entitiesToRender = this.perception.getEntitiesToRender(this.camera.followedEntity)
         
-        // Debug: log entity count
-        if (this.world.clock.currentTick % 60 === 0) { // Every ~1 second
+        // Debug: log entity count once per matching tick to avoid spam
+        const currentTick = this.world.clock.currentTick
+        if (currentTick % 60 === 0 && currentTick !== this._lastLoggedTick) { // Every ~60 ticks
             console.log(`Rendering ${entitiesToRender.length} entities out of ${this.world.entitiesMap.size} total`)
+            this._lastLoggedTick = currentTick
         }
         
         // Update entity renderer palette

@@ -11,6 +11,7 @@ export const INVENTION_CONFIG = {
     // Success path bonuses
     successPathBonus: 0.02,           // 2% per related success
     maxSuccessBonus: 0.20,            // Cap at 20%
+    maxTotalBonus: 0.40,              // Cap total bonuses at 40% to prevent trivial discovery
     
     // Observation bonuses
     observationBonus: 0.15,           // 15% if observed
@@ -99,7 +100,14 @@ export function getBalancedDiscoveryChance(pawn, problem) {
         problem.attempts * INVENTION_CONFIG.attemptBonus
     )
     
-    return baseChance + attemptBonus
+    // Apply total bonus cap to prevent trivial discovery rates
+    const totalBonus = Math.min(
+        INVENTION_CONFIG.maxTotalBonus,
+        attemptBonus + 
+        (problem.successCount ?? 0) * INVENTION_CONFIG.successPathBonus
+    )
+    
+    return baseChance + totalBonus
 }
 
 export function getQualityVariance(skillLevel) {

@@ -54,7 +54,7 @@ class PawnGoals {
     
     generateGoalsForNeed(need, priority) {
         const goals = []
-        
+
         switch (need) {
             case 'hunger':
                 goals.push({
@@ -67,7 +67,7 @@ class PawnGoals {
                     completionReward: { hunger: -50 }
                 })
                 break
-                
+
             case 'thirst':
                 goals.push({
                     type: 'find_water',
@@ -79,7 +79,7 @@ class PawnGoals {
                     completionReward: { thirst: -60 }
                 })
                 break
-                
+
             case 'energy':
                 goals.push({
                     type: 'rest',
@@ -88,11 +88,11 @@ class PawnGoals {
                     targetType: 'resource',
                     targetTags: ['cover'],
                     action: 'use',
-                    duration: 10, // ticks to rest
+                    duration: 10,
                     completionReward: { energy: -70 }
                 })
                 break
-                
+
             case 'safety':
                 goals.push({
                     type: 'seek_shelter',
@@ -103,43 +103,33 @@ class PawnGoals {
                     action: 'occupy',
                     completionReward: { safety: -40 }
                 })
-                break
-                
-            case 'social':
-                goals.push({
-                    type: 'socialize',
-                    priority,
-                    description: 'Interact with other pawns',
-                    targetType: 'entity',
-                    targetSubtype: 'pawn',
-                    action: 'interact',
-                    completionReward: { social: -45 }
-                })
-                break
-                
-            case 'purpose':
-                goals.push({
-                    type: 'work',
-                    priority,
-                    description: 'Engage in productive work',
-                    targetType: 'activity',
-                    action: 'work',
-                    duration: 15,
-                    completionReward: { purpose: -35 }
-                })
-                // Add crafting as a purpose-fulfilling activity
+
+                // Add crafting as a purpose-fulfilling activity when recipes unlocked
                 if (this.pawn.unlocked?.recipes?.size > 0) {
                     goals.push({
                         type: 'craft_item',
-                        priority: priority - 1,
+                        priority: Math.max(1, priority - 1),
                         description: 'Craft something useful',
                         targetType: 'activity',
                         action: 'craft',
                         completionReward: { purpose: -25, knowledge: -10 }
                     })
                 }
+
                 break
-                
+
+            case 'social':
+                goals.push({
+                    type: 'socialize',
+                    priority,
+                    description: 'Interact with others',
+                    targetType: 'entity',
+                    targetSubtype: 'pawn',
+                    action: 'socialize',
+                    completionReward: { social: -30 }
+                })
+                break
+
             case 'knowledge':
                 goals.push({
                     type: 'explore',
@@ -150,8 +140,12 @@ class PawnGoals {
                     completionReward: { knowledge: -30 }
                 })
                 break
+
+            default:
+                // No specific goals for unknown needs
+                break
         }
-        
+
         return goals
     }
     
@@ -541,40 +535,52 @@ class PawnGoals {
         if (goal.type.startsWith('craft_') || goal.type === 'craft_item') {
             if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
             const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-            
+
             // Import recipes dynamically
             import('../../crafting/Recipes.js').then(module => {
                 const { getRecipe, getAvailableRecipes, canCraftRecipe } = module
-                
+
                 let recipe = null
-                if (goal.recipeId) {
-                    recipe = getRecipe(goal.recipeId)
-                } else if (goal.type !== 'craft_item') {
-                    // Extract recipe id from goal type (e.g., craft_cordage -> cordage)
-                    const recipeId = goal.type.replace('craft_', '')
-                    recipe = getRecipe(recipeId)
+
+                // If a specific recipe was requested, try to use it
+                if (goal.recipeName) {
+                    recipe = getRecipe(goal.recipeName)
                 } else {
-                    // Pick first available recipe
-                    const available = getAvailableRecipes(this.pawn).filter(r => canCraftRecipe(this.pawn, r))
-                    recipe = available[0]
+                    // Otherwise pick a craftable recipe we can currently make
+                    const candidates = getAvailableRecipes(this.pawn).filter(r => canCraftRecipe(this.pawn, r))
+                    if (candidates.length > 0) recipe = candidates[0]
                 }
-                
-                if (recipe && canCraftRecipe(this.pawn, recipe)) {
-                    // Wait for craft time
-                    if (elapsed >= (recipe.craftTime ?? 20)) {
-                        const crafted = this.pawn.craft(recipe)
-                        if (crafted) {
-                            this.pawn.addItemToInventory(crafted)
-                            this.completeCurrentGoal()
-                        }
-                    }
-                } else if (elapsed > 100) {
-                    // Give up after 100 ticks if can't craft
-                    console.warn(`${this.pawn.name} cannot craft, abandoning goal`)
+
+                if (!recipe) {
+                    console.warn(`${this.pawn.name} recipe not found or cannot craft for goal ${goal.type}, abandoning`)
                     this.completeCurrentGoal()
+                    return
+                }
+
+                // If we can't currently craft it, give up after some time
+                if (!canCraftRecipe(this.pawn, recipe)) {
+                    if (elapsed > 100) {
+                        console.warn(`${this.pawn.name} cannot craft ${recipe.name} after waiting, abandoning`)
+                        this.completeCurrentGoal()
+                    }
+                    // Otherwise, defer and let other goals (gathering) run
+                    return
+                }
+
+                // Attempt to craft
+                const crafted = this.pawn.craft?.(recipe)
+                if (crafted) {
+                    const added = this.pawn.addItemToInventory(crafted)
+                    if (!added) console.log(`${this.pawn.name} could not carry crafted ${crafted.name}`)
+                    this.completeCurrentGoal()
+                } else {
+                    if (elapsed > 100) {
+                        console.warn(`${this.pawn.name} failed to craft ${recipe.name}, abandoning`)
+                        this.completeCurrentGoal()
+                    }
                 }
             }).catch(err => {
-                console.error('Failed to load recipes:', err)
+                console.error(`Failed to load recipes for ${goal.type}:`, err)
                 this.completeCurrentGoal()
             })
         }
@@ -678,7 +684,7 @@ class PawnGoals {
                                             this.pawn.nextTargetY = moreNearby[0].y
                                         } else {
                                             // Search for more in memory
-                                            const memories = this.pawn.recallResourcesByType(goal.targetResourceType)
+                                            const memories = this.pawn.recallResourcesByType?.(goal.targetResourceType) ?? []
                                             if (memories.length > 0) {
                                                 // Go to next remembered location
                                                 goal.targetLocation = { x: memories[0].x, y: memories[0].y }
@@ -698,7 +704,7 @@ class PawnGoals {
                         }
                     } else {
                         // Resource not found at remembered location, search memory for another location
-                        const memories = this.pawn.recallResourcesByType(goal.targetResourceType)
+                        const memories = this.pawn.recallResourcesByType?.(goal.targetResourceType) ?? []
                         if (memories.length > 0) {
                             // Try next remembered location
                             goal.targetLocation = { x: memories[0].x, y: memories[0].y }
@@ -937,11 +943,13 @@ class PawnGoals {
                     
                     if (crafted && crafted.quality >= 1.2) {
                         console.log(`${this.pawn.name} crafted valuable ${crafted.name} (quality: ${crafted.quality.toFixed(2)})`)
-                        this.pawn.addItemToInventory(crafted)
+                        const added = this.pawn.addItemToInventory(crafted)
+                        if (!added) console.log(`${this.pawn.name} could not carry crafted ${crafted.name}`)
                         this.completeCurrentGoal()
                     } else if (crafted) {
                         // Try again for higher quality
-                        this.pawn.addItemToInventory(crafted)
+                        const added = this.pawn.addItemToInventory(crafted)
+                        if (!added) console.log(`${this.pawn.name} could not carry crafted ${crafted.name}`)
                     }
                 } else {
                     // Can't craft anything, complete goal
