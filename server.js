@@ -36,4 +36,19 @@ if (process.env.NODE_ENV !== 'test') {
   })
 }
 
+// Dev logging endpoint for client-side test hooks
+app.post('/_dev/log', (req, res) => {
+  try {
+    const payload = req.body || {}
+    // Only print dev logs when explicitly allowed (reduce noise).
+    const tag = String(payload.tag || '')
+    const shouldLog = process.env.NODE_ENV === 'development' || process.env.DEV_LOG === '1' || tag.startsWith('test-') || tag.includes('craft') || tag.startsWith('dev')
+    if (shouldLog) console.log('[DEV LOG]', payload.tag || 'client', payload.message || payload)
+    res.status(200).json({ ok: true })
+  } catch (err) {
+    console.error('Failed to process /_dev/log:', err)
+    res.status(500).json({ ok: false })
+  }
+})
+
 export { app }
