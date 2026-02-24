@@ -4,6 +4,12 @@
 
 Enable emergent multi-branch civilization behavior across clan, civic, merchant, and guild pathways.
 
+Brand framing should keep the Tribe/Town/Traders triad explicit:
+
+- Tribe aligns to survival and social-cohesion gameplay loops
+- Town aligns to structure, governance, and specialization loops
+- Traders align to mobility, logistics, and market loops
+
 ## Branch Model
 
 - **Military/Clan**: defense, escort, territory pressure response
@@ -50,6 +56,8 @@ Enable emergent multi-branch civilization behavior across clan, civic, merchant,
 - Inter-group reputation affecting contract rates
 - Event hooks: raids, markets, festivals, disasters
 - User influence via priorities, injected goals, and resource valuation
+- Apprenticeship and observation effects should accelerate occupation specialization
+- Supply-chain pressure should dynamically shift role demand over time
 
 ## Metrics and Performance
 

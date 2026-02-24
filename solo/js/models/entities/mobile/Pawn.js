@@ -3,6 +3,7 @@ import PawnNeeds from './PawnNeeds.js'
 import PawnGoals from './PawnGoals.js'
 import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
+import INVENTION_CONFIG from './InventionConfig.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -25,6 +26,8 @@ class Pawn extends MobileEntity {
             cartography: 0,  // Affects map detail and persistence
             memoryClustering: 0, // Learns to group nearby resources into clusters
             routePlanning: 0, // Learns to order multi-resource gathering routes
+            agronomy: 0, // Learns crop classes, soil cues, and seed compatibility
+            materialAppraisal: 0, // Learns practical value of gathered material variants
             storytelling: 0, // Affects oral map sharing
             intuition: 0, // Perceive reputation
             bragging: 0, // Influence positive perception
@@ -54,6 +57,17 @@ class Pawn extends MobileEntity {
         this.observedCrafts = new Set() // Items seen being crafted or used
         this.knownMaterials = new Set() // Materials encountered/gathered
         this.craftingHistory = [] // Recent crafts: {recipe, quality, timestamp, success}
+        this.resourceSpecialization = {
+            domains: {},
+            materials: {},
+            woodUse: {
+                tool: 0,
+                weapon: 0,
+                construction: 0
+            },
+            knownSoilTypes: new Set(),
+            knownSeedTypes: new Set()
+        }
         
         // Initialize sophisticated needs and goals systems
         this.needs = new PawnNeeds(this)
@@ -806,8 +820,122 @@ class Pawn extends MobileEntity {
         this.resourceValuePreferences = preferences
     }
     
-    getResourceValue(resourceType) {
-        return this.resourceValuePreferences?.[resourceType] ?? 0.5
+    getResourceValue(resourceType, context = {}) {
+        const basePreference = this.resourceValuePreferences?.[resourceType] ?? 0.5
+        const domain = this.getMaterialDomain(resourceType)
+        const materialStats = this.resourceSpecialization.materials?.[resourceType] ?? { encounters: 0 }
+        const domainStats = this.resourceSpecialization.domains?.[domain] ?? { encounters: 0 }
+
+        const materialFamiliarity = Math.min(0.2, (materialStats.encounters ?? 0) * 0.01)
+        const domainFamiliarity = Math.min(0.2, (domainStats.encounters ?? 0) * 0.005)
+
+        let specializationBonus = materialFamiliarity + domainFamiliarity
+
+        const isWoodLike = domain === 'woods' || /stick|branch|timber|plank|log|shaft|pole/i.test(resourceType)
+        if (isWoodLike) {
+            const intent = context.intent ?? 'general'
+            const woodAffinity = this.getWoodUseAffinity(intent)
+            specializationBonus += woodAffinity * 0.25
+        }
+
+        if (domain === 'agriculture') {
+            const soilMatch = context.soilType && this.resourceSpecialization.knownSoilTypes.has(context.soilType)
+            const seedMatch = context.seedType && this.resourceSpecialization.knownSeedTypes.has(context.seedType)
+            if (soilMatch) specializationBonus += 0.08
+            if (seedMatch) specializationBonus += 0.08
+        }
+
+        return Math.max(0, Math.min(1, basePreference + specializationBonus))
+    }
+
+    getMaterialGroups() {
+        return {
+            ...(INVENTION_CONFIG?.materialGroups ?? {}),
+            agriculture: ['seed', 'grain', 'crop', 'wheat', 'corn', 'barley', 'rice', 'soil', 'loam', 'clay', 'silt', 'berry', 'vegetable', 'fruit']
+        }
+    }
+
+    getMaterialDomain(materialType) {
+        if (!materialType || typeof materialType !== 'string') return 'unknown'
+
+        const normalized = materialType.toLowerCase()
+        if (/seed|grain|crop|wheat|corn|barley|rice|soil|loam|clay|silt|berry|vegetable|fruit/.test(normalized)) {
+            return 'agriculture'
+        }
+
+        for (const [domain, materials] of Object.entries(this.getMaterialGroups())) {
+            const matches = materials.some(material => {
+                const token = String(material).toLowerCase()
+                return normalized === token || normalized.includes(token)
+            })
+            if (matches) return domain
+        }
+
+        return 'unknown'
+    }
+
+    getWoodUseAffinity(intent = 'general') {
+        const profile = this.resourceSpecialization.woodUse ?? { tool: 0, weapon: 0, construction: 0 }
+        if (intent === 'tool') return Math.min(1, profile.tool)
+        if (intent === 'weapon') return Math.min(1, profile.weapon)
+        if (intent === 'construction') return Math.min(1, profile.construction)
+
+        const maxAffinity = Math.max(profile.tool ?? 0, profile.weapon ?? 0, profile.construction ?? 0)
+        return Math.min(1, maxAffinity)
+    }
+
+    classifyWoodUse(material) {
+        const type = String(material?.type ?? '').toLowerCase()
+        const tags = Array.isArray(material?.tags) ? material.tags.map(t => String(t).toLowerCase()) : []
+
+        const profile = {
+            tool: 0.02,
+            weapon: 0.02,
+            construction: 0.02
+        }
+
+        if (/shaft|straight|hardwood|handle/.test(type) || tags.includes('tool')) profile.tool += 0.06
+        if (/spear|staff|pole|flex|branch/.test(type) || tags.includes('weapon')) profile.weapon += 0.06
+        if (/timber|log|plank|beam|sturdy|thick/.test(type) || tags.includes('construction')) profile.construction += 0.08
+
+        if (type === 'stick') {
+            profile.tool += 0.03
+            profile.weapon += 0.03
+            profile.construction += 0.02
+        }
+
+        return profile
+    }
+
+    updateResourceSpecialization(material) {
+        if (!material?.type) return
+
+        const type = material.type
+        const domain = this.getMaterialDomain(type)
+
+        this.resourceSpecialization.materials[type] = this.resourceSpecialization.materials[type] ?? { encounters: 0 }
+        this.resourceSpecialization.materials[type].encounters++
+
+        this.resourceSpecialization.domains[domain] = this.resourceSpecialization.domains[domain] ?? { encounters: 0 }
+        this.resourceSpecialization.domains[domain].encounters++
+
+        const soilType = material.soilType ?? material.soil
+        const seedType = material.seedType ?? material.seed
+        if (soilType) this.resourceSpecialization.knownSoilTypes.add(soilType)
+        if (seedType) this.resourceSpecialization.knownSeedTypes.add(seedType)
+
+        if (domain === 'agriculture') {
+            this.increaseSkill('agronomy', 0.05)
+            this.increaseSkill('materialAppraisal', 0.02)
+        }
+
+        if (domain === 'woods') {
+            const woodProfile = this.classifyWoodUse(material)
+            this.resourceSpecialization.woodUse.tool = Math.min(1, (this.resourceSpecialization.woodUse.tool ?? 0) + woodProfile.tool)
+            this.resourceSpecialization.woodUse.weapon = Math.min(1, (this.resourceSpecialization.woodUse.weapon ?? 0) + woodProfile.weapon)
+            this.resourceSpecialization.woodUse.construction = Math.min(1, (this.resourceSpecialization.woodUse.construction ?? 0) + woodProfile.construction)
+            this.increaseSkill('materialAppraisal', 0.03)
+        }
     }
     
     adjustInventionRate(multiplier) {
@@ -1738,6 +1866,7 @@ class Pawn extends MobileEntity {
         if (!material?.type) return
         
         this.knownMaterials.add(material.type)
+        this.updateResourceSpecialization(material)
         
         // If we know how to make something with similar materials, ponder variations
         this.considerMaterialSubstitution(material.type)
@@ -1746,17 +1875,17 @@ class Pawn extends MobileEntity {
     considerMaterialSubstitution(newMaterial) {
         // Check if we can make lateral connections
         // Example: if we know reed_basket and now have linen, consider linen_basket
-        const materialGroups = {
-            fibers: ['fiber', 'reed', 'linen', 'grass', 'hemp'],
-            stones: ['rock', 'stone', 'flint', 'obsidian'],
-            woods: ['stick', 'branch', 'log', 'plank'],
-            hides: ['leather', 'fur', 'skin', 'hide']
-        }
+        const materialGroups = this.getMaterialGroups()
         
         // Find group for this material
         let materialGroup = null
         for (const [group, materials] of Object.entries(materialGroups)) {
-            if (materials.includes(newMaterial)) {
+            const normalized = String(newMaterial).toLowerCase()
+            const matches = materials.some(material => {
+                const token = String(material).toLowerCase()
+                return normalized === token || normalized.includes(token)
+            })
+            if (matches) {
                 materialGroup = group
                 break
             }

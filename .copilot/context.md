@@ -11,6 +11,7 @@ Last updated: 2026-02-23
 ## Canonical Doc Map
 
 - Goal architecture: `docs/architecture/hierarchical-goals.md`
+- Occupation/economy framework: `docs/architecture/occupation-and-economy-framework.md`
 - Invention system: `docs/systems/invention-system.md`
 - Memory roadmap: `docs/plans/memory-system-roadmap.md`
 - Civilization roadmap: `docs/plans/civilization-roadmap.md`
@@ -21,6 +22,8 @@ Last updated: 2026-02-23
 - Invention system is implemented and configurable
 - Memory system has baseline cleanup but still needs clustering, route planning, and social sharing
 - Civilization systems remain roadmap-level and should be implemented in phased slices
+- Occupation direction is now formalized around Tribe/Town/Traders and behavior-driven specialization
+- Resource specialization now supports cross-material comprehension and use-intent valuation
 
 ## Documentation Hygiene Rules
 
@@ -30,6 +33,6 @@ Last updated: 2026-02-23
 
 ## Next Recommended Work Tracks
 
-1. Implement memory clustering and add focused tests
-2. Prototype route-aware gather planning for craft prerequisites
-3. Start Phase 0 civilization foundations (bond tracking and group formation)
+1. Add occupation signal scoring and role progression events
+2. Add market-aware goal weighting (specialization x demand x supply constraints)
+3. Start contract primitives (supply, escort, delivery, apprenticeship)
