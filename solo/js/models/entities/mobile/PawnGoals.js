@@ -456,6 +456,14 @@ class PawnGoals {
             }
         }
 
+        if (goal.type === 'socialize' && goal.target?.subtype === 'pawn') {
+            const shared = this.pawn.shareResourceMemory?.(goal.target, { maxShare: 2, minConfidence: 0.55 }) ?? 0
+            if (shared > 0) {
+                this.pawn.useSkill('storytelling', 0.05)
+                goal.target.useSkill?.('memoryClustering', 0.03)
+            }
+        }
+
         // Skill gains based on goal type (lightweight for now)
         const sg = {
             'find_food': { orienteering: 0.2 },
@@ -910,6 +918,11 @@ class PawnGoals {
                         // Both gain social and skill benefits
                         this.pawn.increaseSkill('cooperation', 1)
                         goal.partner.increaseSkill?.('cooperation', 1)
+                        const shared = this.pawn.shareResourceMemory?.(goal.partner, { maxShare: 3, minConfidence: 0.5 }) ?? 0
+                        if (shared > 0) {
+                            this.pawn.increaseSkill('routePlanning', 0.05)
+                            goal.partner.increaseSkill?.('memoryClustering', 0.05)
+                        }
                         this.completeCurrentGoal()
                     } else {
                         // Periodic skill gains during collaboration

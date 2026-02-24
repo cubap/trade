@@ -23,6 +23,8 @@ class Pawn extends MobileEntity {
             planning: 0, // Planning skill for idle automation
             orienteering: 0, // Affects map accuracy
             cartography: 0,  // Affects map detail and persistence
+            memoryClustering: 0, // Learns to group nearby resources into clusters
+            routePlanning: 0, // Learns to order multi-resource gathering routes
             storytelling: 0, // Affects oral map sharing
             intuition: 0, // Perceive reputation
             bragging: 0, // Influence positive perception
@@ -888,6 +890,35 @@ class Pawn extends MobileEntity {
             console.warn(`${this.name} tried to remember resource without valid type:`, entity)
             return
         }
+
+        const canCluster = this.memoryPhase >= 3 || (this.skills.memoryClustering ?? 0) >= 10
+        const clusteringSkill = this.skills.memoryClustering ?? 0
+        const clusterRadius = Math.min(45, 18 + clusteringSkill * 0.8)
+
+        if (canCluster) {
+            const cluster = this.resourceMemory.find(r => {
+                if (r.type !== resourceType) return false
+                const dx = r.x - entity.x
+                const dy = r.y - entity.y
+                return Math.sqrt(dx * dx + dy * dy) <= clusterRadius
+            })
+
+            if (cluster) {
+                const priorCount = Math.max(1, cluster.clusterCount ?? 1)
+                const nextCount = priorCount + 1
+
+                cluster.x = ((cluster.x * priorCount) + entity.x) / nextCount
+                cluster.y = ((cluster.y * priorCount) + entity.y) / nextCount
+                cluster.clusterCount = nextCount
+                cluster.amount = Math.max(cluster.amount ?? 1, entity.amount ?? 1)
+                cluster.lastSeen = tick
+                cluster.id = entity.id
+                cluster.confidence = Math.min(1.0, (cluster.confidence ?? 0.5) + 0.03)
+
+                this.increaseSkill('memoryClustering', 0.04)
+                return
+            }
+        }
         
         // Check if already remembered (same location and type)
         const existing = this.resourceMemory.find(r => {
@@ -902,6 +933,17 @@ class Pawn extends MobileEntity {
             existing.x = entity.x // Update to exact location
             existing.y = entity.y
             return
+        }
+
+        const nearbySameType = this.resourceMemory.some(r => {
+            if (r.type !== resourceType) return false
+            const dx = r.x - entity.x
+            const dy = r.y - entity.y
+            return Math.sqrt(dx * dx + dy * dy) <= 25
+        })
+
+        if (nearbySameType) {
+            this.increaseSkill('memoryClustering', 0.02)
         }
         
         // Add new memory
@@ -940,7 +982,9 @@ class Pawn extends MobileEntity {
             successCount: 0,
             failCount: 0,
             confidence: initialConfidence,
-            memoryPhase: memPhase
+            memoryPhase: memPhase,
+            clusterCount: 1,
+            source: 'self'
         })
         
         if (Math.random() < 0.05) {
@@ -953,6 +997,7 @@ class Pawn extends MobileEntity {
         // Update confidence when gathering succeeds or fails
         if (!resource?.x || !resource?.y) return
         
+        const tick = this.world?.clock?.currentTick ?? 0
         const resourceType = resource.subtype || resource.type
         const memory = this.resourceMemory.find(r => {
             const dx = Math.abs(r.x - resource.x)
@@ -961,12 +1006,18 @@ class Pawn extends MobileEntity {
         })
         
         if (memory) {
+            memory.lastVisited = tick
+
             if (success) {
                 memory.successCount = (memory.successCount ?? 0) + 1
-                memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.15)
+                memory.revisitFailStreak = 0
+                const recoveryBoost = Math.min(0.06, (memory.failCount ?? 0) * 0.01)
+                memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.12 + recoveryBoost)
             } else {
                 memory.failCount = (memory.failCount ?? 0) + 1
-                memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - 0.25)
+                memory.revisitFailStreak = (memory.revisitFailStreak ?? 0) + 1
+                const revisitPenalty = Math.min(0.35, 0.16 + memory.revisitFailStreak * 0.05)
+                memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - revisitPenalty)
             }
             
             // Remove if confidence drops too low
@@ -976,6 +1027,82 @@ class Pawn extends MobileEntity {
                     console.log(`${this.name} forgot unreliable ${resourceType} location (confidence: ${memory.confidence.toFixed(2)})`)
                 }
             }
+        }
+
+        this.broadcastGatheringObservation(resource, success)
+    }
+
+    observeGatheringOutcome(outcome = {}, observerWeight = 1) {
+        const type = outcome.type
+        const x = outcome.x
+        const y = outcome.y
+        const success = outcome.success === true
+
+        if (!type || typeof type !== 'string') return
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const normalizedWeight = Math.max(0.5, Math.min(1.5, observerWeight))
+
+        const memory = this.resourceMemory.find(r => {
+            if (r.type !== type) return false
+            const dx = r.x - x
+            const dy = r.y - y
+            return Math.sqrt(dx * dx + dy * dy) <= 20
+        })
+
+        if (!memory) {
+            if (success) {
+                this.learnResourceLocation({
+                    type,
+                    x,
+                    y,
+                    confidence: 0.4 * normalizedWeight,
+                    clusterCount: 1,
+                    sourcePawnId: outcome.sourcePawnId ?? null
+                })
+            }
+            return
+        }
+
+        memory.lastObservedAt = tick
+
+        if (success) {
+            memory.observedSuccessCount = (memory.observedSuccessCount ?? 0) + 1
+            memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.05 * normalizedWeight)
+            this.increaseSkill('routePlanning', 0.01 * normalizedWeight)
+        } else {
+            memory.observedFailCount = (memory.observedFailCount ?? 0) + 1
+            memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - 0.04 * normalizedWeight)
+        }
+    }
+
+    broadcastGatheringObservation(resource, success) {
+        if (!this.world?.entitiesMap) return
+
+        const resourceType = resource?.subtype || resource?.type
+        if (!resourceType) return
+
+        const sourceInfluence = 0.9 + Math.min(0.4, (this.skills.storytelling ?? 0) * 0.01)
+        const outcome = {
+            type: resourceType,
+            x: resource.x,
+            y: resource.y,
+            success,
+            sourcePawnId: this.id
+        }
+
+        for (const entity of this.world.entitiesMap.values()) {
+            if (entity === this || entity?.subtype !== 'pawn') continue
+
+            const dx = entity.x - this.x
+            const dy = entity.y - this.y
+            const distance = Math.sqrt(dx * dx + dy * dy)
+            if (distance > 120) continue
+
+            const distanceWeight = 1 - (distance / 160)
+            const observerWeight = Math.max(0.5, distanceWeight * sourceInfluence)
+            entity.observeGatheringOutcome?.(outcome, observerWeight)
         }
     }
 
@@ -1077,10 +1204,172 @@ class Pawn extends MobileEntity {
                 const ageB = tick - b.lastSeen
                 const confA = a.confidence ?? 0.5
                 const confB = b.confidence ?? 0.5
+                const clusterA = a.clusterCount ?? 1
+                const clusterB = b.clusterCount ?? 1
+                const observedSignalA = ((a.observedSuccessCount ?? 0) * 7) - ((a.observedFailCount ?? 0) * 4)
+                const observedSignalB = ((b.observedSuccessCount ?? 0) * 7) - ((b.observedFailCount ?? 0) * 4)
+                const routeSkill = this.skills.routePlanning ?? 0
+                const clusterWeight = routeSkill >= 5 ? 6 : 0
                 
                 // Weight: confidence most important, then distance, then age
-                return (distA + ageA * 0.1 - confA * 100) - (distB + ageB * 0.1 - confB * 100)
+                return (distA + ageA * 0.1 - confA * 100 - clusterA * clusterWeight - observedSignalA) - (distB + ageB * 0.1 - confB * 100 - clusterB * clusterWeight - observedSignalB)
             })
+    }
+
+    planGatheringRoute(requirements = []) {
+        if (!Array.isArray(requirements) || requirements.length === 0) return []
+
+        const routeSkill = this.skills.routePlanning ?? 0
+        const usesOptimizedRoute = routeSkill >= 5
+        const route = []
+
+        let currentX = this.x
+        let currentY = this.y
+
+        for (const requirement of requirements) {
+            const type = requirement?.type
+            const count = requirement?.count ?? 1
+
+            if (!type) continue
+
+            const memories = this.recallResourcesByType(type)
+
+            if (!memories.length) {
+                route.push({
+                    type,
+                    count,
+                    location: null,
+                    fromMemory: false
+                })
+                continue
+            }
+
+            let selected = memories[0]
+
+            if (usesOptimizedRoute) {
+                selected = [...memories].sort((a, b) => {
+                    const distA = Math.sqrt((a.x - currentX) ** 2 + (a.y - currentY) ** 2)
+                    const distB = Math.sqrt((b.x - currentX) ** 2 + (b.y - currentY) ** 2)
+                    const routeObservationWeight = routeSkill >= 8 ? 12 : 6
+                    const observedSignalA = ((a.observedSuccessCount ?? 0) * routeObservationWeight) - ((a.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
+                    const observedSignalB = ((b.observedSuccessCount ?? 0) * routeObservationWeight) - ((b.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
+                    const scoreA = distA - ((a.confidence ?? 0.5) * 40) - ((a.clusterCount ?? 1) * 10) - observedSignalA
+                    const scoreB = distB - ((b.confidence ?? 0.5) * 40) - ((b.clusterCount ?? 1) * 10) - observedSignalB
+                    return scoreA - scoreB
+                })[0]
+            }
+
+            route.push({
+                type,
+                count,
+                location: { x: selected.x, y: selected.y },
+                fromMemory: true,
+                clusterCount: selected.clusterCount ?? 1,
+                confidence: selected.confidence ?? 0.5
+            })
+
+            currentX = selected.x
+            currentY = selected.y
+        }
+
+        if (route.length > 1) {
+            this.increaseSkill('routePlanning', usesOptimizedRoute ? 0.05 : 0.02)
+        }
+
+        return route
+    }
+
+    shareResourceMemory(otherPawn, options = {}) {
+        if (!otherPawn || otherPawn === this) return 0
+
+        const maxShare = options.maxShare ?? 3
+        const minConfidence = options.minConfidence ?? 0.6
+
+        const sharable = this.resourceMemory
+            .filter(mem => (mem.confidence ?? 0.5) >= minConfidence)
+            .sort((a, b) => {
+                const confDelta = (b.confidence ?? 0.5) - (a.confidence ?? 0.5)
+                if (confDelta !== 0) return confDelta
+                return (b.clusterCount ?? 1) - (a.clusterCount ?? 1)
+            })
+            .slice(0, maxShare)
+
+        if (!sharable.length) return 0
+
+        let sharedCount = 0
+        for (const memory of sharable) {
+            const accepted = otherPawn.learnResourceLocation?.({
+                type: memory.type,
+                x: memory.x,
+                y: memory.y,
+                confidence: Math.max(0.3, (memory.confidence ?? 0.5) * 0.85),
+                clusterCount: memory.clusterCount ?? 1,
+                sourcePawnId: this.id
+            })
+
+            if (accepted) sharedCount++
+        }
+
+        if (sharedCount > 0) {
+            this.increaseSkill('storytelling', 0.03 * sharedCount)
+            this.increaseSkill('routePlanning', 0.01 * sharedCount)
+        }
+
+        return sharedCount
+    }
+
+    learnResourceLocation(knowledge = {}) {
+        const type = knowledge.type
+        const x = knowledge.x
+        const y = knowledge.y
+
+        if (!type || typeof type !== 'string') return false
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const incomingConfidence = Math.max(0, Math.min(1, knowledge.confidence ?? 0.5))
+        const incomingClusterCount = Math.max(1, knowledge.clusterCount ?? 1)
+
+        const existing = this.resourceMemory.find(mem => {
+            if (mem.type !== type) return false
+            const dx = mem.x - x
+            const dy = mem.y - y
+            return Math.sqrt(dx * dx + dy * dy) <= 20
+        })
+
+        if (existing) {
+            existing.confidence = Math.min(1, (existing.confidence ?? 0.5) + incomingConfidence * 0.2)
+            existing.clusterCount = Math.max(existing.clusterCount ?? 1, incomingClusterCount)
+            existing.lastSeen = tick
+            existing.source = 'shared'
+            this.increaseSkill('memoryClustering', 0.02)
+            return true
+        }
+
+        if (this.resourceMemory.length >= this.maxResourceMemory) {
+            this.resourceMemory.sort((a, b) => (a.confidence ?? 0.5) - (b.confidence ?? 0.5))
+            this.resourceMemory.shift()
+        }
+
+        this.resourceMemory.push({
+            type,
+            tags: [],
+            x,
+            y,
+            lastSeen: tick,
+            amount: 1,
+            id: null,
+            successCount: 0,
+            failCount: 0,
+            confidence: incomingConfidence,
+            memoryPhase: this.memoryPhase,
+            clusterCount: incomingClusterCount,
+            source: 'shared',
+            sharedBy: knowledge.sourcePawnId ?? null
+        })
+
+        this.increaseSkill('memoryClustering', 0.03)
+        return true
     }
 
     recallResourcesByTag(tag) {
