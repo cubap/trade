@@ -22,5 +22,14 @@
   - Resolved terminology (Tribe↔Tribal, Town↔Civic, Traders↔Mercantile are compatible)
   - Noted skill scaling question (recommend dual-scale: 0-10 unlock tiers, 0-100 mastery levels)
   - Documented findings in `.copilot/trees-framework-alignment.md`
+- **Configured Netlify deployment:**
+  - Created `netlify.toml` with static site configuration (Node 22.0.0, redirects, cache headers)
+  - Created `.nvmrc` for Node version pinning
+  - Updated `.gitignore` (added .env, .netlify, build artifacts)
+  - Created serverless function `netlify/functions/dev-log.js` for client-side logging
+  - Created `NETLIFY_DEPLOY.md` with deployment instructions
+  - Created root `README.md` with project overview, quick start, and design principles
+  - Configured auto-deploy on push to main branch
+  - Root URL redirects to solo game at `/solo/index.html`
 
 Use this file for future short-lived execution logs. Promote durable outcomes into `docs/`.

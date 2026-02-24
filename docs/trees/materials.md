@@ -7,6 +7,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ## Foraged / Surface Materials
 
 ### Grass ✅
+>
 > Dry or green grass blades collected from open ground.
 
 - **Prerequisites:** *(available from world spawn — no unlock required)*
@@ -19,6 +20,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Fiber ✅
+>
 > Stripped plant fibres, typically from fiber plants or processed grass.
 
 - **Prerequisites (any one path):**
@@ -33,6 +35,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Stick ✅
+>
 > Straight woody lengths broken or cut from shrubs and small trees.
 
 - **Prerequisites:** *(surface gather — no unlock required)*
@@ -45,6 +48,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Rock ✅
+>
 > Loose surface stones of various sizes.
 
 - **Prerequisites:** *(surface gather — no unlock required)*
@@ -57,6 +61,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Stone ✅
+>
 > Specific, denser rock selected for knapping quality.
 
 - **Prerequisites (any one path):**
@@ -69,6 +74,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Herb ✅
+>
 > Medicinal and edible plant matter gathered from herb clusters.
 
 - **Prerequisites:** *(surface gather from herb plants)*
@@ -81,6 +87,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Forage Food ✅
+>
 > Berries, roots, fungi — edible material gathered while exploring.
 
 - **Prerequisites:** *(found during exploration near food-source entities)*
@@ -92,6 +99,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Water ✅
+>
 > Fresh water sourced from streams, pools, and water sources.
 
 - **Prerequisites:** *(found near WaterSource entities)*
@@ -106,6 +114,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ## Processed Materials
 
 ### Cordage ✅
+>
 > Twisted plant-fibre rope; an intermediate crafted material.
 
 - **Prerequisites:**
@@ -118,6 +127,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Clay 🔮
+>
 > Wet mineral-rich earth found near water bodies; workable when moist.
 
 - **Prerequisites (any one path):**
@@ -133,6 +143,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Fired Brick 🔮
+>
 > Clay shaped and kiln-fired into a durable construction block.
 
 - **Prerequisites (any one path):**
@@ -142,11 +153,12 @@ Materials are the raw and processed substances that feed crafting recipes, build
   - [Structures › Brick House](structures.md#brick-house)
   - [Structures › Kiln](structures.md#kiln) (recursive: kiln enables better bricks)
   - Cross-path structural alternative to [Timber Frame](structures.md#timber-frame-house) and [Stone Wall](structures.md#stone-wall)
-  - *Back-pressure note:* A pawn who has built a stick shelter and later encounters clay and fire may recognise the potential for higher durability — reduced pondering difficulty.
+  - *Back-pressure note:* A pawn who has built a stick shelter and later encounters clay and fire may recognize the potential for higher durability — reduced pondering difficulty.
 
 ---
 
 ### Timber 🔮
+>
 > Felled and cut logs yielding dimensional lumber for construction.
 
 - **Prerequisites (any one path):**
@@ -161,6 +173,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Cloth 🔮
+>
 > Woven fabric; processed from fiber or linen via textile work.
 
 - **Prerequisites (any one path):**
@@ -174,6 +187,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Hide 🔮
+>
 > Animal skin removed and cured after a successful hunt or butchery.
 
 - **Prerequisites (any one path):**
@@ -187,6 +201,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Bone 🔮
+>
 > Skeletal material from butchered animals; hard and workable.
 
 - **Prerequisites (any one path):**
@@ -199,6 +214,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Linen 🔮
+>
 > Fine fibres of the flax plant; finer than grass fiber.
 
 - **Prerequisites (any one path):**
@@ -211,6 +227,7 @@ Materials are the raw and processed substances that feed crafting recipes, build
 ---
 
 ### Metal Ore 🔮
+>
 > Mineral-bearing rock seams yielding copper, tin, or iron.
 
 - **Prerequisites (any one path):**
