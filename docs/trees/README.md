@@ -2,6 +2,8 @@
 
 This directory contains the knowledge trees for the Trade simulation. Each tree describes a domain of discovery — skills, materials, tools, structures — together with the prerequisite conditions that make each discovery possible.
 
+See also **[Occupation and Economy Framework](../architecture/occupation-and-economy-framework.md)** for timing targets, gameplay feel guidance, and cross-triad interaction patterns. The trees provide WHAT unlocks, the framework provides WHEN (progression pacing) and WHY (design principles).
+
 ## How to Read the Trees
 
 - **Prerequisites** are listed under each entry. When multiple prerequisite lines appear, they represent **alternative paths** — satisfying *any one* of them is sufficient unless explicitly marked `AND`.
