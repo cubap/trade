@@ -20,31 +20,9 @@ class Pawn extends MobileEntity {
         this.maxSize = 100 // Default max size (volume)
         this.hiddenInventory = [] // Items dropped on death/harvest
 
-        this.skills = {
-            planning: 0, // Planning skill for idle automation
-            orienteering: 0, // Affects map accuracy
-            cartography: 0,  // Affects map detail and persistence
-            memoryClustering: 0, // Learns to group nearby resources into clusters
-            routePlanning: 0, // Learns to order multi-resource gathering routes
-            agronomy: 0, // Learns crop classes, soil cues, and seed compatibility
-            materialAppraisal: 0, // Learns practical value of gathered material variants
-            storytelling: 0, // Affects oral map sharing
-            intuition: 0, // Perceive reputation
-            bragging: 0, // Influence positive perception
-            composure: 0, // Hide negative acts
-            manipulation: 0, // Adjust impressions
-            convincing: 0, // Spread stories more effectively
-            // Medical and alchemical skills
-            medicine: 0, // General medical knowledge
-            surgery: 0, // Performing surgery
-            herbalism: 0, // Identifying and using herbs
-            alchemy: 0, // Creating potions and elixirs
-            poisoncraft: 0, // Making and handling poisons
-            // Invention and problem-solving
-            invention: 0, // Ability to discover new solutions
-            experimentation: 0, // Willingness to try new things
-            // Add more skills here for future skill tree
-        }
+        // Sparse skill storage - only track skills that have been used/gained
+        // Skills are stored as { skillName: value } only when value > 0
+        this.skills = {}
         
         // Invention/pondering system
         this.ponderingQueue = [] // Problems to think about: { problem, context, priority, timestamp }
@@ -378,13 +356,35 @@ class Pawn extends MobileEntity {
         return targetTags.some(tag => this.hasTag(entity, tag))
     }
     
+    /**
+     * Get a skill value (returns 0 if skill doesn't exist)
+     * @param {string} skill - Skill name
+     * @returns {number} Skill value (0 if not yet acquired)
+     */
+    getSkill(skill) {
+        return this.skills[skill] ?? 0
+    }
+    
+    /**
+     * Increase a skill (creates skill entry if first time)
+     * @param {string} skill - Skill name
+     * @param {number} amount - Amount to increase (default 1)
+     */
     increaseSkill(skill, amount = 1) {
-        if (this.skills[skill] !== undefined) {
-            this.skills[skill] += amount
-            // Mark last used for decay tracking
-            const tick = this.world?.clock?.currentTick ?? 0
-            this.skillLastUsed[skill] = tick
+        const current = this.skills[skill] ?? 0
+        const newValue = current + amount
+        
+        // Only store if value is positive (sparse storage)
+        if (newValue > 0) {
+            this.skills[skill] = newValue
+        } else if (this.skills[skill] !== undefined) {
+            // Remove skill if it drops to 0 or below
+            delete this.skills[skill]
         }
+        
+        // Mark last used for decay tracking
+        const tick = this.world?.clock?.currentTick ?? 0
+        this.skillLastUsed[skill] = tick
     }
 
     useSkill(skill, amount = 1) {
@@ -526,10 +526,18 @@ class Pawn extends MobileEntity {
         if (tick - this._lastDecayTick < 200) return // every ~200 ticks
         this._lastDecayTick = tick
         const nowTick = tick
+        
+        // Iterate over skills and decay if not recently used
         for (const [skill, value] of Object.entries(this.skills)) {
             const last = this.skillLastUsed[skill] ?? 0
             if (nowTick - last > 2000) {
-                this.skills[skill] = Math.max(0, value - 0.1)
+                const newValue = Math.max(0, value - 0.1)
+                if (newValue > 0) {
+                    this.skills[skill] = newValue
+                } else {
+                    // Remove skill from sparse storage if it decays to 0
+                    delete this.skills[skill]
+                }
             }
         }
     }
@@ -542,8 +550,8 @@ class Pawn extends MobileEntity {
     }
 
     apprenticeSkill(skill, teacher, amount = 0.5) {
-        // Apprenticing under a teacher
-        if (teacher && teacher.skills[skill] > (this.skills[skill] ?? 0)) {
+        // Apprenticing under a teacher (only learn if teacher is better)
+        if (teacher && teacher.getSkill(skill) > this.getSkill(skill)) {
             this.increaseSkill(skill, amount)
         }
     }
@@ -635,13 +643,13 @@ class Pawn extends MobileEntity {
     }
     
     increasePlanningSkill() {
-        this.skills.planning++
+        this.increaseSkill('planning', 1)
         // Optionally, trigger events or unlock features as planning increases
     }
 
     scheduleNextDay() {
         // Build a basic next-day plan into the goal queue based on planning level
-        const planning = this.skills.planning ?? 0
+        const planning = this.getSkill('planning')
         if (planning < 1) return
         // Ensure survival tasks are present
         const base = [
@@ -696,7 +704,7 @@ class Pawn extends MobileEntity {
     applyIdlePlanner(tick) {
         if (!this.idlePlan?.enabled) return
         if (this.goals.currentGoal) return
-        const planning = this.skills.planning ?? 0
+        const planning = this.getSkill('planning')
         // Unlocks: with planning >= 1, enable study; >= 3, scheduled explore
         const canStudy = planning >= 0
         const canExplore = planning >= 3
@@ -988,7 +996,7 @@ class Pawn extends MobileEntity {
         // Share degraded info based on storytelling skill
         for (const lm of this.memoryMap) {
             const degraded = { ...lm }
-            if (this.skills.storytelling < 3) {
+            if (this.getSkill('storytelling') < 3) {
                 degraded.significance = Math.max(1, (degraded.significance ?? 1) - 1)
                 degraded.name = null
             }
@@ -1019,8 +1027,8 @@ class Pawn extends MobileEntity {
             return
         }
 
-        const canCluster = this.memoryPhase >= 3 || (this.skills.memoryClustering ?? 0) >= 10
-        const clusteringSkill = this.skills.memoryClustering ?? 0
+        const canCluster = this.memoryPhase >= 3 || this.getSkill('memoryClustering') >= 10
+        const clusteringSkill = this.getSkill('memoryClustering')
         const clusterRadius = Math.min(45, 18 + clusteringSkill * 0.8)
 
         if (canCluster) {
@@ -1211,7 +1219,7 @@ class Pawn extends MobileEntity {
         const resourceType = resource?.subtype || resource?.type
         if (!resourceType) return
 
-        const sourceInfluence = 0.9 + Math.min(0.4, (this.skills.storytelling ?? 0) * 0.01)
+        const sourceInfluence = 0.9 + Math.min(0.4, this.getSkill('storytelling') * 0.01)
         const outcome = {
             type: resourceType,
             x: resource.x,
@@ -1236,8 +1244,8 @@ class Pawn extends MobileEntity {
 
     updateMemoryPhase() {
         // Advance memory phase based on orienteering and cartography skills
-        const orienteering = this.skills.orienteering ?? 0
-        const cartography = this.skills.cartography ?? 0
+        const orienteering = this.getSkill('orienteering')
+        const cartography = this.getSkill('cartography')
         
         if (cartography >= 50) {
             this.memoryPhase = 4 // Conceptual maps
@@ -1336,7 +1344,7 @@ class Pawn extends MobileEntity {
                 const clusterB = b.clusterCount ?? 1
                 const observedSignalA = ((a.observedSuccessCount ?? 0) * 7) - ((a.observedFailCount ?? 0) * 4)
                 const observedSignalB = ((b.observedSuccessCount ?? 0) * 7) - ((b.observedFailCount ?? 0) * 4)
-                const routeSkill = this.skills.routePlanning ?? 0
+                const routeSkill = this.getSkill('routePlanning')
                 const clusterWeight = routeSkill >= 5 ? 6 : 0
                 
                 // Weight: confidence most important, then distance, then age
@@ -1347,7 +1355,7 @@ class Pawn extends MobileEntity {
     planGatheringRoute(requirements = []) {
         if (!Array.isArray(requirements) || requirements.length === 0) return []
 
-        const routeSkill = this.skills.routePlanning ?? 0
+        const routeSkill = this.getSkill('routePlanning')
         const usesOptimizedRoute = routeSkill >= 5
         const route = []
 
@@ -1551,8 +1559,8 @@ class Pawn extends MobileEntity {
         const problem = this.ponderingQueue[0]
         problem.attempts++
         
-        const invention = this.skills.invention ?? 0
-        const experimentation = this.skills.experimentation ?? 0
+        const invention = this.getSkill('invention')
+        const experimentation = this.getSkill('experimentation')
         
         // Base chance: 1% per invention level + 0.5% per experimentation level
         let baseChance = (invention * 0.01) + (experimentation * 0.005)
@@ -1720,7 +1728,7 @@ class Pawn extends MobileEntity {
             if (this.discoveredSolutions.has(solution.id)) return null
             
             // Easier requirements for observed crafts
-            const observationSkill = this.skills.invention ?? 0
+            const observationSkill = this.getSkill('invention')
             if (observationSkill < 2) return null
             
             return solution
@@ -1735,25 +1743,25 @@ class Pawn extends MobileEntity {
         // Check if has necessary knowledge/skills
         const requirements = {
             basket_concept: () => {
-                const gathering = this.skills.gathering ?? 0
-                const weaving = this.skills.weaving ?? 0
+                const gathering = this.getSkill('gathering')
+                const weaving = this.getSkill('weaving')
                 return gathering >= 3 || weaving >= 1
             },
             container_concept: () => {
-                const gathering = this.skills.gathering ?? 0
-                const weaving = this.skills.weaving ?? 0
-                const invention = this.skills.invention ?? 0
+                const gathering = this.getSkill('gathering')
+                const weaving = this.getSkill('weaving')
+                const invention = this.getSkill('invention')
                 return (gathering >= 5 || weaving >= 2) && invention >= 2
             },
             stone_tool_concept: () => {
-                const knapping = this.skills.knapping ?? 0
-                const crafting = this.skills.crafting ?? 0
+                const knapping = this.getSkill('knapping')
+                const crafting = this.getSkill('crafting')
                 return knapping >= 1 || crafting >= 5
             },
             shelter_concept: () => {
-                const construction = this.skills.construction_basics ?? 0
-                const crafting = this.skills.crafting ?? 0
-                const invention = this.skills.invention ?? 0
+                const construction = this.getSkill('construction_basics')
+                const crafting = this.getSkill('crafting')
+                const invention = this.getSkill('invention')
                 return (construction >= 1 || crafting >= 3) && invention >= 3
             }
         }
@@ -1806,7 +1814,7 @@ class Pawn extends MobileEntity {
         
         let bonus = 0
         for (const skill of relatedSkills) {
-            const level = this.skills[skill] ?? 0
+            const level = this.getSkill(skill)
             bonus += level * 0.005 // 0.5% per level of related skill
         }
         
@@ -1911,8 +1919,8 @@ class Pawn extends MobileEntity {
         // story: { subject, tags, legendary, heroic }
         if (!story) return
         
-        const invention = this.skills.invention ?? 0
-        const storytelling = this.skills.storytelling ?? 0
+        const invention = this.getSkill('invention')
+        const storytelling = this.getSkill('storytelling')
         
         // Higher invention/storytelling = more likely to be inspired
         const inspirationChance = (invention + storytelling) * 0.005
@@ -1941,7 +1949,7 @@ class Pawn extends MobileEntity {
     }
 
     observeReputationEvent(actor, type, value, context = {}) {
-        const intuition = this.skills.intuition ?? 0
+        const intuition = this.getSkill('intuition')
         const perceivedValue = value * (1 + intuition * 0.05)
         const now = Date.now()
         this.reputationMemory[actor.id] = {
@@ -1956,7 +1964,7 @@ class Pawn extends MobileEntity {
 
     hearReputationStory(actor, story) {
         // story: { alignment, aggression, strength, source, timestamp }
-        const storytelling = this.skills.storytelling ?? 0
+        const storytelling = this.getSkill('storytelling')
         const decay = 1 - Math.min(0.5, storytelling * 0.05)
         const heard = {
             ...story,
@@ -2079,7 +2087,7 @@ class Pawn extends MobileEntity {
 
     canRecognizeItem(item, skill, experience = 0) {
         // Returns true if pawn can recognize item based on skill or experience
-        const skillLevel = this.skills[skill] ?? 0
+        const skillLevel = this.getSkill(skill)
         const threshold = item.recognitionThreshold ?? 25
         return skillLevel >= threshold || experience >= threshold || (skillLevel + experience) >= threshold * 1.2
     }
@@ -2101,7 +2109,7 @@ class Pawn extends MobileEntity {
         // Modern craft using Recipe data structure from Recipes.js
         // Check skills
         for (const [skill, level] of Object.entries(recipe.requiredSkills ?? {})) {
-            if ((this.skills?.[skill] ?? 0) < level) {
+            if (this.getSkill(skill) < level) {
                 console.warn(`${this.name} lacks skill ${skill} (need ${level})`)
                 return null
             }
@@ -2126,7 +2134,7 @@ class Pawn extends MobileEntity {
         }
 
         // Calculate quality based on primary skill
-        const primarySkill = this.skills?.[recipe.primarySkill] ?? 0
+        const primarySkill = this.getSkill(recipe.primarySkill)
         const baseQuality = recipe.output.baseQuality ?? 1
         const skillBonus = primarySkill * 0.01 // 1% per skill level
         

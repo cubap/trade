@@ -97,7 +97,7 @@ A self-sufficient community with water supply, workshops, and basic governance.
   - [Law Tokens](#law-tokens)
   - [Civic Reputation](#civic-reputation) system
   - Long-term stability of large groups
-  - Cross-path: governance legitimises [Mercantile › Corporation](mercantile-entrepreneurial.md#corporation) charters
+  - Cross-path: governance legitimizes [Mercantile › Corporation](mercantile-entrepreneurial.md#corporation) charters
 
 ---
 
@@ -107,9 +107,9 @@ A self-sufficient community with water supply, workshops, and basic governance.
 - **Prerequisites:**
   - Governance model established AND `planning ≥ 3`
 - **Enables:**
-  - Formalised resource redistribution
+  - Formalized resource redistribution
   - Tax collection enabling civic projects
-  - Cross-path: Tax revenue can fund [Military Defence Contracts](tribal-military.md#martial-hierarchy)
+  - Cross-path: Tax revenue can fund [Military Defense Contracts](tribal-military.md#martial-hierarchy)
 
 ---
 
@@ -127,18 +127,18 @@ A self-sufficient community with water supply, workshops, and basic governance.
 
 ## Stage 4 — Town
 
-A large, specialised settlement with multiple production chains and inter-settlement trade.
+A large, specialized settlement with multiple production chains and inter-settlement trade.
 
 ### Town 🔮
 > A settlement with formal boundary, multiple workshops, and market.
 
 - **Prerequisites:**
   - Village established AND [Stone Wall](structures.md#stone-wall) AND [Market](structures.md#market) AND group size ≥ 15
-  - At least 3 distinct craft specialisations present among pawns
+  - At least 3 distinct craft specializations present among pawns
 - **Enables:**
   - Currency issuance ([Currency Genesis](#currency))
   - Cross-path: attracts Mercantile corporations
-  - Cross-path: military defence contracts formalised as civic guard
+  - Cross-path: military defense contracts formalized as civic guard
   - [Educational Guild](#educational-guild)
 
 ---
@@ -164,7 +164,7 @@ A large, specialised settlement with multiple production chains and inter-settle
   - Civic governance established AND [Tribal › Clan Formation](tribal-military.md#clan-formation) in range
   - OR `leadership ≥ 3` AND pawn negotiates with clan coordinator
 - **Enables:**
-  - Civic security without pawn combat specialisation
+  - Civic security without pawn combat specialization
   - Clan receives food and materials (demand for civic production)
   - Mutual prosperity incentive between military and civic paths
 
