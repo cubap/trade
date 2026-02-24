@@ -22,10 +22,10 @@ app.get('/', (req, res) => {
 })
 
 // MongoDB and game logic are optional - comment out if not needed
-// import setupGameLogic from './gameLogic.js'
-// import connectDB from './config/db.js'
-// connectDB()
-// setupGameLogic(server)
+import setupGameLogic from './gameLogic.js'
+import connectDB from './config/db.js'
+connectDB()
+setupGameLogic(server)
 
 // Start server only if not in test mode
 if (process.env.NODE_ENV !== 'test') {

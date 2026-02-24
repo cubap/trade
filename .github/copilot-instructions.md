@@ -261,8 +261,8 @@ node --test test/*.test.js
 
 Create `.env` file in root:
 ```env
-PORT=3000
-MONGODB_URI=mongodb://localhost:27017/trade
+PORT=5000
+MONGO_URI=mongodb://localhost:27017/trade
 TEST_PAWN=<valid-mongodb-objectid>
 NODE_ENV=development
 ```

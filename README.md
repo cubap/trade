@@ -77,9 +77,27 @@ node --test solo/test/*.test.js
 
 ## Deployment
 
+### Static Solo Game (Netlify)
+
 The solo game is deployed as a static site on Netlify. See [NETLIFY_DEPLOY.md](NETLIFY_DEPLOY.md) for detailed instructions.
 
-For multiplayer server deployment, consider platforms like Render, Railway, or Fly.io.
+- **What's deployed**: Client-side solo game, documentation, static assets
+- **Updates**: Automatically on every push to `main`
+- **Perfect for**: Solo gameplay, fast CDN delivery
+
+### Multiplayer Server (Railway)
+
+The full Express server with Socket.io and MongoDB is deployed on Railway. See [RAILWAY_DEPLOY.md](RAILWAY_DEPLOY.md) for detailed instructions.
+
+- **What's deployed**: Node.js server, multiplayer logic, MongoDB connection, Socket.io
+- **Updates**: Automatically on every push to `main`
+- **Perfect for**: Multiplayer features, persistent data, real-time communication
+
+### Recommended Strategy
+
+1. **Netlify** - Solo game (free tier, fast CDN)
+2. **Railway** - Multiplayer server ($5/month free credit)
+3. **MongoDB Atlas** - Database (free M0 tier)
 
 ## License
 
