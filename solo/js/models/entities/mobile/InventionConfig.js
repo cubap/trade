@@ -1,5 +1,17 @@
 // Configuration for the Invention System
 // These values can be tuned to balance fun and efficiency
+//
+// PROGRESSION TIMING TARGETS:
+// - Childhood → Adulthood: ~7 days simulation time
+// - Professional specialization: ~20 days
+// - Mid-game tech (organized group): 4-5 months
+// - Preindustrial city: ~1 year
+//
+// Assuming ~10 ticks/second (36,000 ticks/hour, 864,000 ticks/day):
+// - 7 days = 6,048,000 ticks (basic competence in 2-3 domains)
+// - 20 days = 17,280,000 ticks (specialist in 1 domain, decent in 2-3 others)
+// - 150 days (5 months) = 129,600,000 ticks (group reaching mid-game tech)
+// - 365 days (1 year) = 315,360,000 ticks (city-level complexity)
 
 export const INVENTION_CONFIG = {
     // Discovery rates
@@ -70,6 +82,21 @@ export const INVENTION_CONFIG = {
     inventionRateMax: 5.0,            // Max invention rate
     resourceValueMin: 0.0,            // Min resource value
     resourceValueMax: 1.0,            // Max resource value
+    
+    // Skill progression rates (to meet timing targets)
+    skillGainBase: 0.1,               // Base skill gain per successful action
+    skillGainDiminishing: 0.95,       // Diminishing factor per level (95% effectiveness)
+    skillGainSocial: 0.15,            // Apprentice/observation bonus (50% faster)
+    specialistThreshold: 40,          // Skill level = specialist recognition
+    masterThreshold: 80,              // Skill level = master recognition
+    occupationLockTicks: 17280000,    // ~20 days - primary occupation becomes evident
+    
+    // Tech unlock timing (group-level milestones)
+    earlyCraftingTicks: 604800,       // ~7 days - basic stone age complete
+    metalworkingTicks: 12960000,      // ~2 weeks - copper tools accessible
+    ironAgeTicks: 77760000,           // ~3 months - iron smelting unlocked
+    advancedCraftTicks: 129600000,    // ~5 months - specialized workshops
+    cityComplexityTicks: 259200000,   // ~10 months - full civic systems
     
     // Balancing flags
     enableSkillDecay: true,           // Whether skills decay over time

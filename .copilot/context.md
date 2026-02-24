@@ -2,6 +2,23 @@
 
 Last updated: 2026-02-23
 
+## Core Design Principles
+
+### Progression Pacing
+
+All systems should respect these timing targets for emergent gameplay feel:
+
+- **Individual Pawn**: Childhood → adulthood in ~7 days, professional specialization evident by ~20 days
+- **Group Development**: Tribes form naturally (weeks 1-3), mid-game tech in 4-5 months, preindustrial city in ~1 year
+- **Technology**: Stone age comes easily, progression brisk but not grindy (Minecraft/Vintage Story brackets, no magic)
+- **Control Style**: Indirect (set goals/priorities) not micromanagement, similar to One Hour One Life's emergent feel
+
+### Tribe/Town/Traders Triad
+
+- Skills cluster by group but some (teaching, crafting, assessment) express differently in each context
+- Cross-triad interactions drive specialization economies (tribes = security/gathering, towns = production/governance, traders = logistics/arbitrage)
+- Occupation emerges from behavior patterns, not class selection
+
 ## Working Agreements
 
 - Keep documentation canonical under `docs/`
@@ -12,6 +29,7 @@ Last updated: 2026-02-23
 
 - Goal architecture: `docs/architecture/hierarchical-goals.md`
 - Occupation/economy framework: `docs/architecture/occupation-and-economy-framework.md`
+- **Knowledge trees:** `docs/trees/` (skills, materials, tools, structures, 3 paths with detailed prerequisites)
 - Invention system: `docs/systems/invention-system.md`
 - Memory roadmap: `docs/plans/memory-system-roadmap.md`
 - Civilization roadmap: `docs/plans/civilization-roadmap.md`
@@ -30,9 +48,22 @@ Last updated: 2026-02-23
 - Session-specific notes belong in `.copilot/` only
 - Promote durable guidance to `docs/` after stabilization
 - Remove or merge superseded markdown docs promptly
+- US English spelling and consistent terminology (e.g. specialization, governance, contracts) in docs
+
+## Trees-Framework Relationship
+
+- **Trees** (`docs/trees/`): Detailed prerequisite chains, specific unlock thresholds, alternative material paths
+- **Framework** (`docs/architecture/occupation-and-economy-framework.md`): Timing targets, gameplay feel, cross-triad interactions
+- **Alignment:** Trees = WHAT unlocks, Framework = WHEN/WHY
+- **Terminology:** Tribe↔Tribal/Military, Town↔Civic/Industrial, Traders↔Mercantile/Entrepreneurial
+- **Key work items from alignment:** occupation signal scoring, prerequisite evaluation, contract system, teaching variants, group formation
+- **Skill scaling recommendation:** Dual-scale (0-10 unlock tiers for features, 0-100 mastery for quality/identity)
 
 ## Next Recommended Work Tracks
 
-1. Add occupation signal scoring and role progression events
-2. Add market-aware goal weighting (specialization x demand x supply constraints)
-3. Start contract primitives (supply, escort, delivery, apprenticeship)
+1. **Resolve skill scaling model** (dual-scale: unlock tiers 0-10, mastery levels 0-100)
+2. **Implement occupation signal scoring** (behavior frequency × success rate × domain affinity)
+3. **Implement prerequisite evaluation system** (check skill/exposure/proximity conditions from trees)
+4. **Add contract primitives** (supply, escort, delivery, apprenticeship, security with reputation)
+5. **Implement group formation mechanics** (bonded_pair, party, clan, proto_settlement detection)
+6. **Add teaching variant mechanics** (observational, formal schooling, apprenticeship)
