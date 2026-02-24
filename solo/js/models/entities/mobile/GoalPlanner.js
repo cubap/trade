@@ -13,40 +13,51 @@ export function decomposeGoal(pawn, goal) {
         
         if (!recipe) return subgoals
         
+        const requirements = []
+
         // Check each required item
         for (const req of recipe.requiredItems) {
             const haveCount = pawn.inventory?.filter(item => item.type === req.type).length ?? 0
             const needCount = req.count - haveCount
             
             if (needCount > 0) {
-                // Check if we remember where to find this resource
-                const remembered = pawn.recallResourcesByType?.(req.type) ?? []
-                
-                if (remembered.length > 0) {
-                    // Add gather subgoal for remembered location
-                    subgoals.push({
-                        type: 'gather_specific',
-                        priority: goal.priority + 1,
-                        description: `Gather ${needCount}x ${req.type}`,
-                        targetType: 'resource',
-                        targetLocation: { x: remembered[0].x, y: remembered[0].y },
-                        targetResourceType: req.type,
-                        action: 'gather',
-                        count: needCount,
-                        parentGoal: goal.type
-                    })
-                } else {
-                    // Need to search for resource
-                    subgoals.push({
-                        type: 'search_resource',
-                        priority: goal.priority + 1,
-                        description: `Search for ${req.type}`,
-                        targetType: 'location',
-                        targetResourceType: req.type,
-                        action: 'explore',
-                        parentGoal: goal.type
-                    })
-                }
+                requirements.push({ type: req.type, count: needCount })
+            }
+        }
+
+        const route = pawn.planGatheringRoute?.(requirements) ?? requirements.map(req => {
+            const remembered = pawn.recallResourcesByType?.(req.type) ?? []
+            return {
+                type: req.type,
+                count: req.count,
+                location: remembered[0] ? { x: remembered[0].x, y: remembered[0].y } : null,
+                fromMemory: remembered.length > 0
+            }
+        })
+
+        for (const stop of route) {
+            if (stop.location) {
+                subgoals.push({
+                    type: 'gather_specific',
+                    priority: goal.priority + 1,
+                    description: `Gather ${stop.count}x ${stop.type}`,
+                    targetType: 'resource',
+                    targetLocation: stop.location,
+                    targetResourceType: stop.type,
+                    action: 'gather',
+                    count: stop.count,
+                    parentGoal: goal.type
+                })
+            } else {
+                subgoals.push({
+                    type: 'search_resource',
+                    priority: goal.priority + 1,
+                    description: `Search for ${stop.type}`,
+                    targetType: 'location',
+                    targetResourceType: stop.type,
+                    action: 'explore',
+                    parentGoal: goal.type
+                })
             }
         }
         
