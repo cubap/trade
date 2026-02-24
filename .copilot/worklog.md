@@ -31,5 +31,13 @@
   - Created root `README.md` with project overview, quick start, and design principles
   - Configured auto-deploy on push to main branch
   - Root URL redirects to solo game at `/solo/index.html`
+- **Configured Railway deployment:**
+  - Created `railway.toml` with build/deploy configuration
+  - Created `Procfile` for process management
+  - Created `RAILWAY_DEPLOY.md` with comprehensive deployment guide
+  - Updated environment variable references from MONGODB_URI to MONGO_URI (matches code)
+  - Updated README.md with dual deployment strategy (Netlify + Railway)
+  - Configured auto-deploy on push to main branch
+  - Railway hosts full Node.js server with Socket.io and MongoDB
 
 Use this file for future short-lived execution logs. Promote durable outcomes into `docs/`.
