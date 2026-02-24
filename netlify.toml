@@ -1,0 +1,46 @@
+[build]
+  publish = "."
+  command = "echo 'No build step required for static files'"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22.0.0"
+
+# Redirect root to solo game
+[[redirects]]
+  from = "/"
+  to = "/solo/index.html"
+  status = 200
+
+# Dev logging endpoint as serverless function
+[[redirects]]
+  from = "/_dev/log"
+  to = "/.netlify/functions/dev-log"
+  status = 200
+
+# Headers for static assets
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/solo/js/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/solo/css/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# MIME types for JavaScript modules
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
+
+[[headers]]
+  for = "/solo/js/*.js"
+  [headers.values]
+    Content-Type = "application/javascript; charset=utf-8"
