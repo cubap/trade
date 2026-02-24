@@ -109,6 +109,9 @@ class Pawn extends MobileEntity {
         this.lastDrinkTime = 0
         this.sleepDeprivation = 0 // In game seconds
         this.isAsleep = false
+
+        // Unlocked skills, goals, and recipes (populated by evaluateSkillUnlocks)
+        this.unlocked = { skills: new Set(), goals: new Set(), recipes: new Set() }
     }
     
     // Helper to check tags whether Set or Array
@@ -665,7 +668,6 @@ class Pawn extends MobileEntity {
 
     evaluateSkillUnlocks() {
         // Data-driven unlocks using SKILL_UNLOCKS table
-        this.unlocked = this.unlocked ?? { skills: new Set(), goals: new Set(), recipes: new Set() }
         const newly = { skills: [], goals: [], recipes: [] }
         for (const unlock of SKILL_UNLOCKS) {
             // Skip if all unlock targets already granted
