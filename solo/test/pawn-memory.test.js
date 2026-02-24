@@ -28,10 +28,152 @@ class MockPawn {
         this.id = `pawn-${Math.random().toString(16).slice(2)}`
         this.subtype = 'pawn'
         this.world.entitiesMap.set(this.id, this)
+        this.resourceValuePreferences = {}
+        this.resourceSpecialization = {
+            domains: {},
+            materials: {},
+            woodUse: {
+                tool: 0,
+                weapon: 0,
+                construction: 0
+            },
+            knownSoilTypes: new Set(),
+            knownSeedTypes: new Set()
+        }
     }
 
     increaseSkill(skill, amount = 1) {
         this.skills[skill] = (this.skills[skill] ?? 0) + amount
+    }
+
+    getMaterialGroups() {
+        return {
+            fibers: ['fiber', 'reed', 'linen', 'grass', 'hemp', 'cotton', 'wool'],
+            stones: ['rock', 'stone', 'flint', 'obsidian', 'granite', 'marble'],
+            woods: ['stick', 'branch', 'log', 'plank', 'timber', 'bark'],
+            hides: ['leather', 'fur', 'skin', 'hide', 'pelt'],
+            metals: ['copper', 'bronze', 'iron', 'steel', 'gold', 'silver'],
+            herbs: ['herb', 'leaf', 'flower', 'root', 'bark', 'seed'],
+            agriculture: ['seed', 'grain', 'crop', 'wheat', 'corn', 'barley', 'rice', 'soil', 'loam', 'clay', 'silt', 'berry', 'vegetable', 'fruit']
+        }
+    }
+
+    getMaterialDomain(materialType) {
+        if (!materialType || typeof materialType !== 'string') return 'unknown'
+
+        const normalized = materialType.toLowerCase()
+        if (/seed|grain|crop|wheat|corn|barley|rice|soil|loam|clay|silt|berry|vegetable|fruit/.test(normalized)) {
+            return 'agriculture'
+        }
+
+        for (const [domain, materials] of Object.entries(this.getMaterialGroups())) {
+            const matches = materials.some(material => {
+                const token = String(material).toLowerCase()
+                return normalized === token || normalized.includes(token)
+            })
+            if (matches) return domain
+        }
+
+        return 'unknown'
+    }
+
+    getWoodUseAffinity(intent = 'general') {
+        const profile = this.resourceSpecialization.woodUse ?? { tool: 0, weapon: 0, construction: 0 }
+        if (intent === 'tool') return Math.min(1, profile.tool)
+        if (intent === 'weapon') return Math.min(1, profile.weapon)
+        if (intent === 'construction') return Math.min(1, profile.construction)
+        return Math.min(1, Math.max(profile.tool ?? 0, profile.weapon ?? 0, profile.construction ?? 0))
+    }
+
+    classifyWoodUse(material) {
+        const type = String(material?.type ?? '').toLowerCase()
+        const tags = Array.isArray(material?.tags) ? material.tags.map(t => String(t).toLowerCase()) : []
+
+        const profile = {
+            tool: 0.02,
+            weapon: 0.02,
+            construction: 0.02
+        }
+
+        if (/shaft|straight|hardwood|handle/.test(type) || tags.includes('tool')) profile.tool += 0.06
+        if (/spear|staff|pole|flex|branch/.test(type) || tags.includes('weapon')) profile.weapon += 0.06
+        if (/timber|log|plank|beam|sturdy|thick/.test(type) || tags.includes('construction')) profile.construction += 0.08
+
+        if (type === 'stick') {
+            profile.tool += 0.03
+            profile.weapon += 0.03
+            profile.construction += 0.02
+        }
+
+        return profile
+    }
+
+    updateResourceSpecialization(material) {
+        if (!material?.type) return
+
+        const type = material.type
+        const domain = this.getMaterialDomain(type)
+
+        this.resourceSpecialization.materials[type] = this.resourceSpecialization.materials[type] ?? { encounters: 0 }
+        this.resourceSpecialization.materials[type].encounters++
+
+        this.resourceSpecialization.domains[domain] = this.resourceSpecialization.domains[domain] ?? { encounters: 0 }
+        this.resourceSpecialization.domains[domain].encounters++
+
+        const soilType = material.soilType ?? material.soil
+        const seedType = material.seedType ?? material.seed
+        if (soilType) this.resourceSpecialization.knownSoilTypes.add(soilType)
+        if (seedType) this.resourceSpecialization.knownSeedTypes.add(seedType)
+
+        if (domain === 'agriculture') {
+            this.increaseSkill('agronomy', 0.05)
+            this.increaseSkill('materialAppraisal', 0.02)
+        }
+
+        if (domain === 'woods') {
+            const woodProfile = this.classifyWoodUse(material)
+            this.resourceSpecialization.woodUse.tool = Math.min(1, (this.resourceSpecialization.woodUse.tool ?? 0) + woodProfile.tool)
+            this.resourceSpecialization.woodUse.weapon = Math.min(1, (this.resourceSpecialization.woodUse.weapon ?? 0) + woodProfile.weapon)
+            this.resourceSpecialization.woodUse.construction = Math.min(1, (this.resourceSpecialization.woodUse.construction ?? 0) + woodProfile.construction)
+            this.increaseSkill('materialAppraisal', 0.03)
+        }
+    }
+
+    setResourceValuePreferences(preferences) {
+        this.resourceValuePreferences = preferences
+    }
+
+    getResourceValue(resourceType, context = {}) {
+        const basePreference = this.resourceValuePreferences?.[resourceType] ?? 0.5
+        const domain = this.getMaterialDomain(resourceType)
+        const materialStats = this.resourceSpecialization.materials?.[resourceType] ?? { encounters: 0 }
+        const domainStats = this.resourceSpecialization.domains?.[domain] ?? { encounters: 0 }
+
+        const materialFamiliarity = Math.min(0.2, (materialStats.encounters ?? 0) * 0.01)
+        const domainFamiliarity = Math.min(0.2, (domainStats.encounters ?? 0) * 0.005)
+
+        let specializationBonus = materialFamiliarity + domainFamiliarity
+
+        const isWoodLike = domain === 'woods' || /stick|branch|timber|plank|log|shaft|pole/i.test(resourceType)
+        if (isWoodLike) {
+            const intent = context.intent ?? 'general'
+            const woodAffinity = this.getWoodUseAffinity(intent)
+            specializationBonus += woodAffinity * 0.25
+        }
+
+        if (domain === 'agriculture') {
+            const soilMatch = context.soilType && this.resourceSpecialization.knownSoilTypes.has(context.soilType)
+            const seedMatch = context.seedType && this.resourceSpecialization.knownSeedTypes.has(context.seedType)
+            if (soilMatch) specializationBonus += 0.08
+            if (seedMatch) specializationBonus += 0.08
+        }
+
+        return Math.max(0, Math.min(1, basePreference + specializationBonus))
+    }
+
+    trackMaterialEncounter(material) {
+        if (!material?.type) return
+        this.updateResourceSpecialization(material)
     }
     
     // Copy of the implementation we're testing
@@ -270,8 +412,11 @@ class MockPawn {
                 selected = [...memories].sort((a, b) => {
                     const distA = Math.sqrt((a.x - currentX) ** 2 + (a.y - currentY) ** 2)
                     const distB = Math.sqrt((b.x - currentX) ** 2 + (b.y - currentY) ** 2)
-                    const scoreA = distA - ((a.confidence ?? 0.5) * 40) - ((a.clusterCount ?? 1) * 10)
-                    const scoreB = distB - ((b.confidence ?? 0.5) * 40) - ((b.clusterCount ?? 1) * 10)
+                    const routeObservationWeight = routeSkill >= 8 ? 12 : 6
+                    const observedSignalA = ((a.observedSuccessCount ?? 0) * routeObservationWeight) - ((a.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
+                    const observedSignalB = ((b.observedSuccessCount ?? 0) * routeObservationWeight) - ((b.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
+                    const scoreA = distA - ((a.confidence ?? 0.5) * 40) - ((a.clusterCount ?? 1) * 10) - observedSignalA
+                    const scoreB = distB - ((b.confidence ?? 0.5) * 40) - ((b.clusterCount ?? 1) * 10) - observedSignalB
                     return scoreA - scoreB
                 })[0]
             }
@@ -582,5 +727,70 @@ test('Pawn Memory System - Revisit Decay and Observation Weighting', async (t) =
 
         assert.ok((observer.resourceMemory[0].confidence ?? 0) > 0.4, 'Observed success should improve confidence')
         assert.ok((observer.resourceMemory[0].observedSuccessCount ?? 0) >= 1, 'Observed success count should be tracked')
+    })
+
+    await t.test('should prefer higher observed-success memory in optimized route selection', () => {
+        const pawn = new MockPawn()
+        pawn.skills.routePlanning = 9
+
+        pawn.resourceMemory.push(
+            {
+                type: 'rock',
+                x: 505,
+                y: 500,
+                lastSeen: 0,
+                confidence: 0.6,
+                clusterCount: 1,
+                observedSuccessCount: 0,
+                observedFailCount: 0
+            },
+            {
+                type: 'rock',
+                x: 545,
+                y: 500,
+                lastSeen: 0,
+                confidence: 0.55,
+                clusterCount: 1,
+                observedSuccessCount: 8,
+                observedFailCount: 0
+            }
+        )
+
+        const route = pawn.planGatheringRoute([{ type: 'rock', count: 1 }])
+
+        assert.strictEqual(route.length, 1)
+        assert.ok(route[0].location?.x === 545, 'Route should prefer observed-success location over nearer but unproven location')
+    })
+})
+
+test('Pawn Memory System - Broad Resource Specialization', async (t) => {
+    await t.test('farmer-type exposure should improve value comprehension for similar agriculture class', () => {
+        const pawn = new MockPawn()
+
+        pawn.trackMaterialEncounter({ type: 'wheat_seed', soilType: 'loam', seedType: 'wheat' })
+        pawn.trackMaterialEncounter({ type: 'barley_seed', soilType: 'loam', seedType: 'barley' })
+        pawn.trackMaterialEncounter({ type: 'crop_bundle', soilType: 'silt', seedType: 'corn' })
+
+        const unfamiliarBase = pawn.getResourceValue('corn_seed')
+        const withKnownSoil = pawn.getResourceValue('corn_seed', { soilType: 'loam' })
+        const withSoilAndSeed = pawn.getResourceValue('corn_seed', { soilType: 'loam', seedType: 'wheat' })
+
+        assert.ok(withKnownSoil > unfamiliarBase, 'Known soil classes should improve comprehension/value for similar agriculture materials')
+        assert.ok(withSoilAndSeed > withKnownSoil, 'Known seed classes should further improve valuation for similar items')
+    })
+
+    await t.test('stick gatherer discernment should bias value by intended use', () => {
+        const pawn = new MockPawn()
+
+        pawn.trackMaterialEncounter({ type: 'timber_stick', tags: ['construction'] })
+        pawn.trackMaterialEncounter({ type: 'straight_shaft', tags: ['tool'] })
+        pawn.trackMaterialEncounter({ type: 'spear_branch', tags: ['weapon'] })
+
+        const constructionValue = pawn.getResourceValue('stick', { intent: 'construction' })
+        const toolValue = pawn.getResourceValue('stick', { intent: 'tool' })
+        const weaponValue = pawn.getResourceValue('stick', { intent: 'weapon' })
+
+        assert.ok(constructionValue !== toolValue || constructionValue !== weaponValue, 'Stick valuation should diverge by intended use as discernment develops')
+        assert.ok(Math.max(constructionValue, toolValue, weaponValue) > 0.5, 'At least one use-specific valuation should exceed neutral baseline')
     })
 })

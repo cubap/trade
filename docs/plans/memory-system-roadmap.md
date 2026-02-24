@@ -37,6 +37,7 @@ Current implementation notes:
 
 - Added learnable `routePlanning` skill progression through route creation and social exchange
 - Added `planGatheringRoute(requirements)` and integrated it into goal decomposition for craft prerequisites
+- Added explicit observed-success/failure weighting in route stop scoring so experienced pawns prefer proven nodes over merely close ones
 
 ### Phase 4: Knowledge Sharing
 
@@ -49,6 +50,14 @@ Current implementation notes:
 - Added revisit-based confidence decay that penalizes repeated failed returns more strongly
 - Added witnessed gathering outcome weighting (`observeGatheringOutcome`) so nearby pawn successes/failures adjust memory confidence
 - Added broadcast propagation of gather outcomes to nearby pawns to reinforce practical learning-by-observation
+- Added broad class-level resource specialization so repeated encounters improve comprehension for similar material families
+- Added intent-aware wood/stick discernment so practical suitability (tool, weapon, construction) can increase valuation
+
+Potential considerations:
+
+- Add seasonal and biome-specific memory weighting for agriculture-focused pawns
+- Add explicit market demand memory so specialization affects trade strategy and profession drift
+- Add mentorship bonuses when novices witness expert classification and valuation decisions
 
 ## Optional Extensions
 

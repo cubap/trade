@@ -11,6 +11,7 @@ This directory is the canonical home for project documentation.
 ## Canonical Documents
 
 - `architecture/hierarchical-goals.md`
+- `architecture/occupation-and-economy-framework.md`
 - `systems/invention-system.md`
 - `plans/memory-system-roadmap.md`
 - `plans/civilization-roadmap.md`
