@@ -18,7 +18,6 @@ class GameClock {
     }
     
     resume() {
-        this.isPaused = true
         // Reset last timestamp on resume to prevent time accumulation during pause
         this.lastTimestamp = performance.now()
         this.accumulatedTime = 0
@@ -87,6 +86,21 @@ class GameClock {
         const gs = this.getGameSeconds() % daySeconds
         const scaled = Math.floor((gs * 24) / daySeconds)
         return (scaled + offset + 24) % 24
+    }
+
+    // Returns 'dawn' | 'day' | 'dusk' | 'night' based on the 24-hour clock
+    getDayPhase() {
+        const h = this.getHour24()
+        if (h >= 5 && h < 8)  return 'dawn'
+        if (h >= 8 && h < 18) return 'day'
+        if (h >= 18 && h < 21) return 'dusk'
+        return 'night'
+    }
+
+    // True during dawn and day hours (5 ≤ h ≤ 17, i.e. 5:00–18:00)
+    isDaytime() {
+        const h = this.getHour24()
+        return h >= 5 && h < 18
     }
 }
 
