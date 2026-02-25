@@ -8,6 +8,7 @@ import FloraGenerator from './core/FloraGenerator.js'
 import WaterGenerator from './core/WaterGenerator.js'
 import RECIPES from './models/crafting/Recipes.js'
 import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
+import PlayerMode from './core/PlayerMode.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -22,11 +23,13 @@ try {
 // Create a larger world
 const world = new World(2000, 2000)
 const renderer = new CanvasRenderer(world, 'game-canvas')
+const playerMode = new PlayerMode(world, renderer)
 
 // Expose runtime objects for debugging in DevTools
 try {
     window.world = world
     window.renderer = renderer
+    window.playerMode = playerMode
 } catch (e) {
     // Not running in browser context (e.g., tests) - ignore
 }
@@ -195,6 +198,7 @@ function preSimulateAndStart() {
             const spawnY = Math.round(world.height * 0.5)
             const player = new Pawn('player_1', 'Player', spawnX, spawnY)
             world.addEntity(player)
+            playerMode.setTrackedPawn(player)
             renderer.setFollowEntity?.(player)
             try {
                 window.player = player
@@ -333,9 +337,11 @@ preSimulateAndStart()
 
 // Controls are initialized after presim completes
 let controls
+let _modeSwitcherUpdate = null
 function startMainLoop() {
     // Setup UI controls
-    controls = setupControls(world, renderer)
+    controls = setupControls(world, renderer, playerMode)
+    _modeSwitcherUpdate = controls?.modeSwitcher?.update ?? null
 
     // Pause/resume simulation on tab blur/focus
     let pausedByTab = false
@@ -363,6 +369,8 @@ function simulationLoop(timestamp) {
     if (!controls?.isPaused?.()) {
             world.update(timestamp)
             updateWorldStats()  // Update world stats display
+            // Refresh mode-switcher unlock state every 60 ticks (~30 s at 2 ticks/s)
+            if (world.clock.currentTick % 60 === 0) _modeSwitcherUpdate?.()
         } else {
             // When paused, ensure the clock doesn't accumulate time
             world.clock.lastTimestamp = timestamp

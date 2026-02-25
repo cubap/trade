@@ -16,6 +16,7 @@ This directory is the canonical home for project documentation.
 - `systems/invention-system.md` — Autonomous discovery mechanics and quality systems
 - `plans/memory-system-roadmap.md` — Memory clustering, routes, social sharing implementation
 - `plans/civilization-roadmap.md` — Multi-branch civilization progression (military, civic, merchant, educational)
+- `plans/player-modes.md` — Two main game perspectives (pawn/overseer/god) and progressive unlock design
 - `trees/` — Knowledge prerequisite chains:
   - `skills.md` — Skill unlocks and synergies
   - `materials.md` — Raw and processed materials
