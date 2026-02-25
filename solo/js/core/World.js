@@ -35,6 +35,7 @@ class World {
         
         // Update all entities
         const currentTick = this.clock.currentTick
+        const gameSeconds = this.clock.getGameSeconds()
         const entitiesToRemove = []
         
         for (const [id, entity] of this.entitiesMap.entries()) {
@@ -42,6 +43,9 @@ class World {
             const oldX = entity.x
             const oldY = entity.y
             
+            // Notify entity of current game time so day/night logic stays in sync
+            entity.timeTick?.(gameSeconds)
+
             // Call the entity's update method
             const entityAlive = entity.update(currentTick)
             
@@ -119,10 +123,13 @@ class World {
             // Process scheduled actions for this tick
             this.actionQueue.processTick(currentTick)
 
+            const gameSeconds = this.clock.getGameSeconds()
+
             // Update all entities (minimal overhead, no logging)
             for (const [id, entity] of this.entitiesMap.entries()) {
                 const oldX = entity.x
                 const oldY = entity.y
+                entity.timeTick?.(gameSeconds)
                 const alive = entity.update(currentTick)
                 if (alive === false) {
                     entitiesToRemove.push(id)
