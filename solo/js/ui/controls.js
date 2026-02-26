@@ -5,8 +5,9 @@ import { setupCanvasInteractions } from './canvasInteractions.js'
 import { createEntitySummary } from './entitySummary.js'
 import { setupKeyboardShortcuts } from './keyboardShortcuts.js'
 import { setUnlockListener } from '../models/skills/UnlockEvents.js'
+import { setupModeSwitcher } from './modeSwitcher.js'
 
-function setupControls(world, renderer) {
+function setupControls(world, renderer, playerMode) {
     const controlPanel = document.createElement('div')
     controlPanel.id = 'control-panel'
     controlPanel.style.margin = '10px 0'
@@ -99,6 +100,12 @@ function setupControls(world, renderer) {
     controlPanel.appendChild(followButton)
     controlPanel.appendChild(perceptionButton)
     controlPanel.appendChild(recenterButton)
+
+    // Mode switcher (pawn / overseer / god) — only mount if playerMode is provided
+    let modeSwitcher = null
+    if (playerMode) {
+        modeSwitcher = setupModeSwitcher(playerMode, controlPanel)
+    }
     
     // Insert into DOM
     document.body.appendChild(controlPanel)
@@ -188,7 +195,7 @@ function setupControls(world, renderer) {
         for (const r of recipes) pushUnlockHint('recipe', r)
     })
     
-    return { isPaused: () => isPaused, setPaused }
+    return { isPaused: () => isPaused, setPaused, modeSwitcher }
 }
 
 export default setupControls

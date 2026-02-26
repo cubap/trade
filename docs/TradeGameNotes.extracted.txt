@@ -31,107 +31,89 @@ Townships may eventually need to mint a currency to standardize exchanges and ta
 Once cities grow to a size and have streets department. Paths around the border can be paved as well. This can benefit movement for trade, military or simple mobility. Once the structure is laid art, several cities can collaborate to build it and may even begin to have civic relationships as a result.
 
 Corporate: The business of trade.
-Asole happens as early as the first trade. If I trade you a stick for a snack, I may be on my way to becoming a stick-seller. Once I set up a shop, this is formalized. Shops have limited inventory so they are likely to start as general goods and grow into grocers, building supply, weaponsmiths,etc. The earliest shop is a trading post, sinew there is no money. Players will exchange their surplus for specific needs at the shop at a rate set by the shop keeper. These exchange rates allow for "fair pricing" even while in AI mode. If the keeper is out - an offer can be made (offer range if haggling) that the keeper can respond to when available(or set a default reject or accept). At first, substitute will be key but shops will grow as players begin to specialize in trades and spend time in that way. This covers goods (stock) primarily, sine services will have different logic.
+A sale happens as early as the first trade. If I trade you a stick for a snack, I may be on my way to becoming a stick-seller. Once I set up a shop, this is formalized. Shops have limited inventory so they are likely to start as general goods and grow into grocers, building supply, weaponsmiths, etc. The earliest shop is a trading post, since there is no money. Players will exchange their surplus for specific needs at the shop at a rate set by the shop keeper. These exchange rates allow for "fair pricing" even while in AI mode. If the keeper is out - an offer can be made (offer range if haggling) that the keeper can respond to when available (or set a default reject or accept). At first, substitute will be key but shops will grow as players begin to specialize in trades and spend time in that way. This covers goods (stock) primarily, since services will have different logic.
 The infrastructure for the economy will grow as well. A player who collects sticks all day and sells them the next will soon accept a lower price for goods in one shop to wholesale them. Alternately a shopkeeper may be born when the same player decides to pay a less experienced player to gather sticks for them. If a courier spends enough time travelling between caches, he may become a merchant. Someone who decides to map out the different
 
 --- Page 4 ---
 exchange rates at various shops to turn a profit may become a very rich day trader.
-Support structures are raised around businesses for their protection and efficient operation. A courier may make do with a basket or wheelbarrow, but a distance requires a horse or wagon. At each level, a more advanced skill to build is needed. A corporation will bundle several businesses together, with special rates and some control over the supply chain. A managed forest may supply great lumber that is only accessible at one wholesaler in large lots so the final shops for individuals will have a higher price unless others can supply. In this way, "private property" can have a very civil relationship when it comes to land deeds and plots or paying for the city's protection from raidersor supporting laws that punish theft or damage to property.
-Groups of shops can agree to fix prices and avoid speculators, day traders, or fluctuations from flooding the market in one area. Black beginning may fetch better prices and lead to corporate formation. Unsavory shops may start to trade in store credit and allow players to trade for credit that can be used at other stores as well. In this way currency may emerge from civil catcher and banks or from corporate economic organization.
-- Education and guilds make up the service industry. At a simple level one player may tell information, show a skill,or perform a task for another player. For a bard (poet,history) this may be stories of deeds, resource locations, prices in another area. For a scout, this may be terrain information and troop movements. With the addition of some resources, services become crafting,
+Support structures are raised around businesses for their protection and efficient operation. A courier may make do with a basket or wheelbarrow, but a distance requires a horse or wagon. At each level, a more advanced skill to build is needed. A corporation will bundle several businesses together, with special rates and some control over the supply chain. A managed forest may supply great lumber that is only accessible at one wholesaler in large lots so the final shops for individuals will have a higher price unless others can supply. In this way, "private property" can have a very civil relationship when it comes to land deeds and plots or paying for the city's protection from raiders or supporting laws that punish theft or damage to property.
+Groups of shops can agree to fix prices and avoid speculators, day traders, or fluctuations from flooding the market in one area. Black market dealings may fetch better prices and lead to corporate formation. Unsavory shops may start to trade in store credit and allow players to trade for credit that can be used at other stores as well. In this way currency may emerge from civil charter and banks or from corporate economic organization.
+Education and guilds make up the service industry. At a simple level one player may tell information, show a skill, or perform a task for another player. For a bard (poet, history) this may be stories of deeds, resource locations, prices in another area. For a scout, this may be terrain information and troop movements. With the addition of some resources, services become crafting,
 
 --- Page 5 ---
 One may hire a carpenter to build a house or furniture out of resources on-hand or a furniture store may employ a carpenter full-time to supply the stocks. At some level, even couriers are a type of service industry.
-A guild structure (Corporate) allows for education and apprenticeship. Experience can be gained in tutelage for skill otherwise inaccessible. This is especially important for something interdisciplinary.For example, some musical skill may be needed for a furniture-maker to begin constructing instruments, but once that is learned it can be taught with higher levels in military or civics, other services become available. A policeman protects civic interests as a player but also needs a badge, uniform, weapons. A teacher may learn many basic skills to share out and increase the quality of life or speed of learning through experience for others. A newsman may effectively gather information and report it out, but they need a printer and paper mill to really get the word out. A player with artistic skills and good communication can paint signs for storefronts, wayfinding, or public information.
+A guild structure (Corporate) allows for education and apprenticeship. Experience can be gained in tutelage for skill otherwise inaccessible. This is especially important for something interdisciplinary. For example, some musical skill may be needed for a furniture-maker to begin constructing instruments, but once that is learned it can be taught with higher levels in military or civics, other services become available. A policeman protects civic interests as a player but also needs a badge, uniform, weapons. A teacher may learn many basic skills to share out and increase the quality of life or speed of learning through experience for others. A newsman may effectively gather information and report it out, but they need a printer and paper mill to really get the word out. A player with artistic skills and good communication can paint signs for storefronts, wayfinding, or public information.
 Combined with corporations a crafter or service person can be the official for some group. A town may appoint posts (paid or not) so that new members or visitors can easily find their way around. "Help wanted" will become the default place for unskilled workers to field quests.
 
-Building a home...
-A tent is structural supports + fabric supports may be wood,bone,metal
-Fabric may be a blanket, wool, grass(woven), leather,skin A tent is portable and can be picked up each day if it lays no
+Building a home:
+A tent is structural supports + fabric. Supports may be wood, bone, metal.
+Fabric may be a blanket, wool, grass (woven), leather, skin. A tent is portable and can be picked up each day.
 
 --- Page 6 ---
-claim to the property it is on, but offers a shelter bonus for sleeping anywhere. Before having a tent, a mat or blanket may also improve an area's "shelter" enough to sleep. A tent easy be left behind and returned to, but may not be there upon return if another player sees it or an animal ransacks it. A more permanent structure can be built from the same materials or something sturdier (stone,clay,mud,cobb,brick,lumber). A tent is always a 1m Structure, but time can be dedicated to a solid home and it can be expanded. It would required basic planning,mapping,and some inventory (site gathering) and construction. The most typical home structure would probably start with a tent or place and build skills with fencing,traps, and simple tool/weaponsmithing. If skills require experiment to lay out better plans and materials and homes may be dismantled for parts to rebuild a new abode. Advanced homes and plans will certainly require the hiring of skilled craftsmen. It would be unreasonable to think a subsistence farmer would support himself and have the time/skills to build more than a 1m hut with basic furniture without help.
-The smallest hut would be OO or a 2m triangle,providing just enough space to lay down and store some items.A security skill would allow an indicator that it was disturbed,theft,and eventually locks of increasing complexity.
-Formed mud(clay,brick,cobb) hut:
-construction knowledge + experiment with mud(wet dirt) would ask for a "form". This could be used (goal) or woven (key) and would require a curing time (faster in sun or fire) to form a single brick. These bricks would degrade over time and need
+Basic Needs and Survival:
+Hunger, thirst, shelter, sleep as primary needs.
+Secondary: safety, social interaction, purpose, knowledge.
+Needs drive pawn behavior autonomously; player can suggest goals.
 
 --- Page 7 ---
-repair (short for mud longer for fired cobb) start for brick). Skills in masonry or pottery could improve the quality of even low quality materials. Stacking bricks is ultimately easy and a simple home could be done in one day, once 250- 33x1.65m blocks are formed. Formed bricks or shaped stones can be dry-fit or with slurry or mortar. Rough stones or log segments require chinking or mortar.
-Roofing can be flexible, but requires appropriate support. E.g. a log roof cannot sit atop woven stick walls. Once homes get complex physics for second floors etc. will be needed.A simple thatch roof or woven branches could suffice for early homes.
-While waiting for bricks to cure,perhaps some light gardening would be called for. Near water (lakes,springs,ponds) the soil would be "soil" with good fertility for germination and yield, even if relocated to a specific area... Amendments of ash, bone,blood,or animal parts/waste could make it more productive. A lot of seeds,fruit,and such would need to be gathered (as well as witnessing a certain number of seedlings) before planting would be unlocked. The witness concept would also be needed for soil amendments so the benefit in "apprenticing" at a farm is automatic.
-Experience with other things (herding,food prep,tanning,processing) will allow for the creation of tools/yards suited for these tasks and providing some bonuses. Bonuses may include faster action,faster skill development, higher quality output or advanced creation options.
-An abandoned building will degrade normally but also suffer a penalty after being unoccupied for a time (not occupied) means that someone has spent significant time on the
+Skill Progression:
+Skills emerge from repeated behavior, not class selection.
+Observation and apprenticeship accelerate skill gain.
+Synergies between related skills unlock advanced capabilities.
 
 --- Page 8 ---
-homestead (crafting) or actually occupy the building (sleeping,cooking). For this reason, some structures must always be associated with another built. If a home, a shop, a workplace. Without this association serious repairs will be needed and simulated delapidation (from bugs, vermin,vandals,weather) accelerate.
-
-Tools and Weapons:
-Simple unprocessed components for items would be analogous to the ages of man- sticks + stones. The next tier would be nearby found items that require some handily- fiber,skins,bone,claws,teeth. A stick is a stick but a sturdy stick can be used as a staff or good processed with a rock to sharpen the point for stabbing or digging more effectively. Stone tools start with a handaxe or more primitive actions and can grow to flintknapping,polishing,etc. Bones are good handles, scrapers,and can be bone into points. Small bones can become needles,drill bits. As each task is attempted by hand, it becomes easier to recognize how a tool would help. In this slow way a tool can be invented. If a player sees a simple tool ,the threshold to invent falls. When a tool is used, the threshold can disappear for simple tools (single process,handle or known feature + head) and can be reduced even for complex ones.
-- Sinote for nomenclature - maybe the language can build organically. When a handaxe is made: "This stone now fits well in your hand and has a sturdy edge for cutting or scraping. What would you like to call it?" And then,You have added a long handle to the swum, improving leverage for chopping..What would you like to call this? When trading with someone else, the form will be known to both, but the name may be adjusted after the trade. Iconography becomes much more important
+Resource Economy:
+Raw materials gathered from environment.
+Processed materials crafted from raw.
+Finished goods require skills and tools.
+Supply and demand emerge from pawn behavior.
 
 --- Page 9 ---
-but the immersion or possibility to make a broad impact as the inventor of the "cultivator" is pretty neat. Also, if this is applied to plants and animals we can avoid regularizing with "fox","rabbit"+"deer". If one hears about a critter, maybe there can even be some linguistic algorithm to identify it. Then again, if iconography is enough, language is set needed at all, even in trades and currency. All considered, most people will want to name towns,money,shops,players,and landmarks. With icon making perhaps everything can be accomodated except money and sleep - and side note-
-
-As more complex tools are made, the utility may change as well as the designation. A handaxe on a handle is a great way to chop wood, but no longer a great way to scrape a hide. As it is used the head may dull and need resharpening or replacement but the handle is in good shape. Alternately, a broken handle may leave the head intact and make a good sharp stick instead.
-Hints for tool use will guide their creation,but must be discovered through experimentation or witnessing(or if traded for).
-
-- Taxonomy
-Materials have basic properties that complicate immediately,but a player won't know utility until experience accumulate. So ... e.g: plant Wgrass C3bush, tree low turf, flower, V grain (bramble, berries I root fruit, nuts
-Iconography for tools will be much trickier....
-- i:handle,O:stone Q:ax D:point D:blade, d:bone D:nodule
-Other materials, wood,stone,metal,animal
-- clay, weed (above) Stone D:rock r:sand I O:boulder O:stone,cobble :grit, O:glassand || stone may also have hardness or flake abilities for variety grouped near each other with some differences.
+Settlement Growth:
+Camps form around shared resources or shelter.
+Villages emerge when structures cluster and population grows.
+Towns develop governance, markets, and specialization.
+Cities require infrastructure and civic organization.
 
 --- Page 10 ---
-The utility of a tool is not just the icon, but the material that makes it up. A tool with a stone head will be good for pounding, but a metal one may be better for certain tasks. The material properties will determine durability, effectiveness, and perhaps even new uses.
-A player may experiment with combinations to discover new tools. For example, attaching a sharp stone to a stick creates a spear, which can be used for hunting or defense.
-As players gain experience, they can teach others or form guilds to share knowledge.
-
-Specialized Tools:
-- Farming tools: Hoe, sickle, plow. These would require metal or hardened wood.
-- Building tools: Hammer, saw, chisel. Start with stone versions, upgrade to metal.
-- Weapons evolve similarly: From clubs to swords, bows, etc.
-
-The game encourages discovery and trade to spread innovations.
+Trade Networks:
+Routes form between settlements with complementary resources.
+Traders arbitrage price differences between markets.
+Infrastructure (roads, bridges) reduces travel cost.
+Contracts formalize recurring trade relationships.
 
 --- Page 11 ---
-Currency and Economy:
-Barter starts simple, but as trade grows, a standard currency becomes necessary. Shells, beads, or precious metals can serve as early money.
-Minted coins by cities or guilds standardize value.
-Banks emerge to store wealth, offer loans, and facilitate large trades.
-
-Taxes and Governance:
-Cities collect taxes for public works: Roads, walls, markets.
-Governance can be autocratic, democratic, or council-based.
-Laws enforce contracts, punish theft, regulate trade.
+Social Dynamics:
+Reputation affects trust and access to services.
+Group membership unlocks commands and shared goals.
+Alliances form through repeated cooperation.
+Conflicts arise from resource scarcity or reputation damage.
 
 --- Page 12 ---
-Warfare and Diplomacy:
-Military groups can form alliances or declare war.
-Siege warfare requires engineering skills for catapults, rams.
-Diplomacy through envoys, treaties, trade agreements.
-
-Espionage: Scouts can gather intel, saboteurs disrupt enemy supply.
+Player Perspective:
+Born into pawn mode with limited HUD and goals.
+Skills and group membership unlock broader perspectives.
+Overseer mode allows map waypoints and wider view.
+God mode enables trade network overlay and policy access.
 
 --- Page 13 ---
-Technology Tree:
-Implicit through experimentation.
-Branches: Agriculture, metallurgy, architecture, medicine.
-Unlocks come from combining skills and resources.
-
-For example, smelting ore requires fire knowledge + mining.
+Technology Progression:
+Stone age tools unlock copper working.
+Copper unlocks bronze, then iron.
+Each tier requires materials, skills, and structures.
+Workshops and schools accelerate progression.
 
 --- Page 14 ---
-Social Structures:
-Families and clans form basic units.
-Marriage alliances, inheritance laws develop.
-Social classes: Nobles, merchants, artisans, peasants.
-
-Religion: Temples as centers for community, bonuses to morale.
+Environmental Systems:
+Seasons affect resource availability and pawn needs.
+Weather events create temporary challenges and opportunities.
+Biomes determine starting resources and viable crops.
+Water sources are finite and can be managed or contested.
 
 --- Page 15 ---
-Exploration and Mapping:
-Players map terrain, discover resources.
+Exploration and Cartography:
+Fog of war clears as pawns explore.
+Maps shared between pawns with cartography skill.
 Cartography skill improves accuracy, shareable maps.
 Expeditions for new lands, colonization.
 

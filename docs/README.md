@@ -17,6 +17,7 @@ This directory is the canonical home for project documentation.
 - `plans/memory-system-roadmap.md` — Memory clustering, routes, social sharing implementation
 - `plans/civilization-roadmap.md` — Multi-branch civilization progression (military, civic, merchant, educational)
 - `plans/tradegamenotes-alignment-plan.md` — Workspace-grounded enhancement plan mapped from early TradeGameNotes concepts
+- `plans/player-modes.md` — Two main game perspectives (pawn/overseer/god) and progressive unlock design
 - `trees/` — Knowledge prerequisite chains:
   - `skills.md` — Skill unlocks and synergies
   - `materials.md` — Raw and processed materials
