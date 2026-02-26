@@ -89,6 +89,18 @@ class Pawn extends MobileEntity {
         this.reputation = { alignment: 0, aggression: 0, membership: {} }
         this.reputationMemory = {} // { pawnId: { alignment, aggression, source, strength, timestamp } }
 
+        // Lightweight group and command system (Phase 1)
+        this.groupState = {
+            id: null,
+            role: 'none', // none | leader | member
+            leaderId: null,
+            joinedAt: null,
+            cohesion: 0
+        }
+        this.groupTrust = {} // { pawnId: trustScore }
+        this.groupCommandQueue = [] // pending commands for this pawn
+        this.groupMarks = [] // shared attention markers
+
         // Health attributes
         this.traits = {
             health: 100,
@@ -616,6 +628,15 @@ class Pawn extends MobileEntity {
     update(tick) {
         super.update(tick)
         this.needs.updateNeeds(tick)
+
+        if (!this.goals.currentGoal) {
+            const commandGoal = this.getNextGroupCommandGoal()
+            if (commandGoal) {
+                this.priorityBias = this.priorityBias ?? {}
+                this.priorityBias.nextGoal = commandGoal
+            }
+        }
+
         this.goals.evaluateAndSetGoals()
         this.goals.updateGoalProgress() // Execute current goal logic
         this.passiveSkillTick()
@@ -1977,6 +1998,194 @@ class Pawn extends MobileEntity {
             strength: (story.strength ?? 1) * decay
         }
         this.reputationMemory[actor.id] = heard
+    }
+
+    getGroupTrustIn(targetPawn) {
+        if (!targetPawn?.id) return 0
+        const direct = this.groupTrust[targetPawn.id]
+        if (direct != null) return direct
+
+        const perceived = this.getPerceivedReputation(targetPawn)
+        if (!perceived) return 0
+
+        const alignment = perceived.alignment ?? 0
+        const aggression = perceived.aggression ?? 0
+        const normalized = (alignment - aggression) / 100
+
+        return Math.max(-1, Math.min(1, normalized))
+    }
+
+    setGroupTrustIn(targetPawn, trust) {
+        if (!targetPawn?.id) return
+        this.groupTrust[targetPawn.id] = Math.max(-1, Math.min(1, trust ?? 0))
+    }
+
+    createGroup(groupId = `group-${this.id}-${Date.now()}`) {
+        this.groupState = {
+            id: groupId,
+            role: 'leader',
+            leaderId: this.id,
+            joinedAt: Date.now(),
+            cohesion: Math.max(this.groupState?.cohesion ?? 0, 0.2)
+        }
+        this.reputation.membership[groupId] = 'leader'
+        return groupId
+    }
+
+    joinGroup(leaderPawn, groupId = leaderPawn?.groupState?.id) {
+        if (!leaderPawn?.id || !groupId) return false
+
+        this.groupState = {
+            id: groupId,
+            role: 'member',
+            leaderId: leaderPawn.id,
+            joinedAt: Date.now(),
+            cohesion: Math.max(this.groupState?.cohesion ?? 0, 0.1)
+        }
+        this.reputation.membership[groupId] = 'member'
+        return true
+    }
+
+    leaveGroup() {
+        const groupId = this.groupState?.id
+        if (groupId && this.reputation?.membership) {
+            delete this.reputation.membership[groupId]
+        }
+        this.groupState = {
+            id: null,
+            role: 'none',
+            leaderId: null,
+            joinedAt: null,
+            cohesion: 0
+        }
+        this.groupCommandQueue = []
+    }
+
+    getGroupLeader() {
+        const leaderId = this.groupState?.leaderId
+        if (!leaderId || !this.world?.entitiesMap) return null
+        return this.world.entitiesMap.get(leaderId) ?? null
+    }
+
+    getGroupMembers() {
+        const groupId = this.groupState?.id
+        if (!groupId || !this.world?.entitiesMap) return []
+
+        return Array.from(this.world.entitiesMap.values()).filter(entity =>
+            entity?.subtype === 'pawn' &&
+            entity.groupState?.id === groupId
+        )
+    }
+
+    canObeyLeader(leaderPawn, minTrust = 0.05) {
+        if (!leaderPawn?.id) return false
+        if (leaderPawn.id === this.id) return true
+        if (!this.groupState?.id || this.groupState.id !== leaderPawn.groupState?.id) return false
+        if (this.groupState.leaderId !== leaderPawn.id) return false
+
+        const trust = this.getGroupTrustIn(leaderPawn)
+        return trust >= minTrust
+    }
+
+    receiveGroupCommand(command, issuedByPawn) {
+        if (!command || !issuedByPawn) return false
+        const minTrust = command.minTrust ?? 0.05
+        if (!this.canObeyLeader(issuedByPawn, minTrust)) return false
+
+        this.groupCommandQueue.push({
+            ...command,
+            issuedBy: issuedByPawn.id,
+            issuedAt: Date.now()
+        })
+        this.groupState.cohesion = Math.min(1, (this.groupState.cohesion ?? 0) + 0.02)
+        return true
+    }
+
+    issueGroupCommand(command) {
+        if (!command || this.groupState?.role !== 'leader') return 0
+
+        const members = this.getGroupMembers().filter(member => member.id !== this.id)
+        let accepted = 0
+        for (const member of members) {
+            if (member.receiveGroupCommand(command, this)) {
+                accepted++
+            }
+        }
+        return accepted
+    }
+
+    getNextGroupCommandGoal() {
+        if (!this.groupCommandQueue.length) return null
+
+        const command = this.groupCommandQueue.shift()
+        const leader = this.world?.entitiesMap?.get(command.issuedBy)
+        const basePriority = command.priority ?? 8
+        const duration = command.duration ?? 120
+
+        if (command.type === 'follow') {
+            return {
+                type: 'follow_leader',
+                priority: basePriority,
+                description: 'Follow group leader command',
+                targetType: 'entity',
+                targetSubtype: 'pawn',
+                targetId: leader?.id ?? command.issuedBy,
+                target: leader ?? null,
+                action: 'follow',
+                duration,
+                groupCommand: true
+            }
+        }
+
+        if (command.type === 'protect') {
+            const target = command.target ?? null
+            return {
+                type: 'protect_target',
+                priority: basePriority,
+                description: 'Protect assigned target',
+                targetType: 'entity',
+                targetSubtype: target?.subtype ?? 'pawn',
+                targetId: target?.id,
+                target,
+                action: 'protect',
+                duration,
+                groupCommand: true
+            }
+        }
+
+        if (command.type === 'escort') {
+            const target = command.target ?? null
+            return {
+                type: 'escort_target',
+                priority: basePriority,
+                description: 'Escort assigned target',
+                targetType: 'entity',
+                targetSubtype: target?.subtype ?? 'pawn',
+                targetId: target?.id,
+                target,
+                destination: command.destination ?? null,
+                action: 'escort',
+                duration,
+                groupCommand: true
+            }
+        }
+
+        if (command.type === 'mark') {
+            const target = command.target ?? null
+            return {
+                type: 'mark_target',
+                priority: basePriority,
+                description: 'Mark target for group attention',
+                targetType: 'entity',
+                targetId: target?.id,
+                target,
+                targetLocation: command.targetLocation ?? (target ? { x: target.x, y: target.y } : null),
+                action: 'mark',
+                groupCommand: true
+            }
+        }
+
+        return null
     }
 
     getPerceivedReputation(targetPawn) {
