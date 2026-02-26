@@ -16,6 +16,7 @@ This directory is the canonical home for project documentation.
 - `systems/invention-system.md` — Autonomous discovery mechanics and quality systems
 - `plans/memory-system-roadmap.md` — Memory clustering, routes, social sharing implementation
 - `plans/civilization-roadmap.md` — Multi-branch civilization progression (military, civic, merchant, educational)
+- `plans/tradegamenotes-alignment-plan.md` — Workspace-grounded enhancement plan mapped from early TradeGameNotes concepts
 - `trees/` — Knowledge prerequisite chains:
   - `skills.md` — Skill unlocks and synergies
   - `materials.md` — Raw and processed materials
