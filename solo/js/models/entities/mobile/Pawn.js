@@ -89,6 +89,18 @@ class Pawn extends MobileEntity {
         this.reputation = { alignment: 0, aggression: 0, membership: {} }
         this.reputationMemory = {} // { pawnId: { alignment, aggression, source, strength, timestamp } }
 
+        // Lightweight group and command system (Phase 1)
+        this.groupState = {
+            id: null,
+            role: 'none', // none | leader | member
+            leaderId: null,
+            joinedAt: null,
+            cohesion: 0
+        }
+        this.groupTrust = {} // { pawnId: trustScore }
+        this.groupCommandQueue = [] // pending commands for this pawn
+        this.groupMarks = [] // shared attention markers
+
         // Health attributes
         this.traits = {
             health: 100,
@@ -2357,6 +2369,113 @@ class Pawn extends MobileEntity {
     }
     recordDrink() {
         this.lastDrinkTime = this.gameTime ?? 0
+    }
+
+    // ── Group lifecycle ────────────────────────────────────────────────────────
+
+    createGroup(name) {
+        const id = `group_${name}_${Date.now()}`
+        this.groupState.id = id
+        this.groupState.role = 'leader'
+        this.groupState.leaderId = this.id
+        this.groupState.joinedAt = this.world?.clock?.currentTick ?? 0
+        this.reputation.membership[id] = 1
+        return id
+    }
+
+    joinGroup(leader, groupId) {
+        if (!leader || !groupId) return false
+        this.groupState.id = groupId
+        this.groupState.role = 'member'
+        this.groupState.leaderId = leader.id
+        this.groupState.joinedAt = this.world?.clock?.currentTick ?? 0
+        this.reputation.membership[groupId] = 1
+        return true
+    }
+
+    leaveGroup() {
+        const id = this.groupState.id
+        this.groupState = { id: null, role: 'none', leaderId: null, joinedAt: null, cohesion: 0 }
+        if (id) delete this.reputation.membership[id]
+    }
+
+    getGroupLeader() {
+        if (!this.groupState.leaderId || !this.world) return null
+        return this.world.entitiesMap.get(this.groupState.leaderId) ?? null
+    }
+
+    getGroupMembers() {
+        if (!this.world || !this.groupState.id) return []
+        return Array.from(this.world.entitiesMap.values()).filter(
+            e => e !== this && e.subtype === 'pawn' && e.groupState?.id === this.groupState.id
+        )
+    }
+
+    setGroupTrustIn(pawn, value) {
+        const id = typeof pawn === 'string' ? pawn : pawn.id
+        this.groupTrust[id] = Math.max(-1, Math.min(1, value))
+    }
+
+    getGroupTrustIn(pawn) {
+        const id = typeof pawn === 'string' ? pawn : pawn.id
+        return this.groupTrust[id] ?? 0
+    }
+
+    canObeyLeader(minTrust = 0.1) {
+        if (!this.groupState.leaderId) return false
+        return this.getGroupTrustIn(this.groupState.leaderId) >= minTrust
+    }
+
+    receiveGroupCommand(command) {
+        const minTrust = command.minTrust ?? 0.1
+        if (!this.canObeyLeader(minTrust)) return false
+        this.groupCommandQueue.push(command)
+        return true
+    }
+
+    issueGroupCommand(command) {
+        if (this.groupState.role !== 'leader') return 0
+        const members = this.getGroupMembers()
+        let accepted = 0
+        for (const member of members) {
+            if (member.receiveGroupCommand?.(command)) accepted++
+        }
+        return accepted
+    }
+
+    getNextGroupCommandGoal() {
+        const command = this.groupCommandQueue.shift()
+        if (!command) return null
+        switch (command.type) {
+            case 'follow':
+                return {
+                    type: 'follow_leader',
+                    targetId: this.groupState.leaderId,
+                    duration: command.duration ?? 120
+                }
+            case 'protect':
+                return {
+                    type: 'protect_target',
+                    targetId: command.target?.id ?? null,
+                    duration: command.duration ?? 120
+                }
+            case 'escort':
+                return {
+                    type: 'escort_target',
+                    targetId: command.target?.id ?? null,
+                    duration: command.duration ?? 120
+                }
+            case 'mark': {
+                const t = command.target
+                return {
+                    type: 'mark_target',
+                    targetId: t?.id ?? null,
+                    targetLocation: t ? { x: t.x, y: t.y } : null
+                }
+            }
+            default:
+                return null
+        }
     }
 }
 

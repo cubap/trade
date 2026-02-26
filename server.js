@@ -24,15 +24,36 @@ app.get('/', (req, res) => {
 // MongoDB and game logic are optional - comment out if not needed
 import setupGameLogic from './gameLogic.js'
 import connectDB from './config/db.js'
-connectDB()
-setupGameLogic(server)
 
-// Start server only if not in test mode
-if (process.env.NODE_ENV !== 'test') {
+const initializeServer = async () => {
+  if (process.env.NODE_ENV === 'test') return
+  await connectDB()
+  setupGameLogic(server)
+}
+
+const startServer = async () => {
+  await initializeServer()
+
   const PORT = process.env.PORT || 3000
-  server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`)
-    console.log(`Solo game: http://localhost:${PORT}/solo/index.html`)
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(PORT, () => {
+      console.log(`Server running on http://localhost:${PORT}`)
+      console.log(`Solo game: http://localhost:${PORT}/solo/index.html`)
+      resolve()
+    })
+  })
+
+  return server
+}
+
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === __filename
+
+if (isDirectRun) {
+  startServer().catch(err => {
+    console.error('Failed to start server:', err)
+    process.exit(1)
   })
 }
 
@@ -51,4 +72,4 @@ app.post('/_dev/log', (req, res) => {
   }
 })
 
-export { app }
+export { app, server, startServer }

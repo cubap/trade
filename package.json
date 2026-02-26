@@ -7,7 +7,7 @@
   "scripts": {
     "serve": "node server.js",
     "start:client": "node client.js",
-    "test": "node --test solo/test/*.test.js"
+    "test": "node --test test/*.test.js solo/test/*.test.js"
   },
   "repository": {
     "type": "git",

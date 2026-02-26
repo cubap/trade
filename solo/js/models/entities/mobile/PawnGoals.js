@@ -1015,6 +1015,78 @@ class PawnGoals {
                 this.completeCurrentGoal()
             }
         }
+
+        // Group command goals: follow_leader, protect_target, escort_target, mark_target
+        if (goal.type === 'follow_leader') {
+            const leader = this.pawn.world?.entitiesMap?.get(goal.targetId)
+            if (!leader) { this.completeCurrentGoal(); return }
+
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+            const dx = leader.x - this.pawn.x
+            const dy = leader.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 15) {
+                this.pawn.nextTargetX = leader.x
+                this.pawn.nextTargetY = leader.y
+            } else {
+                this.pawn.groupState.cohesion = Math.min(1, (this.pawn.groupState.cohesion ?? 0) + 0.01)
+            }
+
+            if (elapsed >= (goal.duration ?? 120)) {
+                this.completeCurrentGoal()
+            }
+        }
+
+        if (goal.type === 'protect_target') {
+            const target = this.pawn.world?.entitiesMap?.get(goal.targetId)
+            if (!target) { this.completeCurrentGoal(); return }
+
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+            const dx = target.x - this.pawn.x
+            const dy = target.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 20) {
+                this.pawn.nextTargetX = target.x
+                this.pawn.nextTargetY = target.y
+            }
+
+            if (elapsed >= (goal.duration ?? 120)) {
+                this.completeCurrentGoal()
+            }
+        }
+
+        if (goal.type === 'escort_target') {
+            const target = this.pawn.world?.entitiesMap?.get(goal.targetId)
+            if (!target) { this.completeCurrentGoal(); return }
+
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+            this.pawn.nextTargetX = target.x + (this.pawn.x < target.x ? -20 : 20)
+            this.pawn.nextTargetY = target.y
+
+            if (elapsed >= (goal.duration ?? 120)) {
+                this.completeCurrentGoal()
+            }
+        }
+
+        if (goal.type === 'mark_target') {
+            if (goal.targetLocation) {
+                this.pawn.groupMarks = this.pawn.groupMarks ?? []
+                this.pawn.groupMarks.push({
+                    targetId: goal.targetId,
+                    location: goal.targetLocation,
+                    markedAt: this.pawn.world?.clock?.currentTick ?? 0
+                })
+            }
+            this.completeCurrentGoal()
+        }
     }
 }
 
