@@ -76,6 +76,29 @@ export function decomposeGoal(pawn, goal) {
             }
         }
     }
+
+    if (goal.type === 'build_structure') {
+        const requirements = Array.isArray(goal.materialRequirements)
+            ? goal.materialRequirements
+            : [
+                { type: 'stick', count: 8 },
+                { type: 'fiber', count: 4 }
+            ]
+
+        const buildSite = goal.buildSite ?? { x: pawn.x, y: pawn.y }
+        goal.buildSite = buildSite
+        goal.materialRequirements = requirements
+        subgoals.push({
+            type: 'stage_build_materials',
+            priority: goal.priority + 1,
+            description: 'Stage materials at build site cache',
+            targetType: 'location',
+            targetLocation: buildSite,
+            requirements,
+            cacheId: goal.cacheId ?? null,
+            parentGoal: goal.type
+        })
+    }
     
     return subgoals
 }
@@ -146,6 +169,10 @@ export function isGoalReachable(pawn, goal) {
             }
         }
         
+        return { reachable: true }
+    }
+
+    if (goal.type === 'build_structure' || goal.type === 'stage_build_materials') {
         return { reachable: true }
     }
     

@@ -212,6 +212,20 @@ class EntityRenderer {
                 this.context.textAlign = 'center'
                 this.context.fillText(entity.currentOccupants.toString(), x, y + 3)
             }
+        } else if (this.hasTag(entity, 'resource_cache') || entity.subtype === 'cache') {
+            // Resource cache: stacked pile silhouette
+            this.context.beginPath()
+            this.context.moveTo(x - size, y + size * 0.7)
+            this.context.lineTo(x, y - size)
+            this.context.lineTo(x + size, y + size * 0.7)
+            this.context.closePath()
+            this.context.fill()
+
+            this.context.fillStyle = '#2d2418'
+            this.context.font = '8px Arial'
+            this.context.textAlign = 'center'
+            const count = typeof entity.totalItems === 'function' ? entity.totalItems() : (entity.items?.length ?? 0)
+            this.context.fillText(String(count), x, y + 3)
         } else {
             // Default rendering - rectangle
             this.context.fillRect(x - size / 2, y - size / 2, size, size)

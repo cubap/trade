@@ -4,6 +4,7 @@ import PawnGoals from './PawnGoals.js'
 import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
 import INVENTION_CONFIG from './InventionConfig.js'
+import ResourceCache from '../immobile/ResourceCache.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -30,6 +31,17 @@ class Pawn extends MobileEntity {
         this.solutionSuccessCount = {} // Track success with each solution for specialization
         this.ponderingCooldown = 0 // Ticks before can ponder again
         this.behaviorState = 'idle'  // Current activity state
+        this.recentAction = 'Idle'
+        this.recentActionTick = 0
+        this.thoughtLog = []
+        this.maxThoughtLog = 16
+        this.challengeContexts = []
+        this.maxChallengeContexts = 20
+        this.purposeStrainTicks = 0
+        this.exposedNights = 0
+        this.groupCampNights = 0
+        this.cacheLossEvents = 0
+        this.lastCacheAuditTick = 0
         
         // Lateral learning and social observation
         this.observedCrafts = new Set() // Items seen being crafted or used
@@ -100,6 +112,18 @@ class Pawn extends MobileEntity {
         this.groupTrust = {} // { pawnId: trustScore }
         this.groupCommandQueue = [] // pending commands for this pawn
         this.groupMarks = [] // shared attention markers
+        this.groupStats = {
+            obeyedCommands: 0,
+            rejectedCommands: 0,
+            promotions: 0
+        }
+        this.groupConfig = {
+            maxCohesionDistance: 260,
+            promotionCohesion: 0.82,
+            promotionTrust: 0.75,
+            cohesionDecayNear: 0.003,
+            cohesionDecayFar: 0.03
+        }
 
         // Health attributes
         this.traits = {
@@ -245,15 +269,28 @@ class Pawn extends MobileEntity {
     gatherFromResource(resource, goal) {
         if (resource && resource.canGather?.()) {
             this.behaviorState = 'gathering'
+            this.setRecentAction(`Gathering from ${resource.name ?? resource.subtype ?? 'resource'}`)
             
             // Gather from resource
             const gathered = resource.gather(1)
             if (gathered) {
-                this.inventory.push(gathered)
-                // Examination-based learning: require interaction with the gathered item
-                this.examineItem?.(gathered)
-                // Track material for lateral learning
-                this.trackMaterialEncounter(gathered)
+                const added = this.addItemToInventory(gathered)
+
+                if (added) {
+                    this.setRecentAction(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
+                    this.assessManualCuttingHardship(resource, gathered)
+                    // Examination-based learning: require interaction with the gathered item
+                    this.examineItem?.(gathered)
+                    // Track material for lateral learning
+                    this.trackMaterialEncounter(gathered)
+                } else {
+                    const atSource = this.handleGatheredItemWithoutStorage(gathered, {
+                        goalResourceType: goal?.targetResourceType
+                    })
+                    if (atSource.handled && atSource.message) {
+                        console.log(`${this.name} ${atSource.message}`)
+                    }
+                }
                 
                 // Update memory confidence: success!
                 this.updateResourceMemoryConfidence(resource, true)
@@ -276,6 +313,148 @@ class Pawn extends MobileEntity {
             // Resource couldn't be gathered (depleted or gone)
             this.updateResourceMemoryConfidence(resource, false)
         }
+    }
+
+    isWaterItem(item) {
+        if (!item) return false
+        if (item.type === 'water' || item.subtype === 'water') return true
+        const tags = item.tags
+        if (Array.isArray(tags)) return tags.includes('water')
+        if (typeof tags?.has === 'function') return tags.has('water')
+        return false
+    }
+
+    sipFromGatheredWater(item, sipFraction = 0.35) {
+        const gatheredQty = Math.max(0, item?.quantity ?? 1)
+        const consumedQty = Math.max(0.1, gatheredQty * sipFraction)
+        this.behaviorState = 'drinking'
+        this.setRecentAction('Drinking from source (no container)')
+        this.needs?.satisfyNeed?.('thirst', consumedQty * 12)
+        this.needs?.satisfyNeed?.('hunger', consumedQty)
+        this.recordDrink?.()
+        return consumedQty
+    }
+
+    isFoodItem(item) {
+        if (!item) return false
+        const type = String(item.type ?? '').toLowerCase()
+        const subtype = String(item.subtype ?? '').toLowerCase()
+        if (type === 'food' || subtype === 'food') return true
+        if (type.includes('berry') || subtype.includes('berry')) return true
+
+        const tags = item.tags
+        if (Array.isArray(tags)) return tags.includes('food')
+        if (typeof tags?.has === 'function') return tags.has('food')
+        return false
+    }
+
+    eatFromGatheredFood(item, biteFraction = 0.45) {
+        const gatheredQty = Math.max(0, item?.quantity ?? 1)
+        const eatenQty = Math.max(0.1, gatheredQty * biteFraction)
+        this.behaviorState = 'eating'
+        this.setRecentAction('Eating at source (no free hands)')
+        this.needs?.satisfyNeed?.('hunger', eatenQty * 10)
+        this.needs?.satisfyNeed?.('thirst', eatenQty * 1.5)
+        this.recordMeal?.()
+        return eatenQty
+    }
+
+    handleGatheredItemWithoutStorage(item, { goalResourceType = null } = {}) {
+        if (this.isWaterItem(item) && !this.hasContainer()) {
+            const sip = this.sipFromGatheredWater(item)
+            return {
+                handled: true,
+                countAsGather: goalResourceType === 'water',
+                message: `cups hands and drinks (${sip.toFixed(2)} units), no container available`
+            }
+        }
+
+        if (this.isFoodItem(item)) {
+            const eaten = this.eatFromGatheredFood(item)
+            return {
+                handled: true,
+                countAsGather: goalResourceType === 'food',
+                message: `eats from source (${eaten.toFixed(2)} units), no free hands to carry`
+            }
+        }
+
+        return { handled: false, countAsGather: false, message: null }
+    }
+
+    getNearbyRecipeSources(req) {
+        const requiredTag = req.sourceTag ?? req.type
+        const range = req.sourceRange ?? 24
+        const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+
+        return entities.filter(entity => {
+            if (!entity || entity === this) return false
+            const dx = entity.x - this.x
+            const dy = entity.y - this.y
+            if (Math.sqrt(dx * dx + dy * dy) > range) return false
+
+            const tags = entity.tags
+            const hasTag = Array.isArray(tags)
+                ? tags.includes(requiredTag)
+                : typeof tags?.has === 'function'
+                    ? tags.has(requiredTag)
+                    : false
+
+            return hasTag || entity.subtype === requiredTag || entity.type === requiredTag
+        })
+    }
+
+    countNearbySourceUnits(req) {
+        let total = 0
+        const perUnitAmount = req.sourceConsumeAmount ?? 1
+
+        for (const source of this.getNearbyRecipeSources(req)) {
+            const quantity = Number.isFinite(source.quantity) ? Math.max(0, source.quantity) : 0
+            if (quantity > 0) {
+                total += Math.floor(quantity / perUnitAmount)
+                continue
+            }
+
+            if (source.canConsume?.() || source.canGather?.()) {
+                total += 1
+            }
+        }
+
+        return total
+    }
+
+    consumeRecipeRequirementAtSource(req, neededCount = 1) {
+        if (!req.allowSourceUse || neededCount <= 0) return 0
+
+        let remaining = neededCount
+        const perUnitAmount = req.sourceConsumeAmount ?? 1
+
+        for (const source of this.getNearbyRecipeSources(req)) {
+            while (remaining > 0) {
+                if (typeof source.consume === 'function') {
+                    const consumed = source.consume(perUnitAmount)
+                    if (consumed < perUnitAmount * 0.5) break
+                    remaining--
+                    continue
+                }
+
+                if (typeof source.gather === 'function') {
+                    const gathered = source.gather(1)
+                    if (!gathered) break
+                    remaining--
+                    continue
+                }
+
+                break
+            }
+
+            if (remaining <= 0) break
+        }
+
+        const used = neededCount - remaining
+        if (used > 0) {
+            this.setRecentAction(`Combining at ${req.sourceTag ?? req.type} source`)
+        }
+        return used
     }
     
     interactWithTarget(target, goal) {
@@ -629,6 +808,16 @@ class Pawn extends MobileEntity {
         super.update(tick)
         this.needs.updateNeeds(tick)
 
+        const purposeNeed = this.needs?.needs?.purpose ?? 0
+        const purposeHigh = this.needs?.thresholds?.purpose?.high ?? 40
+        if (purposeNeed >= purposeHigh) {
+            this.purposeStrainTicks += 1
+        } else {
+            this.purposeStrainTicks = Math.max(0, this.purposeStrainTicks - 2)
+        }
+
+        this.auditRememberedCaches()
+
         if (!this.goals.currentGoal) {
             const commandGoal = this.getNextGroupCommandGoal()
             if (commandGoal) {
@@ -641,7 +830,12 @@ class Pawn extends MobileEntity {
         this.goals.updateGoalProgress() // Execute current goal logic
         this.passiveSkillTick()
         this.decaySkills(tick)
+        this.updateGroupDynamics(tick)
         this.updateHealthEvents()
+
+        if (tick % 40 === 0) {
+            this.discoverNearbyCaches(120)
+        }
         
         // Update memory phase every 100 ticks based on skills
         if (tick % 100 === 0) {
@@ -795,14 +989,25 @@ class Pawn extends MobileEntity {
     // Get status information for debugging/UI
     getStatus() {
         const mostUrgent = this.needs.getMostUrgentNeed()
+        const knownCaches = this.memoryMap.filter(lm => lm.type === 'resource_cache').length
         return {
             position: { x: this.x, y: this.y },
             behaviorState: this.behaviorState,
+            recentAction: this.recentAction,
             currentGoal: this.goals.currentGoal?.type || 'none',
             mostUrgentNeed: mostUrgent.need,
             needValue: Math.round(mostUrgent.value),
             urgency: mostUrgent.urgency,
-            inventoryCount: this.inventory.length
+            inventoryCount: this.inventory.length,
+            knownCaches,
+            group: {
+                id: this.groupState?.id ?? null,
+                role: this.groupState?.role ?? 'none',
+                leaderId: this.groupState?.leaderId ?? null,
+                cohesion: Number((this.groupState?.cohesion ?? 0).toFixed(3)),
+                queuedCommands: this.groupCommandQueue?.length ?? 0,
+                marks: this.groupMarks?.length ?? 0
+            }
         }
     }
 
@@ -986,7 +1191,7 @@ class Pawn extends MobileEntity {
         this.chunkManager = chunkManager
     }
 
-    rememberLandmark({x, y, type, significance = 1, name = null, event = null}) {
+    rememberLandmark({ x, y, type, significance = 1, name = null, event = null, ...metadata }) {
         // Remove least significant or oldest if at max
         if (this.memoryMap.length >= this.maxLandmarks) {
             this.memoryMap.sort((a, b) => (a.significance ?? 1) - (b.significance ?? 1))
@@ -994,6 +1199,7 @@ class Pawn extends MobileEntity {
         }
         this.memoryMap.push({
             x, y, type, significance, name, event,
+            ...metadata,
             timestamp: Date.now()
         })
     }
@@ -1554,6 +1760,201 @@ class Pawn extends MobileEntity {
     }
 
     // === Invention & Pondering ===
+
+    addThought(text, tag = 'general') {
+        if (!text) return
+        const tick = this.world?.clock?.currentTick ?? 0
+        this.thoughtLog.push({
+            text: String(text),
+            tag,
+            tick
+        })
+        if (this.thoughtLog.length > this.maxThoughtLog) {
+            this.thoughtLog.shift()
+        }
+    }
+
+    getLatestThought() {
+        return this.thoughtLog[this.thoughtLog.length - 1] ?? null
+    }
+
+    recordChallengeContext(type, strength = 0.06, details = {}) {
+        if (!type) return
+        const tick = this.world?.clock?.currentTick ?? 0
+        this.challengeContexts.push({
+            type,
+            strength: Math.max(0.01, strength),
+            details,
+            tick,
+            expiresAt: tick + (details.durationTicks ?? 600)
+        })
+        if (this.challengeContexts.length > this.maxChallengeContexts) {
+            this.challengeContexts.shift()
+        }
+    }
+
+    pruneChallengeContexts() {
+        const tick = this.world?.clock?.currentTick ?? 0
+        this.challengeContexts = this.challengeContexts.filter(context => (context.expiresAt ?? tick) >= tick)
+    }
+
+    getPurposePressureBonus() {
+        const purpose = this.needs?.needs?.purpose ?? 0
+        const purposeThreshold = this.needs?.thresholds?.purpose?.medium ?? 25
+        if (purpose < purposeThreshold) return 0
+
+        const pressure = Math.min(1, (purpose - purposeThreshold) / 50)
+        const strain = Math.min(1, this.purposeStrainTicks / 1200)
+        return (pressure * 0.1) + (strain * 0.08)
+    }
+
+    getPonderWindowBonus() {
+        const hunger = this.needs?.needs?.hunger ?? 0
+        const thirst = this.needs?.needs?.thirst ?? 0
+        const energy = this.needs?.needs?.energy ?? 0
+
+        const survivalLoad = (hunger + thirst + energy) / 300
+        const calmWindow = Math.max(0, 1 - survivalLoad)
+        const behavior = this.behaviorState ?? 'idle'
+
+        let behaviorBonus = 0
+        if (behavior === 'idle') behaviorBonus += 0.05
+        if (behavior === 'resting' || behavior === 'sleeping') behaviorBonus += 0.08
+        if (behavior === 'learning' || behavior === 'study') behaviorBonus += 0.1
+
+        return Math.max(0, (calmWindow * 0.05) + behaviorBonus)
+    }
+
+    getChallengeContextBonus(problemType) {
+        this.pruneChallengeContexts()
+        if (!this.challengeContexts.length) return 0
+
+        const mapping = {
+            need_shelter: new Set(['poor_sleep_ground', 'group_camp_nights', 'cache_decay_loss', 'exposed_night']),
+            need_better_tools: new Set(['manual_cutting_hardship']),
+            inventory_full: new Set(['inventory_pressure']),
+            need_water_container: new Set(['water_handling_hardship'])
+        }
+
+        const relevant = mapping[problemType] ?? new Set()
+        let total = 0
+        for (const context of this.challengeContexts) {
+            if (!relevant.has(context.type)) continue
+            total += context.strength ?? 0
+        }
+
+        return Math.min(0.2, total)
+    }
+
+    assessManualCuttingHardship(resource, gathered) {
+        const resourceType = String(resource?.subtype ?? resource?.type ?? '').toLowerCase()
+        if (!/fiber|grass/.test(resourceType)) return
+
+        const hasCuttingTool = this.inventory.some(item => {
+            const type = String(item?.type ?? '').toLowerCase()
+            const tags = item?.tags
+            const tagList = Array.isArray(tags) ? tags : []
+            return type.includes('knife') || type.includes('sharp') || tagList.includes('cutting')
+        })
+
+        if (hasCuttingTool) return
+
+        const gatheredQty = Math.max(0.1, gathered?.quantity ?? 1)
+        const strength = Math.min(0.09, 0.04 + gatheredQty * 0.015)
+        this.recordChallengeContext('manual_cutting_hardship', strength, {
+            resourceType,
+            durationTicks: 500
+        })
+        this.addThought('This is hard work. The grass is really torn up.', 'hardship')
+
+        if (Math.random() < 0.35) {
+            this.ponderProblem('need_better_tools', {
+                reason: 'Cutting fiber and grass by hand is inefficient',
+                inspiration: hasCuttingTool ? 'observed' : 'hardship'
+            })
+        }
+    }
+
+    registerRestOutcome(goal = null) {
+        const tick = this.world?.clock?.currentTick ?? 0
+        const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        const nearCover = entities.some(entity => {
+            const tags = entity?.tags
+            const hasCover = Array.isArray(tags) ? tags.includes('cover') : typeof tags?.has === 'function' ? tags.has('cover') : false
+            if (!hasCover) return false
+            const dx = (entity.x ?? 0) - this.x
+            const dy = (entity.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= 26
+        })
+
+        const nearbyPawns = entities.filter(entity => {
+            if (entity?.subtype !== 'pawn' || entity.id === this.id) return false
+            const dx = (entity.x ?? 0) - this.x
+            const dy = (entity.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= 30
+        }).length
+
+        if (!nearCover) {
+            this.exposedNights++
+            this.recordChallengeContext('poor_sleep_ground', 0.07, { durationTicks: 900 })
+            this.recordChallengeContext('exposed_night', 0.04, { durationTicks: 700 })
+            this.addThought('Sleeping on the ground feels rough and unsteady.', 'comfort')
+
+            if (this.exposedNights >= 2) {
+                this.ponderProblem('need_shelter', {
+                    reason: 'Repeated poor sleep without shelter',
+                    inspiration: 'hardship'
+                })
+            }
+        } else {
+            this.exposedNights = 0
+        }
+
+        if (nearbyPawns >= 2) {
+            this.groupCampNights++
+            this.recordChallengeContext('group_camp_nights', 0.06, { durationTicks: 1000, nearbyPawns })
+            if (this.groupCampNights >= 3) {
+                this.addThought('Camping together this long makes me want a permanent place.', 'settlement')
+                this.ponderProblem('need_shelter', {
+                    reason: 'Group has camped together for several nights',
+                    inspiration: 'social'
+                })
+            }
+        } else {
+            this.groupCampNights = Math.max(0, this.groupCampNights - 1)
+        }
+
+        if ((goal?.duration ?? 0) >= 12 && (this.needs?.needs?.purpose ?? 0) >= 35) {
+            this.addThought('Rest gave me time to connect the pieces in my head.', 'insight')
+        }
+
+        this.setRecentAction('Reflecting during rest')
+        this.lastSleepTime = tick
+    }
+
+    auditRememberedCaches() {
+        const tick = this.world?.clock?.currentTick ?? 0
+        if (!this.world?.entitiesMap) return
+        if (tick - this.lastCacheAuditTick < 120) return
+        this.lastCacheAuditTick = tick
+
+        const knownCaches = this.memoryMap.filter(lm => lm.type === 'resource_cache' && lm.cacheId)
+        if (!knownCaches.length) return
+
+        const missing = knownCaches.filter(lm => !this.world.entitiesMap.has(lm.cacheId))
+        if (!missing.length) return
+
+        this.cacheLossEvents += missing.length
+        this.recordChallengeContext('cache_decay_loss', Math.min(0.12, 0.04 * missing.length), {
+            durationTicks: 900,
+            count: missing.length
+        })
+        this.addThought('A cache I relied on is gone. I need sturdier storage.', 'loss')
+        this.ponderProblem('need_shelter', {
+            reason: 'Temporary cache decayed before retrieval',
+            inspiration: 'hardship'
+        })
+    }
     
     ponderProblem(problemType, context = {}) {
         // Check if already pondering this problem
@@ -1600,7 +2001,17 @@ class Pawn extends MobileEntity {
         // Lateral learning bonus: easier if we know similar things
         const lateralBonus = this.calculateLateralLearningBonus(problem.type, problem.context)
         
-        let totalChance = baseChance + attemptBonus + successBonus + observationBonus + lateralBonus
+        const purposeBonus = this.getPurposePressureBonus()
+        const challengeBonus = this.getChallengeContextBonus(problem.type)
+        const ponderWindowBonus = this.getPonderWindowBonus()
+
+        let totalChance = baseChance + attemptBonus + successBonus + observationBonus + lateralBonus + purposeBonus + challengeBonus + ponderWindowBonus
+
+        if (ponderWindowBonus <= 0.02) {
+            totalChance *= 0.75
+        }
+
+        totalChance = Math.min(0.95, Math.max(0.001, totalChance))
         
         // Apply user intervention multiplier
         totalChance = this.getEffectiveInventionChance(totalChance)
@@ -1610,6 +2021,7 @@ class Pawn extends MobileEntity {
             const solution = this.discoverSolution(problem.type, problem.context)
             if (solution) {
                 console.log(`💡 ${this.name} has an epiphany: ${solution.name}!`)
+                this.addThought(`I have a way to ${solution.unlocks?.replace?.(/_/g, ' ') ?? 'solve this'}.`, 'epiphany')
                 this.discoveredSolutions.add(solution.id)
                 
                 // Initialize success tracking
@@ -2090,19 +2502,50 @@ class Pawn extends MobileEntity {
     receiveGroupCommand(command, issuedByPawn) {
         if (!command || !issuedByPawn) return false
         const minTrust = command.minTrust ?? 0.05
-        if (!this.canObeyLeader(issuedByPawn, minTrust)) return false
+        if (!this.canObeyLeader(issuedByPawn, minTrust)) {
+            this.groupStats.rejectedCommands = (this.groupStats.rejectedCommands ?? 0) + 1
+            this.groupState.cohesion = Math.max(0, (this.groupState.cohesion ?? 0) - 0.02)
+            return false
+        }
 
         this.groupCommandQueue.push({
             ...command,
             issuedBy: issuedByPawn.id,
             issuedAt: Date.now()
         })
+        this.groupStats.obeyedCommands = (this.groupStats.obeyedCommands ?? 0) + 1
         this.groupState.cohesion = Math.min(1, (this.groupState.cohesion ?? 0) + 0.02)
         return true
     }
 
     issueGroupCommand(command) {
         if (!command || this.groupState?.role !== 'leader') return 0
+
+        if (command.type === 'obey') {
+            const newLeader = command.newLeader ?? command.target ?? null
+            if (!newLeader?.id) return 0
+
+            const reassigned = this.getGroupMembers().filter(member => member.id !== this.id)
+            const transferred = this.transferGroupLeadership(newLeader)
+            if (!transferred) return 0
+
+            const obeyCommand = {
+                type: 'obey',
+                target: newLeader,
+                priority: command.priority ?? 9,
+                duration: command.duration ?? 80,
+                minTrust: -1,
+                issuedBy: newLeader.id,
+                issuedAt: Date.now()
+            }
+
+            for (const member of reassigned) {
+                if (member.id === newLeader.id) continue
+                member.groupCommandQueue.push({ ...obeyCommand })
+            }
+
+            return reassigned.length
+        }
 
         const members = this.getGroupMembers().filter(member => member.id !== this.id)
         let accepted = 0
@@ -2185,7 +2628,101 @@ class Pawn extends MobileEntity {
             }
         }
 
+        if (command.type === 'obey') {
+            const newLeader = command.newLeader ?? command.target ?? null
+            return {
+                type: 'obey_leader',
+                priority: basePriority,
+                description: 'Obey leadership transfer order',
+                targetType: 'entity',
+                targetSubtype: 'pawn',
+                targetId: newLeader?.id,
+                target: newLeader,
+                action: 'obey',
+                duration,
+                groupCommand: true
+            }
+        }
+
         return null
+    }
+
+    transferGroupLeadership(newLeaderPawn) {
+        const groupId = this.groupState?.id
+        if (!groupId || !newLeaderPawn?.id || newLeaderPawn.id === this.id) return false
+        if (newLeaderPawn.groupState?.id !== groupId) return false
+        if (this.groupState?.role !== 'leader') return false
+
+        const members = this.getGroupMembers()
+        for (const member of members) {
+            if (member.id === newLeaderPawn.id) {
+                member.groupState.role = 'leader'
+                member.groupState.leaderId = newLeaderPawn.id
+                member.groupState.cohesion = Math.max(member.groupState.cohesion ?? 0, 0.4)
+                member.reputation.membership[groupId] = 'leader'
+            } else {
+                member.groupState.role = 'member'
+                member.groupState.leaderId = newLeaderPawn.id
+                member.reputation.membership[groupId] = 'member'
+            }
+        }
+
+        this.groupStats.promotions = (this.groupStats.promotions ?? 0) + 1
+        return true
+    }
+
+    shouldPromoteNewLeader() {
+        if (this.groupState?.role !== 'member') return false
+        const leader = this.getGroupLeader()
+        if (!leader) return false
+
+        const cohesion = this.groupState.cohesion ?? 0
+        const trust = this.getGroupTrustIn(leader)
+        const leadershipAptitude = (this.getSkill('planning') + this.getSkill('cooperation')) / 2
+
+        return (
+            cohesion >= this.groupConfig.promotionCohesion &&
+            trust >= this.groupConfig.promotionTrust &&
+            leadershipAptitude >= 6
+        )
+    }
+
+    updateGroupDynamics(tick) {
+        if (!this.groupState?.id || tick % 50 !== 0) return
+
+        if (this.groupState.role === 'leader') {
+            this.groupState.cohesion = Math.max(0.1, (this.groupState.cohesion ?? 0) - 0.001)
+            return
+        }
+
+        const leader = this.getGroupLeader()
+        if (!leader) {
+            this.leaveGroup()
+            return
+        }
+
+        const dx = leader.x - this.x
+        const dy = leader.y - this.y
+        const distance = Math.sqrt(dx * dx + dy * dy)
+        const maxDistance = this.groupConfig.maxCohesionDistance
+
+        if (distance > maxDistance) {
+            this.groupState.cohesion = Math.max(0, (this.groupState.cohesion ?? 0) - this.groupConfig.cohesionDecayFar)
+        } else {
+            this.groupState.cohesion = Math.max(0, (this.groupState.cohesion ?? 0) - this.groupConfig.cohesionDecayNear)
+            if (distance < 90) {
+                this.groupState.cohesion = Math.min(1, (this.groupState.cohesion ?? 0) + 0.01)
+            }
+        }
+
+        if ((this.groupState.cohesion ?? 0) <= 0.01) {
+            this.leaveGroup()
+            return
+        }
+
+        if (this.shouldPromoteNewLeader()) {
+            this.groupState.role = 'leader-candidate'
+        }
     }
 
     getPerceivedReputation(targetPawn) {
@@ -2209,6 +2746,11 @@ class Pawn extends MobileEntity {
         // Prevent water from being added unless pawn has a container
         if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
             // Can't carry water without a container - trigger pondering!
+            this.recordChallengeContext('water_handling_hardship', 0.06, {
+                durationTicks: 700,
+                itemType: 'water'
+            })
+            this.addThought('I can gather water, but I cannot carry it like this.', 'constraint')
             this.ponderProblem('need_water_container', {
                 itemType: 'water',
                 reason: 'Cannot carry water without container',
@@ -2223,6 +2765,11 @@ class Pawn extends MobileEntity {
         }
         if (this.inventory.length >= this.inventorySlots) {
             // Inventory full - trigger pondering!
+            this.recordChallengeContext('inventory_pressure', 0.06, {
+                durationTicks: 700,
+                itemType: item.type
+            })
+            this.addThought('My hands are full. I need better ways to carry things.', 'constraint')
             this.ponderProblem('inventory_full', {
                 itemType: item.type,
                 currentSlots: this.inventorySlots,
@@ -2326,21 +2873,43 @@ class Pawn extends MobileEntity {
             }
         }
 
+        // Pre-check availability (inventory + optional at-source ingredients)
+        for (const req of recipe.requiredItems) {
+            const invCount = this.inventory.filter(item => item.type === req.type).length
+            if (invCount >= req.count) continue
+
+            if (!req.allowSourceUse) {
+                console.warn(`${this.name} lacks ${req.type} (need ${req.count}, have ${invCount})`)
+                return null
+            }
+
+            const sourceCount = this.countNearbySourceUnits(req)
+            if ((invCount + sourceCount) < req.count) {
+                console.warn(`${this.name} lacks ${req.type} near source (need ${req.count}, have ${invCount} + ${sourceCount} source)`)
+                return null
+            }
+        }
+
         // Collect and remove required items from inventory
         const consumed = []
         for (const req of recipe.requiredItems) {
             const items = this.inventory.filter(item => item.type === req.type)
-            if (items.length < req.count) {
-                console.warn(`${this.name} lacks ${req.type} (need ${req.count}, have ${items.length})`)
-                // Return previously consumed items
-                for (const item of consumed) this.inventory.push(item)
-                return null
-            }
+            const neededFromInventory = Math.min(req.count, items.length)
+
             // Remove required count
-            for (let i = 0; i < req.count; i++) {
+            for (let i = 0; i < neededFromInventory; i++) {
                 const item = items[i]
                 this.removeItemFromInventory(item.id)
                 consumed.push(item)
+            }
+
+            const stillNeeded = req.count - neededFromInventory
+            if (stillNeeded > 0) {
+                const sourced = this.consumeRecipeRequirementAtSource(req, stillNeeded)
+                if (sourced < stillNeeded) {
+                    console.warn(`${this.name} failed to source ${req.type} at crafting site`)
+                    return null
+                }
             }
         }
 
@@ -2421,8 +2990,191 @@ class Pawn extends MobileEntity {
         // Evaluate unlocks after crafting
         this.evaluateSkillUnlocks?.()
 
+        this.setRecentAction(`Crafted ${output.name}`)
+
         console.log(`${this.name} crafted ${output.name} (quality: ${output.quality.toFixed(2)}, durability: ${output.durability.toFixed(2)})`)
         return output
+    }
+
+    setRecentAction(action) {
+        if (!action) return
+        this.recentAction = String(action)
+        this.recentActionTick = this.world?.clock?.currentTick ?? this.recentActionTick ?? 0
+    }
+
+    getDayTicks() {
+        const turnSeconds = this.constructor.TURN_GAME_SECONDS ?? 48
+        const daySeconds = this.constructor.GAME_DAY_SECONDS ?? (6 * 60 * 48)
+        const dayTicks = Math.round(daySeconds / turnSeconds)
+        return Math.max(1, dayTicks)
+    }
+
+    getNearbyCaches(radius = 90) {
+        const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        return entities.filter(entity => {
+            if (entity?.subtype !== 'cache') return false
+            const dx = (entity.x ?? 0) - this.x
+            const dy = (entity.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= radius
+        })
+    }
+
+    createResourceCache({ x = this.x, y = this.y, purpose = 'general', name = null } = {}) {
+        if (!this.world) return null
+        const tick = this.world.clock?.currentTick ?? 0
+        const id = `cache_${this.id}_${tick}_${Math.random().toString(36).slice(2, 7)}`
+        const cache = new ResourceCache(id, name ?? `${this.name} Cache`, x, y, {
+            ownerId: this.id,
+            purpose,
+            shared: true
+        })
+        this.world.addEntity(cache)
+        this.rememberResourceCache(cache, { significance: 4, event: 'created' })
+        this.setRecentAction(`Created ${purpose} cache`)
+        return cache
+    }
+
+    rememberResourceCache(cache, { significance = 4, event = 'seen' } = {}) {
+        if (!cache) return
+        this.rememberLandmark({
+            x: cache.x,
+            y: cache.y,
+            type: 'resource_cache',
+            significance,
+            name: cache.name,
+            event,
+            cacheId: cache.id,
+            purpose: cache.purpose
+        })
+    }
+
+    findOrCreateResourceCache({ purpose = 'general', radius = 60, x = this.x, y = this.y } = {}) {
+        const nearby = this.getNearbyCaches(radius)
+        const matching = nearby.find(cache => cache.purpose === purpose) ?? nearby[0]
+        if (matching) {
+            this.rememberResourceCache(matching, { significance: 4, event: 'reused' })
+            return matching
+        }
+        return this.createResourceCache({ x, y, purpose })
+    }
+
+    stashInventoryInCache({
+        cache = null,
+        itemTypes = [],
+        maxItems = Infinity,
+        purpose = 'general',
+        location = null
+    } = {}) {
+        const targetCache = cache ?? this.findOrCreateResourceCache({
+            purpose,
+            x: location?.x ?? this.x,
+            y: location?.y ?? this.y
+        })
+
+        if (!targetCache) return { cache: null, stashed: 0 }
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const wanted = Array.isArray(itemTypes) ? new Set(itemTypes) : new Set()
+        const shouldInclude = item => wanted.size === 0 || wanted.has(item.type)
+
+        const toMove = []
+        for (const item of this.inventory) {
+            if (!shouldInclude(item)) continue
+            toMove.push(item)
+            if (toMove.length >= maxItems) break
+        }
+
+        let moved = 0
+        for (const item of toMove) {
+            if (!targetCache.addItem(item, tick)) continue
+            this.removeItemFromInventory(item.id)
+            moved++
+        }
+
+        if (moved > 0) {
+            this.rememberResourceCache(targetCache, {
+                significance: Math.min(8, 4 + moved * 0.2),
+                event: 'stashed'
+            })
+            this.setRecentAction(`Stashed ${moved} item(s) at cache`)
+        }
+
+        return { cache: targetCache, stashed: moved }
+    }
+
+    retrieveFromCache({ cache, itemType, count = 1 } = {}) {
+        if (!cache || !itemType || count <= 0) return 0
+        const tick = this.world?.clock?.currentTick ?? 0
+        const pulled = cache.takeItems(itemType, count, tick)
+
+        let added = 0
+        for (const item of pulled) {
+            const ok = this.addItemToInventory(item)
+            if (!ok) {
+                cache.addItem(item, tick)
+                continue
+            }
+            added++
+        }
+
+        if (added > 0) {
+            this.rememberResourceCache(cache, { significance: 5, event: 'retrieved' })
+            this.setRecentAction(`Retrieved ${added} ${itemType} from cache`)
+        }
+
+        return added
+    }
+
+    startFiberSoakAtCache({ cache = null, fiberCount = 1 } = {}) {
+        const targetCache = cache ?? this.findOrCreateResourceCache({ purpose: 'fiber_soak' })
+        if (!targetCache) return false
+
+        const dayTicks = this.getDayTicks()
+        const tick = this.world?.clock?.currentTick ?? 0
+        const moved = this.stashInventoryInCache({
+            cache: targetCache,
+            itemTypes: ['fiber'],
+            maxItems: fiberCount,
+            purpose: 'fiber_soak'
+        }).stashed
+
+        if (moved <= 0) return false
+
+        const started = targetCache.startSoakJob({
+            inputType: 'fiber',
+            outputType: 'soaked_fiber',
+            quantity: moved,
+            durationTicks: dayTicks,
+            tick,
+            itemFactory: index => ({
+                id: `soaked_fiber_${tick}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+                type: 'soaked_fiber',
+                name: 'Soaked Fiber',
+                quality: 1.1,
+                durability: 1.2,
+                weight: 1,
+                size: 1,
+                tags: ['material', 'fiber', 'soaked']
+            })
+        })
+
+        if (started) {
+            this.rememberResourceCache(targetCache, { significance: 7, event: 'soak_started' })
+            this.setRecentAction('Started fiber soak (1 day)')
+            return true
+        }
+
+        return false
+    }
+
+    discoverNearbyCaches(radius = 120) {
+        const nearby = this.getNearbyCaches(radius)
+        for (const cache of nearby) {
+            const itemCount = cache.totalItems?.() ?? 0
+            const significance = Math.min(8, 3 + itemCount * 0.15)
+            this.rememberResourceCache(cache, { significance, event: 'discovered' })
+        }
+        return nearby.length
     }
     
     broadcastCraftObservation(item) {
@@ -2568,112 +3320,6 @@ class Pawn extends MobileEntity {
         this.lastDrinkTime = this.gameTime ?? 0
     }
 
-    // ── Group lifecycle ────────────────────────────────────────────────────────
-
-    createGroup(name) {
-        const id = `group_${name}_${Date.now()}`
-        this.groupState.id = id
-        this.groupState.role = 'leader'
-        this.groupState.leaderId = this.id
-        this.groupState.joinedAt = this.world?.clock?.currentTick ?? 0
-        this.reputation.membership[id] = 1
-        return id
-    }
-
-    joinGroup(leader, groupId) {
-        if (!leader || !groupId) return false
-        this.groupState.id = groupId
-        this.groupState.role = 'member'
-        this.groupState.leaderId = leader.id
-        this.groupState.joinedAt = this.world?.clock?.currentTick ?? 0
-        this.reputation.membership[groupId] = 1
-        return true
-    }
-
-    leaveGroup() {
-        const id = this.groupState.id
-        this.groupState = { id: null, role: 'none', leaderId: null, joinedAt: null, cohesion: 0 }
-        if (id) delete this.reputation.membership[id]
-    }
-
-    getGroupLeader() {
-        if (!this.groupState.leaderId || !this.world) return null
-        return this.world.entitiesMap.get(this.groupState.leaderId) ?? null
-    }
-
-    getGroupMembers() {
-        if (!this.world || !this.groupState.id) return []
-        return Array.from(this.world.entitiesMap.values()).filter(
-            e => e !== this && e.subtype === 'pawn' && e.groupState?.id === this.groupState.id
-        )
-    }
-
-    setGroupTrustIn(pawn, value) {
-        const id = typeof pawn === 'string' ? pawn : pawn.id
-        this.groupTrust[id] = Math.max(-1, Math.min(1, value))
-    }
-
-    getGroupTrustIn(pawn) {
-        const id = typeof pawn === 'string' ? pawn : pawn.id
-        return this.groupTrust[id] ?? 0
-    }
-
-    canObeyLeader(minTrust = 0.1) {
-        if (!this.groupState.leaderId) return false
-        return this.getGroupTrustIn(this.groupState.leaderId) >= minTrust
-    }
-
-    receiveGroupCommand(command) {
-        const minTrust = command.minTrust ?? 0.1
-        if (!this.canObeyLeader(minTrust)) return false
-        this.groupCommandQueue.push(command)
-        return true
-    }
-
-    issueGroupCommand(command) {
-        if (this.groupState.role !== 'leader') return 0
-        const members = this.getGroupMembers()
-        let accepted = 0
-        for (const member of members) {
-            if (member.receiveGroupCommand?.(command)) accepted++
-        }
-        return accepted
-    }
-
-    getNextGroupCommandGoal() {
-        const command = this.groupCommandQueue.shift()
-        if (!command) return null
-        switch (command.type) {
-            case 'follow':
-                return {
-                    type: 'follow_leader',
-                    targetId: this.groupState.leaderId,
-                    duration: command.duration ?? 120
-                }
-            case 'protect':
-                return {
-                    type: 'protect_target',
-                    targetId: command.target?.id ?? null,
-                    duration: command.duration ?? 120
-                }
-            case 'escort':
-                return {
-                    type: 'escort_target',
-                    targetId: command.target?.id ?? null,
-                    duration: command.duration ?? 120
-                }
-            case 'mark': {
-                const t = command.target
-                return {
-                    type: 'mark_target',
-                    targetId: t?.id ?? null,
-                    targetLocation: t ? { x: t.x, y: t.y } : null
-                }
-            }
-            default:
-                return null
-        }
-    }
 }
 
 export default Pawn

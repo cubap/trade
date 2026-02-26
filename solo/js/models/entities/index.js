@@ -1,5 +1,5 @@
 import { MobileEntity, Pawn, Animal } from './mobile/index.js'
-import { ImmobileEntity, Structure, Plant } from './immobile/index.js'
+import { ImmobileEntity, Structure, Plant, ResourceCache } from './immobile/index.js'
 
 export {
     // Mobile entities
@@ -10,5 +10,6 @@ export {
     // Immobile entities
     ImmobileEntity,
     Structure,
-    Plant
+    Plant,
+    ResourceCache
 }

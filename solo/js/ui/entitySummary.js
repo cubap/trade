@@ -124,6 +124,21 @@ export function createEntitySummary(entity) {
             }))
             summary.completedGoals = entity.goals.completedGoals.length
         }
+        if (entity.groupState) {
+            summary.group = {
+                id: entity.groupState.id ?? null,
+                role: entity.groupState.role ?? 'none',
+                leaderId: entity.groupState.leaderId ?? null,
+                cohesion: Number((entity.groupState.cohesion ?? 0).toFixed(3)),
+                queuedCommands: entity.groupCommandQueue?.length ?? 0,
+                marks: entity.groupMarks?.length ?? 0,
+                stats: {
+                    obeyedCommands: entity.groupStats?.obeyedCommands ?? 0,
+                    rejectedCommands: entity.groupStats?.rejectedCommands ?? 0,
+                    promotions: entity.groupStats?.promotions ?? 0
+                }
+            }
+        }
         if (entity.currentTarget) {
             summary.currentTarget = {
                 id: entity.currentTarget.id,
@@ -151,6 +166,16 @@ export function createEntitySummary(entity) {
             summary.capacity = entity.capacity
             summary.currentOccupants = entity.currentOccupants
             summary.securityValue = entity.securityValue
+        }
+    }
+    if (entity.subtype === 'cache') {
+        summary.cache = {
+            purpose: entity.purpose ?? 'general',
+            shared: entity.shared ?? true,
+            ownerId: entity.ownerId ?? null,
+            itemCount: entity.items?.length ?? 0,
+            soakJobs: entity.soakJobs?.length ?? 0,
+            topItems: (entity.items ?? []).slice(0, 8).map(item => item?.type ?? item?.name ?? 'item')
         }
     }
     return summary

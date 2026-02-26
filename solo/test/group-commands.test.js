@@ -80,3 +80,83 @@ test('Group Commands - mark command maps to mark_target goal', () => {
   assert.strictEqual(goal.targetId, target.id)
   assert.deepStrictEqual(goal.targetLocation, { x: target.x, y: target.y })
 })
+
+test('Group Commands - obey command maps to obey_leader goal', () => {
+  const leader = new Pawn('p1', 'Leader', 0, 0)
+  const member = new Pawn('p2', 'Member', 10, 10)
+  const promoted = new Pawn('p3', 'Promoted', 15, 12)
+
+  createWorldWith(leader, member, promoted)
+
+  const groupId = leader.createGroup('group-delta')
+  member.joinGroup(leader, groupId)
+  promoted.joinGroup(leader, groupId)
+
+  member.setGroupTrustIn(leader, 0.8)
+  promoted.setGroupTrustIn(leader, 0.8)
+  const accepted = leader.issueGroupCommand({ type: 'obey', target: promoted })
+  assert.strictEqual(accepted, 2)
+
+  const goal = member.getNextGroupCommandGoal()
+  assert.ok(goal)
+  assert.strictEqual(goal.type, 'obey_leader')
+  assert.strictEqual(goal.targetId, promoted.id)
+})
+
+test('Group Dynamics - member leaves group when cohesion collapses', () => {
+  const leader = new Pawn('p1', 'Leader', 0, 0)
+  const member = new Pawn('p2', 'Member', 500, 500)
+  const world = createWorldWith(leader, member)
+
+  const groupId = leader.createGroup('group-epsilon')
+  member.joinGroup(leader, groupId)
+  member.groupState.cohesion = 0.02
+
+  world.clock.currentTick = 50
+  member.updateGroupDynamics(world.clock.currentTick)
+
+  assert.strictEqual(member.groupState.id, null)
+  assert.strictEqual(member.groupState.role, 'none')
+})
+
+test('Group Dynamics - high trust/cohesion marks member as leader candidate', () => {
+  const leader = new Pawn('p1', 'Leader', 0, 0)
+  const member = new Pawn('p2', 'Member', 20, 20)
+  const world = createWorldWith(leader, member)
+
+  const groupId = leader.createGroup('group-zeta')
+  member.joinGroup(leader, groupId)
+  member.groupState.cohesion = 0.9
+  member.setGroupTrustIn(leader, 0.9)
+  member.skills.planning = 8
+  member.skills.cooperation = 8
+
+  world.clock.currentTick = 50
+  member.updateGroupDynamics(world.clock.currentTick)
+
+  assert.strictEqual(member.groupState.role, 'leader-candidate')
+})
+
+test('Group Commands - leader-issued obey reassigns group leadership', () => {
+  const leader = new Pawn('p1', 'Leader', 0, 0)
+  const member = new Pawn('p2', 'Member', 10, 10)
+  const promoted = new Pawn('p3', 'Promoted', 15, 10)
+
+  createWorldWith(leader, member, promoted)
+
+  const groupId = leader.createGroup('group-theta')
+  member.joinGroup(leader, groupId)
+  promoted.joinGroup(leader, groupId)
+
+  member.setGroupTrustIn(leader, 0.7)
+  promoted.setGroupTrustIn(leader, 0.7)
+
+  const reassigned = leader.issueGroupCommand({ type: 'obey', target: promoted })
+
+  assert.strictEqual(reassigned, 2)
+  assert.strictEqual(promoted.groupState.role, 'leader')
+  assert.strictEqual(promoted.groupState.leaderId, promoted.id)
+  assert.strictEqual(member.groupState.leaderId, promoted.id)
+  assert.strictEqual(leader.groupState.leaderId, promoted.id)
+  assert.strictEqual(leader.groupState.role, 'member')
+})

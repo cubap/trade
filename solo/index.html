@@ -120,7 +120,7 @@
             }, 1000)
         })()
         // Test-mode: force-gather nearby resources into pawn inventory, then attempt a craft
-        (function forceGatherAndCraft() {
+        ;(function forceGatherAndCraft() {
             const params = new URLSearchParams(location.search)
             if (params.get('testMode') !== '1') return
 
@@ -186,7 +186,7 @@
             }, 3000)
         })()
         // Test-mode: force crafting attempts on a timer when `?testMode=1` is present
-        (function forceCraftInTestMode() {
+        ;(function forceCraftInTestMode() {
             const params = new URLSearchParams(location.search)
             if (params.get('testMode') !== '1') return
 
@@ -229,7 +229,7 @@
             }, 5000)
         })()
         // One-shot state dump and forced craft attempt for test visibility
-        (function dumpStateAndForceCraftOnce() {
+        ;(function dumpStateAndForceCraftOnce() {
             const params = new URLSearchParams(location.search)
             if (params.get('testMode') !== '1') return
 
@@ -246,7 +246,7 @@
                     }
 
                     const inventory = (pawn.inventory || []).map(i => ({ name: i?.name || i?.type || null }))
-                    const unlocked = pawn.unlocked?.recipes ? Array.from(pawn.unlocked.recipes.keys?.?.() || []) : []
+                    const unlocked = pawn.unlocked?.recipes ? Array.from(pawn.unlocked.recipes.keys?.() || []) : []
                     const currentGoal = pawn.goals?.currentGoal || pawn.currentGoal || null
 
                     fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'force-dump', message: { pawn: pawn.name || pawn.id || 'pawn', inventory, inventorySlots: pawn.inventorySlots, unlocked, currentGoal } }) }).catch(()=>{})
@@ -278,7 +278,7 @@
             }, 1500)
         })()
         // Repeated safe dump attempts to ensure we capture pawn state once it's available
-        (function repeatedSafeDump() {
+        ;(function repeatedSafeDump() {
             const params = new URLSearchParams(location.search)
             if (params.get('testMode') !== '1') return
 

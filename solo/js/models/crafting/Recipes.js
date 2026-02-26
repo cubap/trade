@@ -64,12 +64,39 @@ export const RECIPES = [
     experience: 1.2
   },
   {
+    id: 'herb_mash',
+    name: 'Herb Mash',
+    description: 'Wet herbal mash prepared at a water source',
+    requiredSkills: { herbalism: 1 },
+    requiredItems: [
+      { type: 'herb', count: 2 },
+      {
+        type: 'water',
+        count: 1,
+        allowSourceUse: true,
+        sourceTag: 'water',
+        sourceRange: 24,
+        sourceConsumeAmount: 6
+      }
+    ],
+    output: {
+      type: 'herb_mash',
+      name: 'Herb Mash',
+      baseQuality: 1,
+      tags: ['material', 'alchemy', 'cooking']
+    },
+    craftTime: 18,
+    primarySkill: 'herbalism',
+    experience: 0.4
+  },
+  {
     id: 'simple_poultice',
     name: 'Simple Poultice',
-    description: 'Crushed herbs for healing',
+    description: 'Prepared healing mash for wounds',
     requiredSkills: { herbalism: 2 },
     requiredItems: [
-      { type: 'herb', count: 3 }
+      { type: 'herb_mash', count: 1 },
+      { type: 'herb', count: 1 }
     ],
     output: {
       type: 'poultice',
@@ -82,6 +109,25 @@ export const RECIPES = [
     craftTime: 15,
     primarySkill: 'herbalism',
     experience: 0.6
+  },
+  {
+    id: 'durable_cordage',
+    name: 'Durable Cordage',
+    description: 'Twisted cord from soaked fiber with improved durability',
+    requiredSkills: { weaving: 2 },
+    requiredItems: [
+      { type: 'soaked_fiber', count: 3 }
+    ],
+    output: {
+      type: 'durable_cordage',
+      name: 'Durable Cordage',
+      baseQuality: 1.2,
+      tags: ['material', 'rope', 'durable'],
+      durability: 30
+    },
+    craftTime: 28,
+    primarySkill: 'weaving',
+    experience: 0.8
   },
   {
     id: 'basic_shelter',
@@ -113,6 +159,41 @@ export function getRecipe(id) {
   return RECIPES.find(r => r.id === id)
 }
 
+function countNearbySourceUnits(pawn, req) {
+  const sourceTag = req.sourceTag ?? req.type
+  const sourceRange = req.sourceRange ?? 24
+  const consumePerUnit = req.sourceConsumeAmount ?? 1
+  const entities = pawn?.world?.entitiesMap ? Array.from(pawn.world.entitiesMap.values()) : []
+
+  return entities.reduce((total, entity) => {
+    if (!entity || entity === pawn) return total
+    const dx = (entity.x ?? 0) - (pawn.x ?? 0)
+    const dy = (entity.y ?? 0) - (pawn.y ?? 0)
+    if (Math.sqrt(dx * dx + dy * dy) > sourceRange) return total
+
+    const tags = entity.tags
+    const hasTag = Array.isArray(tags)
+      ? tags.includes(sourceTag)
+      : typeof tags?.has === 'function'
+        ? tags.has(sourceTag)
+        : false
+
+    const matches = hasTag || entity.subtype === sourceTag || entity.type === sourceTag
+    if (!matches) return total
+
+    const quantity = Number.isFinite(entity.quantity) ? Math.max(0, entity.quantity) : 0
+    if (quantity > 0) {
+      return total + Math.floor(quantity / consumePerUnit)
+    }
+
+    if (entity.canConsume?.() || entity.canGather?.()) {
+      return total + 1
+    }
+
+    return total
+  }, 0)
+}
+
 // Get all recipes pawn can craft (has skills & materials)
 export function getAvailableRecipes(pawn) {
   return RECIPES.filter(recipe => {
@@ -130,8 +211,12 @@ export function getAvailableRecipes(pawn) {
 export function canCraftRecipe(pawn, recipe) {
   const inventory = pawn.inventory ?? []
   for (const req of recipe.requiredItems) {
-    const count = inventory.filter(item => item.type === req.type).length
-    if (count < req.count) return false
+    const inInventory = inventory.filter(item => item.type === req.type).length
+    if (inInventory >= req.count) continue
+
+    if (!req.allowSourceUse) return false
+    const nearSource = countNearbySourceUnits(pawn, req)
+    if ((inInventory + nearSource) < req.count) return false
   }
   return true
 }

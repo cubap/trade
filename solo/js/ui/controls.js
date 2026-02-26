@@ -11,6 +11,22 @@ function setupControls(world, renderer, playerMode) {
     const controlPanel = document.createElement('div')
     controlPanel.id = 'control-panel'
     controlPanel.style.margin = '10px 0'
+
+    const primaryRow = document.createElement('div')
+    primaryRow.style.display = 'flex'
+    primaryRow.style.alignItems = 'center'
+    primaryRow.style.flexWrap = 'wrap'
+    primaryRow.style.gap = '6px'
+
+    const devRow = document.createElement('div')
+    devRow.style.display = 'none'
+    devRow.style.marginTop = '6px'
+    devRow.style.paddingTop = '6px'
+    devRow.style.borderTop = '1px solid rgba(0,0,0,0.15)'
+    devRow.style.display = 'none'
+    devRow.style.alignItems = 'center'
+    devRow.style.flexWrap = 'wrap'
+    devRow.style.gap = '6px'
     
     // Add entity type selector
     const typeSelect = document.createElement('select')
@@ -89,28 +105,162 @@ function setupControls(world, renderer, playerMode) {
     
     // Follow and perception controls
     const { followButton, perceptionButton, recenterButton } = setupFollowControls(world, renderer)
+
+    const devToggleButton = document.createElement('button')
+    devToggleButton.textContent = 'Dev Tools ▸'
+    devToggleButton.style.marginLeft = '6px'
+    devToggleButton.onclick = () => {
+        const open = devRow.style.display !== 'none'
+        devRow.style.display = open ? 'none' : 'flex'
+        devToggleButton.textContent = open ? 'Dev Tools ▸' : 'Dev Tools ▾'
+    }
+
+    // Group command controls (minimal live testing for follow/obey)
+    const leaderSelect = document.createElement('select')
+    leaderSelect.style.marginLeft = '10px'
+    const targetSelect = document.createElement('select')
+    targetSelect.style.marginLeft = '6px'
+    const commandSelect = document.createElement('select')
+    commandSelect.style.marginLeft = '6px'
+    const followOption = document.createElement('option')
+    followOption.value = 'follow'
+    followOption.textContent = 'follow'
+    const obeyOption = document.createElement('option')
+    obeyOption.value = 'obey'
+    obeyOption.textContent = 'obey'
+    commandSelect.appendChild(followOption)
+    commandSelect.appendChild(obeyOption)
+
+    const issueCommandButton = document.createElement('button')
+    issueCommandButton.textContent = 'Issue Cmd'
+    issueCommandButton.style.marginLeft = '6px'
+
+    const refreshPawnsButton = document.createElement('button')
+    refreshPawnsButton.textContent = '↻ Pawns'
+    refreshPawnsButton.style.marginLeft = '6px'
+
+    const commandStatus = document.createElement('span')
+    commandStatus.style.marginLeft = '8px'
+    commandStatus.style.fontSize = '12px'
+    commandStatus.style.color = '#ddd'
+    commandStatus.textContent = 'Cmd: ready'
+
+    const refreshPawnSelectors = () => {
+        const pawns = Array.from(world.entitiesMap.values()).filter(e => e.subtype === 'pawn')
+        const previousLeader = leaderSelect.value
+        const previousTarget = targetSelect.value
+
+        leaderSelect.innerHTML = ''
+        targetSelect.innerHTML = ''
+
+        for (const pawn of pawns) {
+            const leaderOption = document.createElement('option')
+            leaderOption.value = pawn.id
+            leaderOption.textContent = `L:${pawn.name}`
+            leaderSelect.appendChild(leaderOption)
+
+            const targetOption = document.createElement('option')
+            targetOption.value = pawn.id
+            targetOption.textContent = `T:${pawn.name}`
+            targetSelect.appendChild(targetOption)
+        }
+
+        if (previousLeader && pawns.some(p => p.id === previousLeader)) {
+            leaderSelect.value = previousLeader
+        }
+        if (previousTarget && pawns.some(p => p.id === previousTarget)) {
+            targetSelect.value = previousTarget
+        }
+    }
+
+    const ensureGroupLink = (leader, target) => {
+        if (!leader || !target) return false
+        if (!leader.groupState?.id) {
+            leader.createGroup?.(`live-${leader.id}`)
+        }
+        if (!leader.groupState?.id) return false
+
+        if (target.groupState?.id !== leader.groupState.id) {
+            target.joinGroup?.(leader, leader.groupState.id)
+        }
+        // default trust for live control testing
+        target.setGroupTrustIn?.(leader, Math.max(0.6, target.getGroupTrustIn?.(leader) ?? 0))
+        return true
+    }
+
+    issueCommandButton.onclick = () => {
+        refreshPawnSelectors()
+        const leader = world.entitiesMap.get(leaderSelect.value)
+        const target = world.entitiesMap.get(targetSelect.value)
+        const type = commandSelect.value
+
+        if (!leader || !target || leader.subtype !== 'pawn' || target.subtype !== 'pawn') {
+            console.log('Select valid leader/target pawns first')
+            commandStatus.textContent = 'Cmd: invalid leader/target'
+            return
+        }
+
+        if (leader.id === target.id && type === 'obey') {
+            console.log('Obey command requires a different target leader')
+            commandStatus.textContent = 'Cmd: obey needs different target'
+            return
+        }
+
+        if (!ensureGroupLink(leader, target)) {
+            console.log('Could not establish group linkage for command')
+            commandStatus.textContent = 'Cmd: group link failed'
+            return
+        }
+
+        const accepted = leader.issueGroupCommand?.({
+            type,
+            target,
+            duration: type === 'follow' ? 140 : 80,
+            priority: type === 'follow' ? 8 : 9
+        }) ?? 0
+
+        console.log(`Issued ${type} from ${leader.name} to ${target.name}; accepted by ${accepted} member(s)`)
+        commandStatus.textContent = `Cmd: ${type} ${leader.name}→${target.name} (accepted ${accepted})`
+    }
+
+    refreshPawnsButton.onclick = () => {
+        refreshPawnSelectors()
+        commandStatus.textContent = `Cmd: refreshed (${leaderSelect.options.length} pawns)`
+    }
+    refreshPawnSelectors()
     
-    // Add controls to panel
-    controlPanel.appendChild(typeSelect)
-    controlPanel.appendChild(addButton)
-    controlPanel.appendChild(pauseButton)
-    controlPanel.appendChild(paletteSelect)
-    controlPanel.appendChild(gridButton)
-    controlPanel.appendChild(chunkButton)
-    controlPanel.appendChild(followButton)
-    controlPanel.appendChild(perceptionButton)
-    controlPanel.appendChild(recenterButton)
+    // Add controls to panel (primary + collapsible dev tools)
+    primaryRow.appendChild(pauseButton)
+    primaryRow.appendChild(followButton)
+    primaryRow.appendChild(perceptionButton)
+    primaryRow.appendChild(recenterButton)
+    primaryRow.appendChild(devToggleButton)
+
+    devRow.appendChild(typeSelect)
+    devRow.appendChild(addButton)
+    devRow.appendChild(paletteSelect)
+    devRow.appendChild(gridButton)
+    devRow.appendChild(chunkButton)
+    devRow.appendChild(leaderSelect)
+    devRow.appendChild(targetSelect)
+    devRow.appendChild(commandSelect)
+    devRow.appendChild(issueCommandButton)
+    devRow.appendChild(refreshPawnsButton)
+    devRow.appendChild(commandStatus)
 
     // Mode switcher (pawn / overseer / god) — only mount if playerMode is provided
     let modeSwitcher = null
     if (playerMode) {
-        modeSwitcher = setupModeSwitcher(playerMode, controlPanel)
+        modeSwitcher = setupModeSwitcher(playerMode, primaryRow)
     }
+
+    controlPanel.appendChild(primaryRow)
+    controlPanel.appendChild(devRow)
     
     // Insert into DOM
     document.body.appendChild(controlPanel)
     // Stats display
-    setupStatsDisplay(world, renderer)
+    setupStatsDisplay(world, renderer, playerMode)
     // Canvas interactions
     setupCanvasInteractions(world, renderer, createEntitySummary)
     // Keyboard shortcuts

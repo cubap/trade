@@ -1,4 +1,5 @@
 import { decomposeGoal, isGoalReachable } from './GoalPlanner.js'
+import Structure from '../immobile/Structure.js'
 
 class PawnGoals {
     constructor(pawn) {
@@ -12,6 +13,25 @@ class PawnGoals {
     evaluateAndSetGoals() {
         // Get current needs priorities
         const needsPriority = this.pawn.needs.getNeedsPriority()
+        const topNeed = needsPriority[0] ?? null
+
+        if (this.shouldPreemptForEmergencyNeed(topNeed)) {
+            const emergencyGoals = this.generateGoalsForNeed(topNeed.need, Math.max(topNeed.priority ?? 1, 3))
+            if (emergencyGoals.length > 0) {
+                if (this.currentGoal) {
+                    this.deferredGoals.push({
+                        ...this.currentGoal,
+                        deferredReason: `preempted_for_${topNeed.need}`,
+                        deferredAt: this.pawn.world?.clock?.currentTick ?? 0
+                    })
+                }
+
+                this.currentGoal = emergencyGoals[0]
+                this.goalQueue = []
+                this.startGoal(this.currentGoal)
+                return
+            }
+        }
         
         // Clear existing goal queue
         this.goalQueue = []
@@ -50,6 +70,26 @@ class PawnGoals {
             this.currentGoal = this.goalQueue.shift()
             this.planAndStartGoal(this.currentGoal)
         }
+    }
+
+    shouldPreemptForEmergencyNeed(topNeed) {
+        if (!this.currentGoal || !topNeed) return false
+        const emergencyNeeds = new Set(['hunger', 'thirst', 'energy'])
+        if (!emergencyNeeds.has(topNeed.need)) return false
+        if ((topNeed.priority ?? 0) < 3) return false
+
+        const survivalGoalTypes = new Set([
+            'find_food',
+            'find_water',
+            'rest',
+            'seek_shelter',
+            'gather_specific',
+            'search_resource'
+        ])
+
+        if (survivalGoalTypes.has(this.currentGoal.type)) return false
+        if (this.currentGoal.groupCommand) return false
+        return true
     }
     
     generateGoalsForNeed(need, priority) {
@@ -347,11 +387,13 @@ class PawnGoals {
             'protect_target': 'guarding',
             'escort_target': 'escorting',
             'mark_target': 'coordinating',
+            'obey_leader': 'obeying',
             'craft_item': 'crafting',
             'craft_cordage': 'crafting',
             'craft_sharp_stone': 'crafting',
             'craft_poultice': 'crafting',
             'gather_materials': 'gathering',
+            'stage_build_materials': 'hauling',
             'gather_specific': 'gathering',
             'search_resource': 'exploring',
             'collaborative_craft': 'collaborating',
@@ -450,6 +492,10 @@ class PawnGoals {
     
     completeCurrentGoal() {
         const goal = this.currentGoal
+        if (!goal) {
+            this.pawn.behaviorState = 'idle'
+            return
+        }
         
         console.log(`${this.pawn.name} completed goal: ${goal.description}`)
         
@@ -466,6 +512,10 @@ class PawnGoals {
                 this.pawn.useSkill('storytelling', 0.05)
                 goal.target.useSkill?.('memoryClustering', 0.03)
             }
+        }
+
+        if (goal.type === 'rest') {
+            this.pawn.registerRestOutcome?.(goal)
         }
 
         // Skill gains based on goal type (lightweight for now)
@@ -624,6 +674,29 @@ class PawnGoals {
             this.completeCurrentGoal()
             return
         }
+
+        if (goal.type === 'obey_leader') {
+            const proposedLeader = goal.targetId ? this.pawn.world?.entitiesMap?.get(goal.targetId) : null
+            const currentLeader = this.pawn.getGroupLeader?.()
+
+            if (!proposedLeader || !currentLeader) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const trust = this.pawn.getGroupTrustIn?.(currentLeader) ?? 0
+            if (trust < 0.1) {
+                this.pawn.groupState.cohesion = Math.max(0, (this.pawn.groupState.cohesion ?? 0) - 0.03)
+                this.completeCurrentGoal()
+                return
+            }
+
+            this.pawn.groupState.leaderId = proposedLeader.id
+            this.pawn.groupState.role = proposedLeader.id === this.pawn.id ? 'leader' : 'member'
+            this.pawn.groupState.cohesion = Math.min(1, (this.pawn.groupState.cohesion ?? 0) + 0.03)
+            this.completeCurrentGoal()
+            return
+        }
         
         if (goal.type === 'rest' && !goal.startTime) {
             // Start resting timer when we reach the rest location
@@ -736,6 +809,290 @@ class PawnGoals {
             }
         }
 
+        if (goal.type === 'build_structure') {
+            const tick = this.pawn.world?.clock?.currentTick ?? 0
+            const requirements = Array.isArray(goal.materialRequirements)
+                ? goal.materialRequirements
+                : [
+                    { type: 'stick', count: 8 },
+                    { type: 'fiber', count: 4 }
+                ]
+
+            const site = goal.buildSite ?? goal.targetLocation ?? { x: this.pawn.x, y: this.pawn.y }
+            goal.buildSite = site
+            goal.targetLocation = site
+
+            let cache = null
+            if (goal.cacheId) {
+                cache = this.pawn.world?.entitiesMap?.get(goal.cacheId) ?? null
+            }
+            if (!cache) {
+                const nearbyCaches = this.pawn.getNearbyCaches?.(120) ?? []
+                cache = nearbyCaches.find(entry => entry.purpose === 'build_site') ?? nearbyCaches[0] ?? null
+                if (cache?.id) goal.cacheId = cache.id
+            }
+
+            if (!cache) {
+                const stageGoal = {
+                    type: 'stage_build_materials',
+                    priority: (goal.priority ?? 1) + 1,
+                    description: 'Stage missing build materials',
+                    targetType: 'location',
+                    targetLocation: site,
+                    requirements,
+                    parentGoal: 'build_structure'
+                }
+                this.goalQueue.unshift(goal)
+                this.currentGoal = stageGoal
+                this.startGoal(stageGoal)
+                this.pawn.setRecentAction?.('Need build-site cache before construction')
+                return
+            }
+
+            const outstanding = requirements
+                .map(req => ({
+                    type: req.type,
+                    remaining: Math.max(0, (req.count ?? 0) - (cache.countByType?.(req.type) ?? 0))
+                }))
+                .filter(req => req.remaining > 0)
+
+            if (!goal._consumedMaterials && outstanding.length > 0 && !goal._restagingQueued) {
+                goal._restagingQueued = true
+                const stageGoal = {
+                    type: 'stage_build_materials',
+                    priority: (goal.priority ?? 1) + 1,
+                    description: 'Restage missing build materials',
+                    targetType: 'location',
+                    targetLocation: site,
+                    requirements,
+                    cacheId: cache.id,
+                    parentGoal: 'build_structure'
+                }
+                this.goalQueue.unshift(goal)
+                this.currentGoal = stageGoal
+                this.startGoal(stageGoal)
+                this.pawn.setRecentAction?.('Restaging missing build materials')
+                return
+            }
+
+            if (!outstanding.length) {
+                goal._restagingQueued = false
+            }
+
+            const dx = site.x - this.pawn.x
+            const dy = site.y - this.pawn.y
+            const distToSite = Math.sqrt(dx * dx + dy * dy)
+            if (distToSite > 24) {
+                this.pawn.nextTargetX = site.x
+                this.pawn.nextTargetY = site.y
+                this.pawn.setRecentAction?.('Moving to build site')
+                return
+            }
+
+            if (!goal._consumedMaterials) {
+                const consumedByType = {}
+                for (const req of requirements) {
+                    const taken = cache.takeItems?.(req.type, req.count ?? 0, tick) ?? []
+                    if (taken.length < (req.count ?? 0)) {
+                        cache.addItems?.(taken, tick)
+                        this.pawn.setRecentAction?.('Missing staged materials for construction')
+                        return
+                    }
+                    consumedByType[req.type] = taken.length
+                }
+
+                goal._consumedMaterials = consumedByType
+                goal.startTime = tick
+            }
+
+            const duration = goal.duration ?? 50
+            const elapsed = tick - (goal.startTime ?? tick)
+            goal.buildProgress = Math.max(0, Math.min(1, elapsed / duration))
+            this.pawn.setRecentAction?.(`Building shelter (${Math.round(goal.buildProgress * 100)}%)`)
+
+            if (elapsed < duration) {
+                return
+            }
+
+            const shelterId = `shelter_${this.pawn.id}_${tick}_${Math.random().toString(36).slice(2, 7)}`
+            const shelter = new Structure(shelterId, `${this.pawn.name} Shelter`, site.x, site.y)
+            shelter.tags.add('cover')
+            shelter.tags.add('shelter')
+            shelter.tags.add('built')
+            shelter.ownerId = this.pawn.id
+            shelter.size = 18
+            shelter.condition = 110
+            shelter.maxCondition = 110
+
+            this.pawn.world?.addEntity?.(shelter)
+            this.pawn.rememberLandmark?.({
+                x: site.x,
+                y: site.y,
+                type: 'shelter',
+                significance: 8,
+                name: shelter.name,
+                event: 'constructed'
+            })
+
+            this.pawn.setRecentAction?.('Built shelter from staged materials')
+            this.completeCurrentGoal()
+            return
+        }
+
+        if (goal.type === 'stage_build_materials') {
+            const tick = this.pawn.world?.clock?.currentTick ?? 0
+            const requirements = Array.isArray(goal.requirements)
+                ? goal.requirements
+                : [
+                    { type: 'stick', count: 8 },
+                    { type: 'fiber', count: 4 }
+                ]
+
+            const site = goal.targetLocation ?? goal.buildSite ?? { x: this.pawn.x, y: this.pawn.y }
+            goal.targetLocation = site
+
+            let cache = null
+            if (goal.cacheId) {
+                cache = this.pawn.world?.entitiesMap?.get(goal.cacheId) ?? null
+            }
+            if (!cache) {
+                cache = this.pawn.findOrCreateResourceCache?.({
+                    purpose: 'build_site',
+                    x: site.x,
+                    y: site.y,
+                    radius: 50
+                })
+                if (cache?.id) goal.cacheId = cache.id
+            }
+            if (!cache) {
+                this.pawn.setRecentAction?.('Unable to create build cache')
+                this.completeCurrentGoal()
+                return
+            }
+
+            const targetCount = requirements.reduce((sum, req) => sum + (req.count ?? 0), 0)
+            goal.targetCount = targetCount
+            const stagedCount = requirements.reduce((sum, req) => sum + Math.min(req.count ?? 0, cache.countByType?.(req.type) ?? 0), 0)
+            goal.stagedCount = stagedCount
+
+            const outstanding = requirements
+                .map(req => ({
+                    type: req.type,
+                    remaining: Math.max(0, (req.count ?? 0) - (cache.countByType?.(req.type) ?? 0))
+                }))
+                .filter(req => req.remaining > 0)
+
+            if (outstanding.length === 0) {
+                this.pawn.setRecentAction?.('Build-site cache stocked')
+                this.completeCurrentGoal()
+                return
+            }
+
+            const needType = outstanding[0].type
+            const cacheDx = (cache.x ?? site.x) - this.pawn.x
+            const cacheDy = (cache.y ?? site.y) - this.pawn.y
+            const cacheDist = Math.sqrt(cacheDx * cacheDx + cacheDy * cacheDy)
+
+            const carryingNeeded = this.pawn.inventory.some(item => item.type === needType)
+
+            if (carryingNeeded) {
+                if (cacheDist > 26) {
+                    this.pawn.nextTargetX = cache.x
+                    this.pawn.nextTargetY = cache.y
+                    this.pawn.setRecentAction?.(`Hauling ${needType} to build cache`)
+                    return
+                }
+
+                const result = this.pawn.stashInventoryInCache?.({
+                    cache,
+                    itemTypes: [needType],
+                    maxItems: 1,
+                    purpose: 'build_site'
+                })
+                const moved = result?.stashed ?? 0
+                if (moved > 0) {
+                    goal.stagedCount = (goal.stagedCount ?? 0) + moved
+                    this.pawn.setRecentAction?.(`Staging ${needType} (${goal.stagedCount}/${goal.targetCount})`)
+                }
+                return
+            }
+
+            const entities = Array.from(this.pawn.world.entitiesMap.values())
+            const candidates = entities.filter(entity => {
+                if (!entity?.gather || typeof entity.gather !== 'function') return false
+                const tags = entity.tags
+                const hasTag = Array.isArray(tags)
+                    ? tags.includes(needType)
+                    : typeof tags?.has === 'function'
+                        ? tags.has(needType)
+                        : false
+
+                if (needType === 'fiber' && (entity.subtype === 'fiber_plant' || hasTag)) return true
+                if (entity.subtype === needType || entity.type === needType || hasTag) return true
+                return false
+            })
+
+            if (!candidates.length) {
+                if (!this.pawn.nextTargetX || !this.pawn.nextTargetY) {
+                    this.selectExplorationTarget()
+                }
+                this.pawn.setRecentAction?.(`Searching for ${needType} for build cache`)
+                return
+            }
+
+            candidates.sort((a, b) => {
+                const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
+                const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
+                return distA - distB
+            })
+
+            const resource = candidates[0]
+            const dx = resource.x - this.pawn.x
+            const dy = resource.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            const gatherRange = this.pawn.size + (resource.size ?? 8) + 5
+
+            if (dist > gatherRange) {
+                this.pawn.nextTargetX = resource.x
+                this.pawn.nextTargetY = resource.y
+                this.pawn.setRecentAction?.(`Collecting ${needType} for build cache`)
+                return
+            }
+
+            const gathered = resource.gather(1)
+            if (!gathered) {
+                this.pawn.updateResourceMemoryConfidence?.(resource, false)
+                return
+            }
+
+            const added = this.pawn.addItemToInventory(gathered)
+            this.pawn.updateResourceMemoryConfidence?.(resource, true)
+            this.pawn.rememberResource?.(resource)
+
+            if (added) {
+                this.pawn.setRecentAction?.(`Collected ${gathered.type ?? needType} for build cache`)
+                return
+            }
+
+            if (cacheDist <= 30) {
+                const stashFallback = this.pawn.stashInventoryInCache?.({
+                    cache,
+                    maxItems: 1,
+                    purpose: 'build_site'
+                })
+                if ((stashFallback?.stashed ?? 0) > 0) {
+                    const retry = this.pawn.addItemToInventory(gathered)
+                    if (retry) {
+                        this.pawn.setRecentAction?.(`Collected ${gathered.type ?? needType} for build cache`)
+                    }
+                    return
+                }
+            }
+
+            this.pawn.setRecentAction?.('Hands full while staging build materials')
+            return
+        }
+
         // Gather specific resource from known location
         if (goal.type === 'gather_specific') {
             if (!goal.gatheredCount) goal.gatheredCount = 0
@@ -778,10 +1135,26 @@ class PawnGoals {
                             if (resource.gather && typeof resource.gather === 'function') {
                                 const gathered = resource.gather(1) // Gather 1 unit
                                 if (gathered) {
-                                    this.pawn.addItemToInventory(gathered)
+                                    const added = this.pawn.addItemToInventory(gathered)
                                     this.pawn.updateResourceMemoryConfidence(resource, true)
-                                    goal.gatheredCount++
-                                    console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
+
+                                    if (added) {
+                                        this.pawn.setRecentAction?.(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
+                                        goal.gatheredCount++
+                                        console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
+                                    } else {
+                                        const atSource = this.pawn.handleGatheredItemWithoutStorage?.(gathered, {
+                                            goalResourceType: goal.targetResourceType
+                                        })
+                                        if (atSource?.handled) {
+                                            if (atSource.message) {
+                                                console.log(`${this.pawn.name} ${atSource.message}`)
+                                            }
+                                            if (atSource.countAsGather) {
+                                                goal.gatheredCount++
+                                            }
+                                        }
+                                    }
                                     
                                     // Update memory with fresh location
                                     this.pawn.rememberResource(resource)
@@ -880,10 +1253,25 @@ class PawnGoals {
                     // Immediately gather if close enough
                     const gathered = found.gather(1) // Gather 1 unit
                     if (gathered) {
-                        this.pawn.addItemToInventory(gathered)
+                        const added = this.pawn.addItemToInventory(gathered)
                         this.pawn.updateResourceMemoryConfidence(found, true)
-                        goal.gatheredCount++
-                        console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
+                        if (added) {
+                            this.pawn.setRecentAction?.(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
+                            goal.gatheredCount++
+                            console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
+                        } else {
+                            const atSource = this.pawn.handleGatheredItemWithoutStorage?.(gathered, {
+                                goalResourceType: goal.targetResourceType
+                            })
+                            if (atSource?.handled) {
+                                if (atSource.message) {
+                                    console.log(`${this.pawn.name} ${atSource.message}`)
+                                }
+                                if (atSource.countAsGather) {
+                                    goal.gatheredCount++
+                                }
+                            }
+                        }
                         
                         // Check if done
                         if (goal.gatheredCount >= (goal.count || 1)) {
@@ -947,19 +1335,33 @@ class PawnGoals {
                     if (resource.gather && typeof resource.gather === 'function') {
                         const gathered = resource.gather(1) // Gather 1 unit
                         if (gathered) {
-                            this.pawn.addItemToInventory(gathered)
-                            console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/${this.pawn.inventorySlots}`)
+                            const added = this.pawn.addItemToInventory(gathered)
+
+                            if (added) {
+                                this.pawn.setRecentAction?.(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
+                                console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/${this.pawn.inventorySlots}`)
+                            } else {
+                                const atSource = this.pawn.handleGatheredItemWithoutStorage?.(gathered, {
+                                    goalResourceType: resource.subtype ?? resource.type ?? null
+                                })
+                                if (atSource?.handled && atSource.message) {
+                                    console.log(`${this.pawn.name} ${atSource.message}`)
+                                }
+                            }
                             
                             // Update memory: success!
                             this.pawn.updateResourceMemoryConfidence(resource, true)
                             
                             // Complete if inventory getting full OR if gathered enough variety
-                            if (this.pawn.inventory.length >= this.pawn.inventorySlots) {
+                            if (added && this.pawn.inventory.length >= this.pawn.inventorySlots) {
                                 console.log(`${this.pawn.name} inventory full, completing gathering goal`)
                                 this.completeCurrentGoal()
-                            } else if (this.pawn.inventory.length >= Math.floor(this.pawn.inventorySlots / 2) && Math.random() < 0.3) {
+                            } else if (added && this.pawn.inventory.length >= Math.floor(this.pawn.inventorySlots / 2) && Math.random() < 0.3) {
                                 // 30% chance to finish early if we have decent materials
                                 console.log(`${this.pawn.name} gathered enough materials, completing goal`)
+                                this.completeCurrentGoal()
+                            } else if ((this.pawn.needs?.needs?.thirst ?? 0) <= 15 && this.pawn.behaviorState === 'drinking') {
+                                // Gathering water by hand is effectively drinking over time.
                                 this.completeCurrentGoal()
                             }
                             // Continue gathering more if not done
@@ -1129,77 +1531,6 @@ class PawnGoals {
             }
         }
 
-        // Group command goals: follow_leader, protect_target, escort_target, mark_target
-        if (goal.type === 'follow_leader') {
-            const leader = this.pawn.world?.entitiesMap?.get(goal.targetId)
-            if (!leader) { this.completeCurrentGoal(); return }
-
-            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
-            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-
-            const dx = leader.x - this.pawn.x
-            const dy = leader.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > 15) {
-                this.pawn.nextTargetX = leader.x
-                this.pawn.nextTargetY = leader.y
-            } else {
-                this.pawn.groupState.cohesion = Math.min(1, (this.pawn.groupState.cohesion ?? 0) + 0.01)
-            }
-
-            if (elapsed >= (goal.duration ?? 120)) {
-                this.completeCurrentGoal()
-            }
-        }
-
-        if (goal.type === 'protect_target') {
-            const target = this.pawn.world?.entitiesMap?.get(goal.targetId)
-            if (!target) { this.completeCurrentGoal(); return }
-
-            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
-            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-
-            const dx = target.x - this.pawn.x
-            const dy = target.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > 20) {
-                this.pawn.nextTargetX = target.x
-                this.pawn.nextTargetY = target.y
-            }
-
-            if (elapsed >= (goal.duration ?? 120)) {
-                this.completeCurrentGoal()
-            }
-        }
-
-        if (goal.type === 'escort_target') {
-            const target = this.pawn.world?.entitiesMap?.get(goal.targetId)
-            if (!target) { this.completeCurrentGoal(); return }
-
-            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
-            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-
-            this.pawn.nextTargetX = target.x + (this.pawn.x < target.x ? -20 : 20)
-            this.pawn.nextTargetY = target.y
-
-            if (elapsed >= (goal.duration ?? 120)) {
-                this.completeCurrentGoal()
-            }
-        }
-
-        if (goal.type === 'mark_target') {
-            if (goal.targetLocation) {
-                this.pawn.groupMarks = this.pawn.groupMarks ?? []
-                this.pawn.groupMarks.push({
-                    targetId: goal.targetId,
-                    location: goal.targetLocation,
-                    markedAt: this.pawn.world?.clock?.currentTick ?? 0
-                })
-            }
-            this.completeCurrentGoal()
-        }
     }
 }
 
