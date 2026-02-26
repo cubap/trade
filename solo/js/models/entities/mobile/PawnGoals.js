@@ -343,6 +343,10 @@ class PawnGoals {
             'train_skill': 'teaching',
             'teach_skill': 'teaching',
             'apprentice_skill': 'learning',
+            'follow_leader': 'following',
+            'protect_target': 'guarding',
+            'escort_target': 'escorting',
+            'mark_target': 'coordinating',
             'craft_item': 'crafting',
             'craft_cordage': 'crafting',
             'craft_sharp_stone': 'crafting',
@@ -511,6 +515,115 @@ class PawnGoals {
     updateGoalSpecificLogic() {
         // Goal-specific update logic can be added here
         const goal = this.currentGoal
+
+        if (goal.targetId && !goal.target && this.pawn.world?.entitiesMap) {
+            goal.target = this.pawn.world.entitiesMap.get(goal.targetId) ?? null
+        }
+
+        if (goal.type === 'follow_leader') {
+            if (!goal.target || goal.target.subtype !== 'pawn') {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const dx = goal.target.x - this.pawn.x
+            const dy = goal.target.y - this.pawn.y
+            const distance = Math.sqrt(dx * dx + dy * dy)
+            const followDistance = goal.followDistance ?? 24
+
+            if (distance > followDistance) {
+                this.pawn.nextTargetX = goal.target.x
+                this.pawn.nextTargetY = goal.target.y
+            }
+
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+            if (elapsed >= (goal.duration ?? 120)) {
+                this.completeCurrentGoal()
+            }
+            return
+        }
+
+        if (goal.type === 'protect_target') {
+            if (!goal.target) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const dx = goal.target.x - this.pawn.x
+            const dy = goal.target.y - this.pawn.y
+            const distance = Math.sqrt(dx * dx + dy * dy)
+            const protectRadius = goal.protectRadius ?? 35
+
+            if (distance > protectRadius) {
+                this.pawn.nextTargetX = goal.target.x
+                this.pawn.nextTargetY = goal.target.y
+            }
+
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+            if (elapsed % 25 === 0) {
+                this.pawn.useSkill('composure', 0.04)
+                this.pawn.useSkill('cooperation', 0.04)
+            }
+            if (elapsed >= (goal.duration ?? 120)) {
+                this.completeCurrentGoal()
+            }
+            return
+        }
+
+        if (goal.type === 'escort_target') {
+            if (!goal.target) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const targetDx = goal.target.x - this.pawn.x
+            const targetDy = goal.target.y - this.pawn.y
+            const targetDistance = Math.sqrt(targetDx * targetDx + targetDy * targetDy)
+
+            if (targetDistance > (goal.escortDistance ?? 28)) {
+                this.pawn.nextTargetX = goal.target.x
+                this.pawn.nextTargetY = goal.target.y
+            } else if (goal.destination?.x != null && goal.destination?.y != null) {
+                this.pawn.nextTargetX = goal.destination.x
+                this.pawn.nextTargetY = goal.destination.y
+            }
+
+            if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+            if (goal.destination?.x != null && goal.destination?.y != null) {
+                const dx = this.pawn.x - goal.destination.x
+                const dy = this.pawn.y - goal.destination.y
+                if (Math.sqrt(dx * dx + dy * dy) < 20) {
+                    this.completeCurrentGoal()
+                    return
+                }
+            }
+            if (elapsed >= (goal.duration ?? 160)) {
+                this.completeCurrentGoal()
+            }
+            return
+        }
+
+        if (goal.type === 'mark_target') {
+            const target = goal.target
+            const location = goal.targetLocation ?? (target ? { x: target.x, y: target.y } : null)
+            if (location) {
+                this.pawn.groupMarks = this.pawn.groupMarks ?? []
+                this.pawn.groupMarks.push({
+                    targetId: target?.id ?? goal.targetId ?? null,
+                    location,
+                    timestamp: this.pawn.world.clock.currentTick
+                })
+
+                if (this.pawn.groupMarks.length > 10) {
+                    this.pawn.groupMarks.shift()
+                }
+            }
+            this.completeCurrentGoal()
+            return
+        }
         
         if (goal.type === 'rest' && !goal.startTime) {
             // Start resting timer when we reach the rest location
