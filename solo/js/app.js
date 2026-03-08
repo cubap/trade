@@ -10,6 +10,8 @@ import RECIPES from './models/crafting/Recipes.js'
 import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
 import PlayerMode from './core/PlayerMode.js'
 import ProgressionController from './core/ProgressionController.js'
+import { setupInteractionPanel } from './ui/interactionPanel.js'
+import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -343,6 +345,8 @@ preSimulateAndStart()
 // Controls are initialized after presim completes
 let controls
 let _modeSwitcherUpdate = null
+let _interactionPanel = null
+let _feedbackUI = null
 
 function buildRouteTraceSegments() {
     if (!trackedPlayerPawn) return []
@@ -384,6 +388,8 @@ function syncProgressionState() {
     playerMode.setCapabilities(payload)
     renderer.setCapabilities(payload)
     controls?.setProgressionDebug?.(payload)
+    _interactionPanel?.update(trackedPlayerPawn, payload.modules?.interactionControls ?? [])
+    _feedbackUI?.onProgressionPayload(payload, trackedPlayerPawn)
 }
 
 function startMainLoop() {
@@ -400,6 +406,12 @@ function startMainLoop() {
         }
     })
     _modeSwitcherUpdate = controls?.modeSwitcher?.update ?? null
+
+    // Interaction panel — actionable controls gated by interactionControls capability
+    _interactionPanel = setupInteractionPanel(playerMode)
+
+    // Feedback channel UI — passive notifications driven by progression events
+    _feedbackUI = setupFeedbackChannelUI(progression)
 
     progression.onEvent(event => {
         if (event.type === 'phase_entered' || event.type === 'mode_unlocked') {

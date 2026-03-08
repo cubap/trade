@@ -376,3 +376,31 @@
   - Cloud continuation still depends on completing manual runtime checks listed in checklist.
 
 Use this file for future short-lived execution logs. Promote durable outcomes into `docs/`.
+
+## 2026-03-08 — Deferred overlay tests + interaction panel + feedback channel UI
+
+- Checklist item: implement `route_traces`/`waypoints_local` tests, actionable interaction panel, and lightweight feedback channel UI
+- Status: `done`
+- Files changed:
+  - `solo/test/ui-renderer-capabilities.test.js` — added 4 overlay tests
+  - `solo/test/player-mode.test.js` — added 2 `pinLocation` tests
+  - `solo/test/feedback-channel-ui.test.js` — new 3-test suite for feedback channel UI
+  - `solo/js/core/PlayerMode.js` — added `localPins` array and `pinLocation()` method
+  - `solo/js/ui/interactionPanel.js` — new module: phase-gated actionable HUD controls
+  - `solo/js/ui/feedbackChannelUI.js` — new module: progression-event-driven toast notifications
+  - `solo/js/app.js` — wired interactionPanel and feedbackChannelUI into startMainLoop/syncProgressionState
+  - `.copilot/worklog.md`
+  - `.copilot/progression_checklist.md`
+- What changed:
+  - Added 4 targeted tests for `renderMinimapRouteTraces`, `renderMinimapWaypoints`, and `renderMinimapOverlays` dispatch in `ui-renderer-capabilities.test.js`. All overlay rendering paths now have automated evidence.
+  - Added `pinLocation(x, y, label)` to `PlayerMode`: stores to `localPins[]` in pawn mode, delegates to `addWaypoint` in overseer mode. Added two tests covering both paths.
+  - Created `solo/js/ui/interactionPanel.js`: mounts a fixed HUD panel that surfaces actionable controls from the `interactionControls` capability — nudge-need buttons (`nudge_need_focus`), location pin (`goal_pin_local`), route pin (`goal_pin_route`), waypoint place/edit/remove (`waypoint_place`, `waypoint_edit`, `waypoint_remove`). Visibility and content are driven entirely by the capability payload each tick.
+  - Created `solo/js/ui/feedbackChannelUI.js`: listens to progression events and produces toast notifications. `capability_unlocked` events emit per-module change toasts. `capability_reflection` triggers a phase summary panel on phase transitions. `intent_confirmation` produces short goal-change toasts when the pawn adopts a new goal description.
+  - Wired both modules in `app.js`: `_interactionPanel.update()` and `_feedbackUI.onProgressionPayload()` are called each tick in `syncProgressionState`.
+- Verification:
+  - Automated: `solo/test/*.test.js` — **96 passed, 0 failed**
+  - Manual: pending for in-browser feel checks
+- Risks / follow-up:
+  - Manual browser verification of interaction panel HUD layout and toast readability remains open.
+  - `goal_pin_route` currently pins the pawn's position (not a full route snapshot); a richer route-capture could be added later.
+  - `waypoint_edit` inline input updates the waypoint object in memory but does not persist between refreshes (no persistence layer yet).

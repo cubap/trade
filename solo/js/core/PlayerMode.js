@@ -20,6 +20,9 @@ export const MODES = {
 export const OVERSEER_SKILL_THRESHOLD = 15
 export const GOD_SKILL_THRESHOLD = 50
 
+// Maximum number of local pins before oldest is evicted (phase2+ location pins)
+const MAX_LOCAL_PINS = 20
+
 class PlayerMode {
     constructor(world, renderer) {
         this.world = world
@@ -27,6 +30,7 @@ class PlayerMode {
         this.currentMode = MODES.PAWN
         this.trackedPawn = null
         this.mapWaypoints = []          // { id, x, y, label } — overseer mode map pins
+        this.localPins = []             // { id, x, y, label } — phase2+ local position pins
         this._listeners = []            // mode-change callbacks
         this.capabilities = null
     }
@@ -109,6 +113,21 @@ class PlayerMode {
         const waypoint = { id: Date.now(), x, y, label }
         this.mapWaypoints.push(waypoint)
         return waypoint
+    }
+
+    /**
+     * Pin a location as a lightweight local marker.
+     * Works from phase2+ (does not require overseer mode).
+     * Falls back to addWaypoint if in overseer mode.
+     */
+    pinLocation(x, y, label = '') {
+        if (this.currentMode === MODES.OVERSEER) {
+            return this.addWaypoint(x, y, label)
+        }
+        const pin = { id: Date.now(), x, y, label }
+        this.localPins.push(pin)
+        if (this.localPins.length > MAX_LOCAL_PINS) this.localPins.shift()
+        return pin
     }
 
     removeWaypoint(id) {

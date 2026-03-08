@@ -139,6 +139,10 @@ Deferred progress note:
 - Fixed capability transition diffing to avoid false `capability_unlocked` events when array modules are value-equal across ticks.
 - Upgraded minimap behavior by stage (`radar_blips`/`radar_icons`/`partial_recall_map`/`local_full_map`/`strategic_map`) with mode-specific entity density and radar scan ring.
 - Added minimap overlay semantics for `mapOverlay` modules: chunk edge grid when `biome_edges` is active and immobile resource markers for `resource_class`/`resource_known_types`.
+- **[2026-03-08]** Added 4 targeted tests for `route_traces` and `waypoints_local` overlay rendering, closing the test coverage gap for those minimap overlay paths.
+- **[2026-03-08]** Added `PlayerMode.pinLocation()` — phase-2+-safe location pinning that stores to `localPins[]` in pawn mode and delegates to overseer `addWaypoint` when mode permits.
+- **[2026-03-08]** Created `solo/js/ui/interactionPanel.js` — new HUD panel that renders capability-gated actionable controls: need nudge buttons (`nudge_need_focus`), goal/route pin (`goal_pin_local`, `goal_pin_route`), waypoint place/edit/remove (`waypoint_place`, `waypoint_edit`, `waypoint_remove`). Mounted and updated each tick via `syncProgressionState`.
+- **[2026-03-08]** Created `solo/js/ui/feedbackChannelUI.js` — passive notification layer wired to progression events: `capability_unlocked` → per-module toasts; `capability_reflection` → phase-transition summary panel; `intent_confirmation` → goal-change toasts when pawn adopts a new goal. All 96 tests pass.
 
 ## Worklog Link Protocol
 

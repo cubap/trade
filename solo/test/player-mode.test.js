@@ -165,3 +165,27 @@ test('PlayerMode — clears capability gating when capabilities removed', () => 
     pm.setCapabilities(null)
     assert.ok(!pm.getUnlockedModes().has(MODES.OVERSEER), 'fallback to internal gate after clearing payload')
 })
+
+test('PlayerMode — pinLocation stores local pin when not in overseer mode', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(0))
+
+    const pin = pm.pinLocation(500, 600, 'camp')
+    assert.ok(pin, 'pin returned')
+    assert.strictEqual(pin.x, 500)
+    assert.strictEqual(pin.label, 'camp')
+    assert.strictEqual(pm.localPins.length, 1)
+    assert.strictEqual(pm.mapWaypoints.length, 0, 'overseer waypoints unchanged')
+})
+
+test('PlayerMode — pinLocation delegates to addWaypoint in overseer mode', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(OVERSEER_SKILL_THRESHOLD))
+    pm.switchMode(MODES.OVERSEER)
+
+    const pin = pm.pinLocation(700, 800, 'outpost')
+    assert.ok(pin, 'pin returned')
+    assert.strictEqual(pm.mapWaypoints.length, 1)
+    assert.strictEqual(pm.mapWaypoints[0].label, 'outpost')
+    assert.strictEqual(pm.localPins.length, 0, 'local pins untouched when overseer')
+})
