@@ -7,7 +7,7 @@ import { setupKeyboardShortcuts } from './keyboardShortcuts.js'
 import { setUnlockListener } from '../models/skills/UnlockEvents.js'
 import { setupModeSwitcher } from './modeSwitcher.js'
 
-function setupControls(world, renderer, playerMode) {
+function setupControls(world, renderer, playerMode, options = {}) {
     const controlPanel = document.createElement('div')
     controlPanel.id = 'control-panel'
     controlPanel.style.margin = '10px 0'
@@ -68,6 +68,48 @@ function setupControls(world, renderer, playerMode) {
         else world.clock.resume()
     }
     pauseButton.onclick = () => setPaused(!isPaused)
+
+    const baseMsPerTick = world.clock.msPerTick
+
+    const speedSelect = document.createElement('select')
+    speedSelect.style.marginLeft = '10px'
+    const speedOptions = [0.25, 0.5, 1, 2, 4, 8, 16]
+    for (const speed of speedOptions) {
+        const option = document.createElement('option')
+        option.value = String(speed)
+        option.textContent = `${speed}x`
+        if (speed === 1) option.selected = true
+        speedSelect.appendChild(option)
+    }
+    speedSelect.onchange = () => {
+        const speed = Number(speedSelect.value) || 1
+        world.clock.msPerTick = Math.max(1, Math.round(baseMsPerTick / speed))
+    }
+
+    const stepButton = document.createElement('button')
+    stepButton.textContent = 'Step +1'
+    stepButton.style.marginLeft = '6px'
+    stepButton.onclick = () => {
+        world.fastForwardTicks(1)
+        options.onWorldAdvanced?.()
+    }
+
+    const skipInput = document.createElement('input')
+    skipInput.type = 'number'
+    skipInput.min = '1'
+    skipInput.value = '60'
+    skipInput.style.width = '64px'
+    skipInput.style.marginLeft = '6px'
+
+    const skipButton = document.createElement('button')
+    skipButton.textContent = 'Skip Ticks'
+    skipButton.style.marginLeft = '4px'
+    skipButton.onclick = () => {
+        const ticks = Number(skipInput.value)
+        if (!Number.isFinite(ticks) || ticks < 1) return
+        world.fastForwardTicks(Math.floor(ticks))
+        options.onWorldAdvanced?.()
+    }
     
     // Add palette selector
     const paletteSelect = document.createElement('select')
@@ -104,7 +146,7 @@ function setupControls(world, renderer, playerMode) {
     }
     
     // Follow and perception controls
-    const { followButton, perceptionButton, recenterButton } = setupFollowControls(world, renderer)
+    const { followButton, perceptionButton, recenterButton, syncPerceptionPolicy } = setupFollowControls(world, renderer)
 
     const devToggleButton = document.createElement('button')
     devToggleButton.textContent = 'Dev Tools ▸'
@@ -114,6 +156,48 @@ function setupControls(world, renderer, playerMode) {
         devRow.style.display = open ? 'none' : 'flex'
         devToggleButton.textContent = open ? 'Dev Tools ▸' : 'Dev Tools ▾'
     }
+
+    const phaseOverrideLabel = document.createElement('span')
+    phaseOverrideLabel.textContent = 'Phase Override:'
+    phaseOverrideLabel.style.marginLeft = '10px'
+    phaseOverrideLabel.style.fontSize = '12px'
+
+    const phaseOverrideSelect = document.createElement('select')
+    phaseOverrideSelect.style.marginLeft = '4px'
+    const phaseOptions = [
+        { value: '', label: 'Auto' },
+        { value: 'phase0_embodied', label: 'Phase 0' },
+        { value: 'phase1_situated', label: 'Phase 1' },
+        { value: 'phase2_orienting', label: 'Phase 2' },
+        { value: 'phase3_mapping', label: 'Phase 3' },
+        { value: 'overseer', label: 'Overseer' },
+        { value: 'god', label: 'God' }
+    ]
+    for (const phase of phaseOptions) {
+        const option = document.createElement('option')
+        option.value = phase.value
+        option.textContent = phase.label
+        phaseOverrideSelect.appendChild(option)
+    }
+
+    const applyPhaseButton = document.createElement('button')
+    applyPhaseButton.textContent = 'Apply Phase'
+    applyPhaseButton.style.marginLeft = '4px'
+    applyPhaseButton.onclick = () => {
+        options.onOverridePhaseChange?.(phaseOverrideSelect.value || null)
+    }
+
+    const debugCapabilityText = document.createElement('span')
+    debugCapabilityText.style.marginLeft = '10px'
+    debugCapabilityText.style.fontSize = '12px'
+    debugCapabilityText.style.color = '#ddd'
+    debugCapabilityText.textContent = 'Phase: auto'
+
+    const debugModuleText = document.createElement('span')
+    debugModuleText.style.marginLeft = '10px'
+    debugModuleText.style.fontSize = '11px'
+    debugModuleText.style.color = '#bcd'
+    debugModuleText.textContent = 'Steer:n/a | Input:n/a | Feedback:n/a'
 
     // Group command controls (minimal live testing for follow/obey)
     const leaderSelect = document.createElement('select')
@@ -231,6 +315,10 @@ function setupControls(world, renderer, playerMode) {
     
     // Add controls to panel (primary + collapsible dev tools)
     primaryRow.appendChild(pauseButton)
+    primaryRow.appendChild(speedSelect)
+    primaryRow.appendChild(stepButton)
+    primaryRow.appendChild(skipInput)
+    primaryRow.appendChild(skipButton)
     primaryRow.appendChild(followButton)
     primaryRow.appendChild(perceptionButton)
     primaryRow.appendChild(recenterButton)
@@ -247,6 +335,11 @@ function setupControls(world, renderer, playerMode) {
     devRow.appendChild(issueCommandButton)
     devRow.appendChild(refreshPawnsButton)
     devRow.appendChild(commandStatus)
+    devRow.appendChild(phaseOverrideLabel)
+    devRow.appendChild(phaseOverrideSelect)
+    devRow.appendChild(applyPhaseButton)
+    devRow.appendChild(debugCapabilityText)
+    devRow.appendChild(debugModuleText)
 
     // Mode switcher (pawn / overseer / god) — only mount if playerMode is provided
     let modeSwitcher = null
@@ -345,7 +438,31 @@ function setupControls(world, renderer, playerMode) {
         for (const r of recipes) pushUnlockHint('recipe', r)
     })
     
-    return { isPaused: () => isPaused, setPaused, modeSwitcher }
+    const setProgressionDebug = payload => {
+        if (!payload) {
+            debugCapabilityText.textContent = 'Phase: auto'
+            debugModuleText.textContent = 'Steer:n/a | Input:n/a | Feedback:n/a'
+            syncPerceptionPolicy?.(renderer.perceptionPolicy)
+            return
+        }
+        const camera = payload.modules?.validCamera ?? 'n/a'
+        const compass = payload.modules?.compass ?? 'n/a'
+        const minimap = payload.modules?.minimap ?? 'n/a'
+        const steering = payload.modules?.steering ?? 'n/a'
+        const interactionControls = Array.isArray(payload.modules?.interactionControls)
+            ? payload.modules.interactionControls.join(', ')
+            : 'n/a'
+        const feedbackChannels = Array.isArray(payload.modules?.feedbackChannels)
+            ? payload.modules.feedbackChannels.join(', ')
+            : 'n/a'
+        const policy = payload.modules?.perceptionModePolicy ?? renderer.perceptionPolicy
+        syncPerceptionPolicy?.(policy)
+        const suffix = payload.overrideActive ? ' (override)' : ''
+        debugCapabilityText.textContent = `Phase: ${payload.phase}${suffix} | Cam:${camera} | Comp:${compass} | Map:${minimap}`
+        debugModuleText.textContent = `Steer:${steering} | Input:${interactionControls} | Feedback:${feedbackChannels}`
+    }
+
+    return { isPaused: () => isPaused, setPaused, modeSwitcher, setProgressionDebug }
 }
 
 export default setupControls

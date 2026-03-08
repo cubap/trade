@@ -89,20 +89,22 @@ export function setupStatsDisplay(world, renderer, playerMode = null) {
             ? `${Math.round((goal.buildProgress ?? 0) * 100)}%`
             : null
         const modeText = playerMode?.currentMode ? String(playerMode.currentMode) : 'n/a'
+        const statusCaps = playerMode?.getCapabilities?.()?.modules?.pawnStatus ?? []
+        const hasStatus = cap => statusCaps.includes(cap)
 
         body.innerHTML = `
             ${pawn ? `
                 <div>
                     <div><strong>Mode</strong>: ${modeText}</div>
                     <div><strong>Pawn</strong>: ${pawn.name ?? pawn.id ?? 'Unknown'}</div>
-                    <div><strong>Goal</strong>: ${goalText}</div>
+                    ${(hasStatus('task_intent') || statusCaps.length === 0) ? `<div><strong>Goal</strong>: ${goalText}</div>` : ''}
                     ${stageProgress ? `<div><strong>Build Staging</strong>: ${stageProgress}</div>` : ''}
                     ${buildProgress ? `<div><strong>Build Progress</strong>: ${buildProgress}</div>` : ''}
-                    <div><strong>Action</strong>: ${actionText}</div>
-                    <div><strong>Thought</strong>: ${latestThought}</div>
-                    <div><strong>Inventory</strong>: ${formatInventory(pawn)}</div>
-                    <div><strong>Caches</strong>: ${knownCaches}</div>
-                    <div><strong>Status</strong>: ${pawn.behaviorState ?? 'idle'} | H:${getNeed(pawn, 'hunger')} T:${getNeed(pawn, 'thirst')} E:${getNeed(pawn, 'energy')}</div>
+                    ${(hasStatus('task_intent') || statusCaps.length === 0) ? `<div><strong>Action</strong>: ${actionText}</div>` : ''}
+                    ${(hasStatus('task_intent') || statusCaps.length === 0) ? `<div><strong>Thought</strong>: ${latestThought}</div>` : ''}
+                    ${(hasStatus('inventory_summary') || hasStatus('inventory_detail') || statusCaps.length === 0) ? `<div><strong>Inventory</strong>: ${formatInventory(pawn)}</div>` : ''}
+                    ${(hasStatus('memory_confidence') || statusCaps.length === 0) ? `<div><strong>Caches</strong>: ${knownCaches}</div>` : ''}
+                    ${(hasStatus('vitals_basic') || hasStatus('vitals_trend') || hasStatus('needs_stack') || hasStatus('condition_flags') || statusCaps.length === 0) ? `<div><strong>Status</strong>: ${pawn.behaviorState ?? 'idle'} | H:${getNeed(pawn, 'hunger')} T:${getNeed(pawn, 'thirst')} E:${getNeed(pawn, 'energy')}</div>` : ''}
                 </div>
             ` : '<div><strong>Pawn</strong>: none tracked</div>'}
 

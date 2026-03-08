@@ -130,3 +130,38 @@ test('PlayerMode — GOD mode detaches camera follow', () => {
     pm.switchMode(MODES.GOD)
     assert.strictEqual(renderer.followedEntity, null, 'camera detached in GOD mode')
 })
+
+test('PlayerMode — external capabilities gate unlocked modes', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(0, false))
+
+    pm.setCapabilities({
+        modeUnlocked: {
+            pawn: true,
+            overseer: true,
+            god: false
+        }
+    })
+
+    const unlocked = pm.getUnlockedModes()
+    assert.ok(unlocked.has(MODES.PAWN))
+    assert.ok(unlocked.has(MODES.OVERSEER))
+    assert.ok(!unlocked.has(MODES.GOD))
+})
+
+test('PlayerMode — clears capability gating when capabilities removed', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(0, false))
+
+    pm.setCapabilities({
+        modeUnlocked: {
+            pawn: true,
+            overseer: true,
+            god: true
+        }
+    })
+    assert.ok(pm.getUnlockedModes().has(MODES.OVERSEER))
+
+    pm.setCapabilities(null)
+    assert.ok(!pm.getUnlockedModes().has(MODES.OVERSEER), 'fallback to internal gate after clearing payload')
+})

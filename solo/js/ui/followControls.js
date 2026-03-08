@@ -26,6 +26,24 @@ export function setupFollowControls(world, renderer) {
         renderer.togglePerceptionMode()
         perceptionButton.textContent = `Perception: ${renderer.perceptionMode ? 'ON' : 'OFF'}`
     }
+
+    const syncPerceptionPolicy = policy => {
+        const effective = policy ?? renderer.perceptionPolicy ?? 'phase_aware'
+        const disabled = effective === 'disabled' || effective === 'god_noop'
+        if (disabled) {
+            // Force clear state if policy no longer permits the feature.
+            if (renderer.perceptionMode) {
+                renderer.togglePerceptionMode()
+            }
+            perceptionButton.disabled = true
+            perceptionButton.textContent = 'Perception: LOCKED'
+            perceptionIndicator.style.display = 'none'
+            return
+        }
+
+        perceptionButton.disabled = false
+        perceptionButton.textContent = `Perception: ${renderer.perceptionMode ? 'ON' : 'OFF'}`
+    }
     // Recenter button
     const recenterButton = document.createElement('button')
     recenterButton.textContent = 'Recenter'
@@ -70,5 +88,13 @@ export function setupFollowControls(world, renderer) {
         originalTogglePerception()
         perceptionIndicator.style.display = renderer.perceptionMode && renderer.followMode ? 'block' : 'none'
     }
-    return { followButton, perceptionButton, recenterButton, perceptionIndicator }
+    syncPerceptionPolicy(renderer.perceptionPolicy)
+
+    return {
+        followButton,
+        perceptionButton,
+        recenterButton,
+        perceptionIndicator,
+        syncPerceptionPolicy
+    }
 }

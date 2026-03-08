@@ -28,6 +28,15 @@ class PlayerMode {
         this.trackedPawn = null
         this.mapWaypoints = []          // { id, x, y, label } — overseer mode map pins
         this._listeners = []            // mode-change callbacks
+        this.capabilities = null
+    }
+
+    setCapabilities(payload) {
+        this.capabilities = payload || null
+    }
+
+    getCapabilities() {
+        return this.capabilities
     }
 
     // ── Pawn tracking ──────────────────────────────────────────────────────────
@@ -44,6 +53,13 @@ class PlayerMode {
 
     /** Returns the Set of mode keys the player currently has access to. */
     getUnlockedModes() {
+        if (this.capabilities?.modeUnlocked) {
+            const unlocked = new Set([MODES.PAWN])
+            if (this.capabilities.modeUnlocked.overseer) unlocked.add(MODES.OVERSEER)
+            if (this.capabilities.modeUnlocked.god) unlocked.add(MODES.GOD)
+            return unlocked
+        }
+
         const unlocked = new Set([MODES.PAWN])
         if (!this.trackedPawn) return unlocked
 

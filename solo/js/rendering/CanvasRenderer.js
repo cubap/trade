@@ -49,6 +49,8 @@ class CanvasRenderer {
         this.highlightEndTime = 0
         // Track last logged tick to avoid duplicate logs per animation frame
         this._lastLoggedTick = -1
+        this.capabilities = null
+        this.perceptionPolicy = 'phase_aware'
     }
 
     setupResizeHandler() {
@@ -89,6 +91,9 @@ class CanvasRenderer {
     get perceptionMode() { return this.perception.perceptionMode }
     
     togglePerceptionMode() {
+        if (this.perceptionPolicy === 'disabled' || this.perceptionPolicy === 'god_noop') {
+            return
+        }
         this.perception.togglePerceptionMode()
     }
     
@@ -101,6 +106,36 @@ class CanvasRenderer {
     
     get showMinimap() { return this.uiRenderer.showMinimap }
     set showMinimap(value) { this.uiRenderer.showMinimap = value }
+
+    setCapabilities(payload) {
+        this.capabilities = payload || null
+        this.uiRenderer.setCapabilities(payload)
+        this._applyCapabilityState()
+    }
+
+    getCapabilities() {
+        return this.capabilities
+    }
+
+    setWaypointProvider(provider) {
+        this.uiRenderer.setWaypointProvider?.(provider)
+    }
+
+    setRouteTraceProvider(provider) {
+        this.uiRenderer.setRouteTraceProvider?.(provider)
+    }
+
+    _applyCapabilityState() {
+        if (!this.capabilities?.modules) return
+
+        const { validCamera, minimap } = this.capabilities.modules
+        this.perceptionPolicy = this.capabilities.modules?.perceptionModePolicy ?? 'phase_aware'
+
+        this.uiRenderer.showMinimap = minimap && minimap !== 'none'
+
+        // Keep this slice conservative: camera capability currently controls panning permission.
+        this.camera.allowManualPan = validCamera === 'third_free' || validCamera === 'pan_n_scan'
+    }
 
     render() {
         // Update follow camera if active
