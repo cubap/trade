@@ -34,10 +34,7 @@ class PlayerMode {
 
     setTrackedPawn(pawn) {
         this.trackedPawn = pawn
-        // In pawn or overseer mode always keep camera on the pawn
-        if (this.currentMode === MODES.PAWN || this.currentMode === MODES.OVERSEER) {
-            this.renderer.setFollowEntity(pawn)
-        }
+        this._applyModeToCamera(this.currentMode)
     }
 
     // ── Mode queries ───────────────────────────────────────────────────────────
@@ -106,12 +103,24 @@ class PlayerMode {
         switch (mode) {
             case MODES.PAWN:
                 if (this.trackedPawn) {
-                    this.renderer.setFollowEntity(this.trackedPawn)
-                    cam.setZoomToShowRadius?.(this.trackedPawn.traits?.detection ?? 100, 0.85)
+                    const enteredFirstPerson = this.renderer.supportsTrueFirstPerson
+                        ? !!this.renderer.enterFirstPerson?.(this.trackedPawn)
+                        : false
+
+                    if (!enteredFirstPerson) {
+                        this.renderer.setFollowEntity(this.trackedPawn)
+                        this.renderer.setFirstPersonLocked?.(true, {
+                            entity: this.trackedPawn,
+                            radius: this.trackedPawn.traits?.detection ?? 100,
+                            marginFactor: 0.85
+                        })
+                    }
                 }
                 break
 
             case MODES.OVERSEER:
+                this.renderer.exitFirstPerson?.()
+                this.renderer.setFirstPersonLocked?.(false)
                 if (this.trackedPawn) {
                     this.renderer.setFollowEntity(this.trackedPawn)
                 }
@@ -123,6 +132,8 @@ class PlayerMode {
                 break
 
             case MODES.GOD:
+                this.renderer.exitFirstPerson?.()
+                this.renderer.setFirstPersonLocked?.(false)
                 // Detach camera and fit the entire world
                 this.renderer.setFollowEntity(null)
                 cam.setZoomToShowRadius?.(

@@ -3,6 +3,7 @@ export function setupKeyboardShortcuts(world, renderer, followButton, perception
         if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT') return
         switch (event.key.toLowerCase()) {
             case 'f':
+                if (renderer.firstPersonLocked) break
                 followButton.click()
                 break
             case 'p':
@@ -21,15 +22,18 @@ export function setupKeyboardShortcuts(world, renderer, followButton, perception
                     renderer.setFollowEntity(entity)
                     followButton.textContent = `Following: ${entity.name}`
                     updateFollowSelect()
-                    followSelect.value = entity.id
-                    followSelect.style.display = 'inline'
+                    if (followSelect) {
+                        followSelect.value = entity.id
+                        followSelect.style.display = 'inline'
+                    }
                 }
                 break
             case 'escape':
                 if (renderer.followMode) {
+                    if (renderer.firstPersonLocked) break
                     renderer.setFollowEntity(null)
                     followButton.textContent = 'Follow Mode: OFF'
-                    followSelect.style.display = 'none'
+                    if (followSelect) followSelect.style.display = 'none'
                 }
                 break
         }

@@ -7,7 +7,7 @@ const MODE_LABELS = {
 }
 
 const MODE_DESCRIPTIONS = {
-    [MODES.PAWN]: `Follow your pawn. Personal HUD only.\nUnlocked by default.`,
+    [MODES.PAWN]: `Locked pawn-follow view (2D fallback).\nTrue first-person unlocks with 3D renderer backend.`,
     [MODES.OVERSEER]: `Wider view + map waypoints.\nUnlocks at ${OVERSEER_SKILL_THRESHOLD} total skill.`,
     [MODES.GOD]: `Full world view + trade overlay.\nUnlocks at ${GOD_SKILL_THRESHOLD} total skill with group membership.`
 }

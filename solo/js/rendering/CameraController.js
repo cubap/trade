@@ -17,6 +17,7 @@ class CameraController {
         this.followMode = false
         this.followedEntity = null
         this.followSmoothing = 0.1  // How smoothly the camera follows (0-1)
+        this.firstPersonLocked = false
         
         // Panning state
         this.isPanning = false
@@ -32,8 +33,9 @@ class CameraController {
     }
     
     setupZoomHandlers() {
-        this.canvas.addEventListener('wheel', (event) => {
+        this._onWheel = (event) => {
             event.preventDefault()
+            if (this.firstPersonLocked) return
             
             // Calculate zoom direction
             const zoomDirection = event.deltaY > 0 ? -1 : 1
@@ -57,14 +59,17 @@ class CameraController {
             
             // Keep view within world bounds
             this.constrainView()
-        })
+        }
+
+        this.canvas.addEventListener('wheel', this._onWheel)
     }
     
     setupPanningHandlers() {
         // Mouse down event - start panning on middle button
-        this.canvas.addEventListener('mousedown', (event) => {
+        this._onMouseDown = (event) => {
             // Middle mouse button (button 1)
             if (event.button !== 1) return
+            if (this.firstPersonLocked) return
             
             this.isPanning = true
             this.lastMouseX = event.clientX
@@ -72,10 +77,12 @@ class CameraController {
             
             // Prevent default browser behavior of middle-click scrolling
             event.preventDefault()
-        })
+        }
+
+        this.canvas.addEventListener('mousedown', this._onMouseDown)
         
         // Mouse move event - pan if middle button is pressed
-        window.addEventListener('mousemove', (event) => {
+        this._onMouseMove = (event) => {
             if (!this.isPanning || this.followMode) return  // Disable panning in follow mode
             
             // Calculate distance moved
@@ -92,14 +99,26 @@ class CameraController {
             // Update mouse position for next move
             this.lastMouseX = event.clientX
             this.lastMouseY = event.clientY
-        })
+        }
+
+        window.addEventListener('mousemove', this._onMouseMove)
         
         // Mouse up event - stop panning
-        window.addEventListener('mouseup', (event) => {
+        this._onMouseUp = (event) => {
             if (event.button === 1) {
                 this.isPanning = false
             }
-        })
+        }
+
+        window.addEventListener('mouseup', this._onMouseUp)
+    }
+
+    destroy() {
+        if (this._onWheel) this.canvas.removeEventListener('wheel', this._onWheel)
+        if (this._onMouseDown) this.canvas.removeEventListener('mousedown', this._onMouseDown)
+        if (this._onMouseMove) window.removeEventListener('mousemove', this._onMouseMove)
+        if (this._onMouseUp) window.removeEventListener('mouseup', this._onMouseUp)
+        this.isPanning = false
     }
     
     constrainView() {
@@ -112,6 +131,8 @@ class CameraController {
     
     // Follow camera methods
     setFollowEntity(entity) {
+        if (this.firstPersonLocked && entity === null) return false
+
         this.followedEntity = entity
         this.followMode = entity !== null
         
@@ -122,6 +143,25 @@ class CameraController {
             console.log(`Now following: ${entity.name || entity.id}`)
         } else {
             console.log('Follow mode disabled')
+        }
+
+        return true
+    }
+
+    setFirstPersonLocked(locked, options = {}) {
+        this.firstPersonLocked = !!locked
+        if (!this.firstPersonLocked) return
+
+        const entity = options.entity ?? this.followedEntity
+        if (entity) {
+            this.followedEntity = entity
+            this.followMode = true
+            this.viewX = entity.x
+            this.viewY = entity.y
+        }
+
+        if (options.radius) {
+            this.setZoomToShowRadius(options.radius, options.marginFactor ?? 0.85)
         }
     }
     

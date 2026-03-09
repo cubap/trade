@@ -34,6 +34,10 @@ class CanvasRenderer {
         
         // Choose default palette
         this.activePalette = 'vivid'
+
+        // Capability flags for camera modes.
+        // CanvasRenderer is 2D only, so pawn mode uses locked-follow fallback.
+        this.supportsTrueFirstPerson = false
         
         // Initialize component modules
         this.camera = new CameraController(this.canvas, this.world)
@@ -52,9 +56,11 @@ class CanvasRenderer {
     }
 
     setupResizeHandler() {
-        window.addEventListener('resize', () => {
+        this._onResize = () => {
             this.resizeCanvas()
-        })
+        }
+
+        window.addEventListener('resize', this._onResize)
     }
 
     resizeCanvas() {
@@ -75,9 +81,23 @@ class CanvasRenderer {
     get followMode() { return this.camera.followMode }
     get followedEntity() { return this.camera.followedEntity }
     get isPanning() { return this.camera.isPanning }
+    get firstPersonLocked() { return this.camera.firstPersonLocked }
     
     setFollowEntity(entity) {
-        this.camera.setFollowEntity(entity)
+        return this.camera.setFollowEntity(entity)
+    }
+
+    setFirstPersonLocked(locked, options) {
+        this.camera.setFirstPersonLocked(locked, options)
+    }
+
+    enterFirstPerson(entity) {
+        void entity
+        return false
+    }
+
+    exitFirstPerson() {
+        // No-op in 2D renderer
     }
 
     // Allow external callers to set zoom to show a radius around the target
@@ -219,6 +239,11 @@ class CanvasRenderer {
             x: (worldX - this.camera.viewX) * this.camera.zoomLevel + this.canvas.width / 2,
             y: (worldY - this.camera.viewY) * this.camera.zoomLevel + this.canvas.height / 2
         }
+    }
+
+    destroy() {
+        if (this._onResize) window.removeEventListener('resize', this._onResize)
+        this.camera.destroy?.()
     }
 }
 

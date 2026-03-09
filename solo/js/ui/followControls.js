@@ -1,18 +1,28 @@
 export function setupFollowControls(world, renderer) {
+    const getFollowLabel = target => {
+        if (!target) return 'Follow Mode: OFF'
+        const suffix = renderer.firstPersonLocked ? ' (Locked)' : ''
+        return `Following: ${target.name}${suffix}`
+    }
+
     // Add follow camera controls
     const followButton = document.createElement('button')
     followButton.textContent = 'Follow Mode: OFF'
     followButton.style.marginLeft = '10px'
     followButton.onclick = () => {
         if (renderer.followMode) {
+            if (renderer.firstPersonLocked) {
+                followButton.textContent = getFollowLabel(renderer.followedEntity)
+                return
+            }
             renderer.setFollowEntity(null)
-            followButton.textContent = 'Follow Mode: OFF'
+            followButton.textContent = getFollowLabel(null)
         } else {
             const pawns = Array.from(world.entitiesMap.values())
                 .filter(e => e.subtype === 'pawn')
             if (pawns.length > 0) {
                 renderer.setFollowEntity(pawns[0])
-                followButton.textContent = `Following: ${pawns[0].name}`
+                followButton.textContent = getFollowLabel(pawns[0])
             } else {
                 console.log('No pawns available to follow')
             }
@@ -41,7 +51,7 @@ export function setupFollowControls(world, renderer) {
             renderer.setFollowEntity(target)
             const perception = target.traits?.detection ?? 100
             renderer.setZoomToShowRadius?.(perception, 0.85)
-            followButton.textContent = `Following: ${target.name}`
+            followButton.textContent = getFollowLabel(target)
         } else {
             console.log('No entity to recenter on')
         }

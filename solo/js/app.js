@@ -1,5 +1,5 @@
 import World from './core/World.js'
-import CanvasRenderer from './rendering/CanvasRenderer.js'
+import { createRenderer, getRendererKeyFromHash } from './rendering/rendererFactory.js'
 import setupControls from './ui/controls.js'
 import { Animal, Pawn } from './models/entities/index.js'
 import { School } from './models/entities/immobile/index.js'
@@ -22,17 +22,81 @@ try {
 
 // Create a larger world
 const world = new World(2000, 2000)
-const renderer = new CanvasRenderer(world, 'game-canvas')
+let activeRendererKey = getRendererKeyFromHash()
+let { key: resolvedRendererKey, instance: activeRenderer } = createRenderer(world, 'game-canvas', activeRendererKey)
+activeRendererKey = resolvedRendererKey
+
+const renderer = new Proxy({}, {
+    get(_target, prop) {
+        const value = activeRenderer?.[prop]
+        if (typeof value === 'function') return value.bind(activeRenderer)
+        return value
+    },
+    set(_target, prop, value) {
+        activeRenderer[prop] = value
+        return true
+    }
+})
+
 const playerMode = new PlayerMode(world, renderer)
 
 // Expose runtime objects for debugging in DevTools
 try {
     window.world = world
     window.renderer = renderer
+    window.activeRenderer = activeRenderer
+    window.activeRendererKey = activeRendererKey
     window.playerMode = playerMode
 } catch (e) {
     // Not running in browser context (e.g., tests) - ignore
 }
+
+function hotSwapRendererFromHash() {
+    const requestedKey = getRendererKeyFromHash()
+    if (requestedKey === activeRendererKey) return
+
+    const { key: nextKey, instance: nextRenderer } = createRenderer(world, 'game-canvas', requestedKey)
+    if (nextKey === activeRendererKey) {
+        nextRenderer.destroy?.()
+        return
+    }
+
+    const followedEntity = activeRenderer.followedEntity
+    const perceptionEnabled = !!activeRenderer.perceptionMode
+    const activePalette = activeRenderer.activePalette
+
+    activeRenderer.destroy?.()
+    activeRenderer = nextRenderer
+    activeRendererKey = nextKey
+
+    if (activePalette && activeRenderer.colorPalettes?.[activePalette]) {
+        activeRenderer.activePalette = activePalette
+    }
+
+    if (perceptionEnabled && !activeRenderer.perceptionMode) {
+        activeRenderer.togglePerceptionMode?.()
+    }
+
+    if (followedEntity) {
+        activeRenderer.setFollowEntity?.(followedEntity)
+    }
+
+    if (playerMode.trackedPawn) {
+        playerMode.setTrackedPawn(playerMode.trackedPawn)
+    }
+
+    try {
+        window.activeRenderer = activeRenderer
+        window.activeRendererKey = activeRendererKey
+    } catch (e) {
+        // ignore when not in browser
+    }
+
+    _modeSwitcherUpdate?.()
+    console.log(`[renderer] switched to ${activeRendererKey}`)
+}
+
+window.addEventListener('hashchange', hotSwapRendererFromHash)
 
 // Add water features: a river, a couple lakes, and scattered puddles
 const waterGen = new WaterGenerator(world)
