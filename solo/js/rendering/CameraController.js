@@ -21,6 +21,7 @@ class CameraController {
         
         // Panning state
         this.isPanning = false
+        this.allowManualPan = true
         this.lastMouseX = 0
         this.lastMouseY = 0
         
