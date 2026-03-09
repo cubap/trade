@@ -130,3 +130,62 @@ test('PlayerMode — GOD mode detaches camera follow', () => {
     pm.switchMode(MODES.GOD)
     assert.strictEqual(renderer.followedEntity, null, 'camera detached in GOD mode')
 })
+
+test('PlayerMode — external capabilities gate unlocked modes', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(0, false))
+
+    pm.setCapabilities({
+        modeUnlocked: {
+            pawn: true,
+            overseer: true,
+            god: false
+        }
+    })
+
+    const unlocked = pm.getUnlockedModes()
+    assert.ok(unlocked.has(MODES.PAWN))
+    assert.ok(unlocked.has(MODES.OVERSEER))
+    assert.ok(!unlocked.has(MODES.GOD))
+})
+
+test('PlayerMode — clears capability gating when capabilities removed', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(0, false))
+
+    pm.setCapabilities({
+        modeUnlocked: {
+            pawn: true,
+            overseer: true,
+            god: true
+        }
+    })
+    assert.ok(pm.getUnlockedModes().has(MODES.OVERSEER))
+
+    pm.setCapabilities(null)
+    assert.ok(!pm.getUnlockedModes().has(MODES.OVERSEER), 'fallback to internal gate after clearing payload')
+})
+
+test('PlayerMode — pinLocation stores local pin when not in overseer mode', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(0))
+
+    const pin = pm.pinLocation(500, 600, 'camp')
+    assert.ok(pin, 'pin returned')
+    assert.strictEqual(pin.x, 500)
+    assert.strictEqual(pin.label, 'camp')
+    assert.strictEqual(pm.localPins.length, 1)
+    assert.strictEqual(pm.mapWaypoints.length, 0, 'overseer waypoints unchanged')
+})
+
+test('PlayerMode — pinLocation delegates to addWaypoint in overseer mode', () => {
+    const pm = new PlayerMode(makeWorld(), makeRenderer())
+    pm.setTrackedPawn(makePawn(OVERSEER_SKILL_THRESHOLD))
+    pm.switchMode(MODES.OVERSEER)
+
+    const pin = pm.pinLocation(700, 800, 'outpost')
+    assert.ok(pin, 'pin returned')
+    assert.strictEqual(pm.mapWaypoints.length, 1)
+    assert.strictEqual(pm.mapWaypoints[0].label, 'outpost')
+    assert.strictEqual(pm.localPins.length, 0, 'local pins untouched when overseer')
+})

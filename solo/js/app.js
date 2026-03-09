@@ -9,6 +9,9 @@ import WaterGenerator from './core/WaterGenerator.js'
 import RECIPES from './models/crafting/Recipes.js'
 import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
 import PlayerMode from './core/PlayerMode.js'
+import ProgressionController from './core/ProgressionController.js'
+import { setupInteractionPanel } from './ui/interactionPanel.js'
+import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -24,12 +27,15 @@ try {
 const world = new World(2000, 2000)
 const renderer = new CanvasRenderer(world, 'game-canvas')
 const playerMode = new PlayerMode(world, renderer)
+const progression = new ProgressionController()
+let trackedPlayerPawn = null
 
 // Expose runtime objects for debugging in DevTools
 try {
     window.world = world
     window.renderer = renderer
     window.playerMode = playerMode
+    window.progression = progression
 } catch (e) {
     // Not running in browser context (e.g., tests) - ignore
 }
@@ -199,6 +205,7 @@ function preSimulateAndStart() {
             const player = new Pawn('player_1', 'Player', spawnX, spawnY)
             world.addEntity(player)
             playerMode.setTrackedPawn(player)
+            trackedPlayerPawn = player
             renderer.setFollowEntity?.(player)
             try {
                 window.player = player
@@ -338,10 +345,81 @@ preSimulateAndStart()
 // Controls are initialized after presim completes
 let controls
 let _modeSwitcherUpdate = null
+let _interactionPanel = null
+let _feedbackUI = null
+
+function buildRouteTraceSegments() {
+    if (!trackedPlayerPawn) return []
+
+    const points = []
+    const origin = {
+        x: trackedPlayerPawn.x,
+        y: trackedPlayerPawn.y
+    }
+    points.push(origin)
+
+    const memoryLandmarks = Array.isArray(trackedPlayerPawn.memoryMap)
+        ? trackedPlayerPawn.memoryMap
+            .filter(item => Number.isFinite(item?.x) && Number.isFinite(item?.y))
+            .slice(0, 6)
+        : []
+    for (const item of memoryLandmarks) {
+        points.push({ x: item.x, y: item.y })
+    }
+
+    const rememberedResources = Array.isArray(trackedPlayerPawn.resourceMemory)
+        ? trackedPlayerPawn.resourceMemory
+            .filter(item => Number.isFinite(item?.x) && Number.isFinite(item?.y) && (item.confidence ?? 0) >= 0.45)
+            .slice(0, 8)
+        : []
+    for (const item of rememberedResources) {
+        points.push({ x: item.x, y: item.y })
+    }
+
+    if (points.length < 2) return []
+    return [{ points }]
+}
+
+function syncProgressionState() {
+    if (!trackedPlayerPawn) return
+    renderer.setWaypointProvider(() => playerMode.mapWaypoints)
+    renderer.setRouteTraceProvider(() => buildRouteTraceSegments())
+    const payload = progression.evaluate(trackedPlayerPawn, world)
+    playerMode.setCapabilities(payload)
+    renderer.setCapabilities(payload)
+    controls?.setProgressionDebug?.(payload)
+    _interactionPanel?.update(trackedPlayerPawn, payload.modules?.interactionControls ?? [])
+    _feedbackUI?.onProgressionPayload(payload, trackedPlayerPawn)
+}
+
 function startMainLoop() {
     // Setup UI controls
-    controls = setupControls(world, renderer, playerMode)
+    controls = setupControls(world, renderer, playerMode, {
+        onOverridePhaseChange: phase => {
+            if (phase) progression.setOverridePhase(phase)
+            else progression.clearOverridePhase()
+            syncProgressionState()
+        },
+        onWorldAdvanced: () => {
+            syncProgressionState()
+            _modeSwitcherUpdate?.()
+        }
+    })
     _modeSwitcherUpdate = controls?.modeSwitcher?.update ?? null
+
+    // Interaction panel — actionable controls gated by interactionControls capability
+    _interactionPanel = setupInteractionPanel(playerMode)
+
+    // Feedback channel UI — passive notifications driven by progression events
+    _feedbackUI = setupFeedbackChannelUI(progression)
+
+    progression.onEvent(event => {
+        if (event.type === 'phase_entered' || event.type === 'mode_unlocked') {
+            console.log('[progression]', event)
+        }
+    })
+
+    syncProgressionState()
 
     // Pause/resume simulation on tab blur/focus
     let pausedByTab = false
@@ -368,6 +446,7 @@ function simulationLoop(timestamp) {
         // Only update the world if not paused
     if (!controls?.isPaused?.()) {
             world.update(timestamp)
+            syncProgressionState()
             updateWorldStats()  // Update world stats display
             // Refresh mode-switcher unlock state every 60 ticks (~30 s at 2 ticks/s)
             if (world.clock.currentTick % 60 === 0) _modeSwitcherUpdate?.()

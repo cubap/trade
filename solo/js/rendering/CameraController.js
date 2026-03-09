@@ -20,6 +20,7 @@ class CameraController {
         
         // Panning state
         this.isPanning = false
+        this.allowManualPan = true
         this.lastMouseX = 0
         this.lastMouseY = 0
         
@@ -76,7 +77,7 @@ class CameraController {
         
         // Mouse move event - pan if middle button is pressed
         window.addEventListener('mousemove', (event) => {
-            if (!this.isPanning || this.followMode) return  // Disable panning in follow mode
+            if (!this.isPanning || this.followMode || !this.allowManualPan) return  // Disable panning in follow mode or when restricted
             
             // Calculate distance moved
             const deltaX = event.clientX - this.lastMouseX
