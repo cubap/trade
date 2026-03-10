@@ -1,7 +1,15 @@
-export function setupKeyboardShortcuts(world, renderer, followButton, perceptionButton, updateFollowSelect, followSelect) {
+export function setupKeyboardShortcuts(world, renderer, followButton, perceptionButton, updateFollowSelect, followSelect, options = {}) {
     document.addEventListener('keydown', event => {
-        if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT') return
-        switch (event.key.toLowerCase()) {
+        const tagName = event.target?.tagName
+        if (tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'TEXTAREA' || event.target?.isContentEditable) return
+
+        const key = event.key.toLowerCase()
+        if (options.onOverlayKey?.(key, event)) {
+            event.preventDefault()
+            return
+        }
+
+        switch (key) {
             case 'f':
                 if (renderer.firstPersonLocked) break
                 followButton.click()

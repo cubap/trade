@@ -4,6 +4,7 @@ import { setupFollowControls } from './followControls.js'
 import { setupCanvasInteractions } from './canvasInteractions.js'
 import { createEntitySummary } from './entitySummary.js'
 import { setupKeyboardShortcuts } from './keyboardShortcuts.js'
+import { setupDeveloperOverlays } from './developerOverlays.js'
 import { setUnlockListener } from '../models/skills/UnlockEvents.js'
 import { setupModeSwitcher } from './modeSwitcher.js'
 
@@ -109,22 +110,6 @@ function setupControls(world, renderer, playerMode, options = {}) {
         if (!Number.isFinite(ticks) || ticks < 1) return
         world.fastForwardTicks(Math.floor(ticks))
         options.onWorldAdvanced?.()
-    }
-    
-    // Add palette selector
-    const paletteSelect = document.createElement('select')
-    paletteSelect.style.marginLeft = '10px'
-    
-    for (const paletteName in renderer.colorPalettes) {
-        const option = document.createElement('option')
-        option.value = paletteName
-        option.textContent = paletteName.charAt(0).toUpperCase() + paletteName.slice(1)
-        paletteSelect.appendChild(option)
-    }
-    
-    paletteSelect.value = renderer.activePalette
-    paletteSelect.onchange = () => {
-        renderer.activePalette = paletteSelect.value
     }
     
     // Add grid toggle button
@@ -413,7 +398,6 @@ function setupControls(world, renderer, playerMode, options = {}) {
 
     devRow.appendChild(typeSelect)
     devRow.appendChild(addButton)
-    devRow.appendChild(paletteSelect)
     devRow.appendChild(gridButton)
     devRow.appendChild(chunkButton)
     devRow.appendChild(leaderSelect)
@@ -449,10 +433,20 @@ function setupControls(world, renderer, playerMode, options = {}) {
     document.body.appendChild(controlPanel)
     // Stats display
     setupStatsDisplay(world, renderer, playerMode)
+
+    const overlays = setupDeveloperOverlays(
+        world,
+        renderer,
+        playerMode,
+        () => playerMode?.trackedPawn ?? null
+    )
+
     // Canvas interactions
     setupCanvasInteractions(world, renderer, createEntitySummary)
     // Keyboard shortcuts
-    setupKeyboardShortcuts(world, renderer, followButton, perceptionButton, () => {}, null)
+    setupKeyboardShortcuts(world, renderer, followButton, perceptionButton, () => {}, null, {
+        onOverlayKey: key => overlays.toggleByKey(key)
+    })
     
     // Create help text
     const helpText = document.createElement('div')
@@ -476,6 +470,7 @@ function setupControls(world, renderer, playerMode, options = {}) {
         P - Toggle Perception Mode<br>
         1-5 - Quick Select Entity<br>
         ESC - Exit Follow Mode<br>
+        ${overlays.labels}<br>
         Mouse Wheel - Zoom<br>
         Middle Mouse - Pan (when not following)
     `

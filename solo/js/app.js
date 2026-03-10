@@ -69,15 +69,10 @@ function hotSwapRendererFromHash() {
 
     const followedEntity = activeRenderer.followedEntity
     const perceptionEnabled = !!activeRenderer.perceptionMode
-    const activePalette = activeRenderer.activePalette
 
     activeRenderer.destroy?.()
     activeRenderer = nextRenderer
     activeRendererKey = nextKey
-
-    if (activePalette && activeRenderer.colorPalettes?.[activePalette]) {
-        activeRenderer.activePalette = activePalette
-    }
 
     if (perceptionEnabled && !activeRenderer.perceptionMode) {
         activeRenderer.togglePerceptionMode?.()
@@ -514,7 +509,6 @@ function simulationLoop(timestamp) {
     if (!controls?.isPaused?.()) {
             world.update(timestamp)
             syncProgressionState()
-            updateWorldStats()  // Update world stats display
             // Refresh mode-switcher unlock state every 60 ticks (~30 s at 2 ticks/s)
             if (world.clock.currentTick % 60 === 0) _modeSwitcherUpdate?.()
         } else {
@@ -532,59 +526,6 @@ function simulationLoop(timestamp) {
         // Try to continue despite errors
         setTimeout(() => requestAnimationFrame(simulationLoop), 100)
     }
-}
-
-// Update pawn status display
-// World stats tracking for equilibrium observation
-const statsHistory = []
-const maxSamples = 60
-const hasTag = (e, tag) => Array.isArray(e?.tags) ? e.tags.includes(tag) : e?.tags?.has?.(tag)
-
-function updateWorldStats() {
-    const statusPanel = document.getElementById('pawn-status')
-    if (!statusPanel) return
-
-    const entities = Array.from(world.entitiesMap.values())
-    const isType = (e, t) => e.type === t
-    const trees = entities.filter(e => isType(e, 'tree')).length
-    const bushes = entities.filter(e => isType(e, 'bush')).length
-    const grassPatches = entities.filter(e => isType(e, 'grass'))
-    const grassCount = grassPatches.length
-    const grassPopulation = grassPatches.reduce((sum, g) => sum + (g.population ?? 0), 0)
-
-    const foodSources = entities.filter(e => hasTag(e, 'food')).length
-    const coverSources = entities.filter(e => hasTag(e, 'cover')).length
-    const waterSources = entities.filter(e => hasTag(e, 'water')).length
-
-    const tick = world.clock.currentTick
-    statsHistory.push({ tick, trees, bushes, grassCount, grassPopulation, foodSources, coverSources, waterSources })
-    if (statsHistory.length > maxSamples) statsHistory.shift()
-
-    const delta = (key, window = 10) => {
-        const from = statsHistory[Math.max(0, statsHistory.length - 1 - window)]
-        const to = statsHistory[statsHistory.length - 1]
-        if (!from || !to) return 0
-        const dv = (to[key] - from[key]) / Math.max(1, window)
-        return Math.round(dv * 10) / 10
-    }
-
-    const html = `
-        <div><strong>Tick:</strong> ${tick} <strong>Total:</strong> ${world.entitiesMap.size}</div>
-        <div>
-            Trees: ${trees} (Δ${delta('trees')}/10t) |
-            Bushes: ${bushes} (Δ${delta('bushes')}/10t) |
-            Grass patches: ${grassCount} (Δ${delta('grassCount')}/10t)
-        </div>
-        <div>
-            Grass population: ${grassPopulation} (Δ${delta('grassPopulation')}/10t)
-        </div>
-        <div>
-            Food sources: ${foodSources} (Δ${delta('foodSources')}/10t) |
-            Cover sources: ${coverSources} (Δ${delta('coverSources')}/10t) |
-            Water sources: ${waterSources}
-        </div>
-    `
-    statusPanel.innerHTML = html
 }
 
 // Loop starts in startMainLoop() after presim

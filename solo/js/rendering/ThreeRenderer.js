@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { OBJLoader } from '/node_modules/three/examples/jsm/loaders/OBJLoader.js'
+import { FBXLoader } from '/node_modules/three/examples/jsm/loaders/FBXLoader.js'
 import PerceptionRenderer from './PerceptionRenderer.js'
 
 class ThreeRenderer {
@@ -12,16 +13,6 @@ class ThreeRenderer {
             this.canvas.id = canvasId
             document.body.appendChild(this.canvas)
         }
-
-        this.colorPalettes = {
-            vivid: ['#FF5555', '#55FF55', '#5555FF', '#FFFF55', '#FF55FF', '#55FFFF', '#FF9955', '#9955FF'],
-            pastel: ['#FFB3B3', '#B3FFB3', '#B3B3FF', '#FFFFB3', '#FFB3FF', '#B3FFFF', '#FFCC99', '#CC99FF'],
-            grayscale: ['#333333', '#555555', '#777777', '#999999', '#BBBBBB', '#DDDDDD'],
-            forest: ['#2E4600', '#486B00', '#A2C523', '#7D4427', '#D6AA50'],
-            ocean: ['#1A3E59', '#2E738A', '#46CDCF', '#ABEDD8', '#0D0D0D']
-        }
-        this.activePalette = 'vivid'
-        this._lastPalette = this.activePalette
 
         this.supportsTrueFirstPerson = true
         this.followMode = false
@@ -71,7 +62,19 @@ class ThreeRenderer {
         this._treeModelRoot = null
         this._treeModelFailed = false
         this._rockModelRoot = null
+        this._rockModelVariants = []
         this._rockModelFailed = false
+        this._bushModelRoot = null
+        this._bushModelFailed = false
+        this._bushLeafTexture = null
+        this._bushLeafTextureFailed = false
+        this._partsForSaleRoot = null
+        this._partsForSaleFailed = false
+        this._partsForSaleBushVariants = []
+        this._partsForSaleSmallTreeVariants = []
+        this._grassModelRoot = null
+        this._grassModelMeta = null
+        this._grassModelFailed = false
         this._animalModelRoot = null
         this._animalModelFailed = false
         this._animalModelVariants = []
@@ -131,6 +134,8 @@ class ThreeRenderer {
         this._ensureAnimalLabelLayer()
         this._loadTreeModel()
         this._loadRockModel()
+        this._loadGrassModel()
+        this._loadPartsForSaleModel()
         this._loadAnimalModel()
     }
 
@@ -175,6 +180,7 @@ class ThreeRenderer {
             '/solo/assets/models/AssortedRocks.obj',
             object => {
                 this._rockModelRoot = object
+                this._rockModelVariants = object.children.filter(node => node.isMesh || node.type === 'Group')
                 this._refreshRockMeshes()
             },
             undefined,
@@ -183,6 +189,111 @@ class ThreeRenderer {
                 console.warn('[three] failed to load assorted rock model, using procedural rocks', error)
             }
         )
+    }
+
+    _loadGrassModel() {
+        const loader = new FBXLoader()
+        loader.load(
+            '/solo/assets/models/grassDarkGreen.fbx',
+            object => {
+                this._grassModelRoot = object
+                this._grassModelMeta = this._getNodeBoundsMeta(object)
+                this._refreshGrassMeshes()
+            },
+            undefined,
+            error => {
+                this._grassModelFailed = true
+                console.warn('[three] failed to load grass model, using procedural grass', error)
+            }
+        )
+    }
+
+    _loadPartsForSaleModel() {
+        const loader = new OBJLoader()
+        loader.load(
+            '/solo/assets/models/bush/PartsForSale.obj',
+            object => {
+                this._partsForSaleRoot = object
+                this._classifyPartsForSaleVariants()
+                this._refreshTreeMeshes()
+                this._refreshBushMeshes()
+            },
+            undefined,
+            () => {
+                this._partsForSaleFailed = true
+            }
+        )
+    }
+
+    _classifyPartsForSaleVariants() {
+        const children = this._partsForSaleRoot?.children?.filter(node => node.isMesh || node.type === 'Group') ?? []
+        if (!children.length) {
+            this._partsForSaleBushVariants = []
+            this._partsForSaleSmallTreeVariants = []
+            return
+        }
+
+        const withMeta = children.map(node => {
+            const centerX = this._getNodeCenterX(node)
+            const meta = this._getNodeBoundsMeta(node)
+            return {
+                node,
+                centerX,
+                height: meta.height,
+                width: meta.width,
+                depth: meta.depth
+            }
+        }).sort((a, b) => a.centerX - b.centerX)
+
+        const heights = withMeta.map(item => item.height).filter(Number.isFinite).sort((a, b) => a - b)
+        if (!heights.length) {
+            this._partsForSaleBushVariants = []
+            this._partsForSaleSmallTreeVariants = withMeta.map(item => item.node)
+            return
+        }
+
+        const median = heights[Math.floor(heights.length * 0.5)]
+        const endSliceCount = Math.max(2, Math.floor(withMeta.length * 0.3))
+        const leftEnd = withMeta.slice(0, endSliceCount)
+        const rightEnd = withMeta.slice(-endSliceCount)
+
+        const averageHeight = items => items.reduce((sum, item) => sum + item.height, 0) / Math.max(1, items.length)
+        const leftAvg = averageHeight(leftEnd)
+        const rightAvg = averageHeight(rightEnd)
+        const rowEnd = rightAvg <= leftAvg ? rightEnd : leftEnd
+
+        const endHeights = rowEnd.map(item => item.height).sort((a, b) => a - b)
+        const endMedianHeight = endHeights[Math.floor(endHeights.length * 0.5)] ?? median
+        const endFootprints = rowEnd.map(item => Math.max(item.width, item.depth)).sort((a, b) => a - b)
+        const endMedianFootprint = endFootprints[Math.floor(endFootprints.length * 0.5)] ?? 1
+
+        const bushCandidates = rowEnd.filter(item => {
+            const footprint = Math.max(item.width, item.depth)
+            const heightRatio = item.height / Math.max(0.001, footprint)
+            const compactEnough = heightRatio <= 2.2
+            const withinHeightBand = item.height <= endMedianHeight * 1.5
+            const notDebris = footprint >= endMedianFootprint * 0.25
+            return compactEnough && withinHeightBand && notDebris
+        })
+
+        this._partsForSaleBushVariants = bushCandidates.map(item => item.node)
+
+        const bushSet = new Set(this._partsForSaleBushVariants)
+        this._partsForSaleSmallTreeVariants = withMeta
+            .filter(item => !bushSet.has(item.node) && item.height >= median * 0.75)
+            .map(item => item.node)
+
+        if (!this._partsForSaleBushVariants.length) {
+            this._partsForSaleBushVariants = rowEnd
+                .filter(item => item.height <= endMedianHeight * 1.2)
+                .map(item => item.node)
+        }
+
+        if (!this._partsForSaleSmallTreeVariants.length) {
+            this._partsForSaleSmallTreeVariants = withMeta
+                .filter(item => !this._partsForSaleBushVariants.includes(item.node))
+                .map(item => item.node)
+        }
     }
 
     _loadAnimalModel() {
@@ -207,7 +318,7 @@ class ThreeRenderer {
     }
 
     _refreshTreeMeshes() {
-        if (!this._treeModelRoot) return
+        if (!this._treeModelRoot && !this._partsForSaleSmallTreeVariants.length) return
 
         const treeIds = []
         for (const [id, entity] of this._entityById.entries()) {
@@ -234,6 +345,20 @@ class ThreeRenderer {
         }
     }
 
+    _refreshGrassMeshes() {
+        if (!this._grassModelRoot) return
+
+        const grassIds = []
+        for (const [id, entity] of this._entityById.entries()) {
+            if (entity?.type !== 'grass') continue
+            grassIds.push(id)
+        }
+
+        for (const id of grassIds) {
+            this._disposeMesh(id)
+        }
+    }
+
     _refreshAnimalMeshes() {
         if (!this._animalModelRoot) return
 
@@ -244,6 +369,20 @@ class ThreeRenderer {
         }
 
         for (const id of animalIds) {
+            this._disposeMesh(id)
+        }
+    }
+
+    _refreshBushMeshes() {
+        if (!this._bushModelRoot && !this._bushLeafTexture && !this._partsForSaleBushVariants.length) return
+
+        const bushIds = []
+        for (const [id, entity] of this._entityById.entries()) {
+            if (entity?.type !== 'bush' && entity?.subtype !== 'plant') continue
+            bushIds.push(id)
+        }
+
+        for (const id of bushIds) {
             this._disposeMesh(id)
         }
     }
@@ -404,6 +543,43 @@ class ThreeRenderer {
         return { x: point.x, y: point.z }
     }
 
+    getEntityAtScreen(screenX, screenY) {
+        if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null
+        if (!this.canvas?.width || !this.canvas?.height) return null
+        if (!this._meshById.size) return null
+
+        this._pointer.x = (screenX / this.canvas.width) * 2 - 1
+        this._pointer.y = -(screenY / this.canvas.height) * 2 + 1
+        this._raycaster.setFromCamera(this._pointer, this._camera3d)
+
+        const roots = [...this._meshById.values()]
+        const hits = this._raycaster.intersectObjects(roots, true)
+        if (!hits.length) return null
+
+        for (const hit of hits) {
+            let node = hit.object
+            while (node) {
+                const entityId = node.userData?.entityId
+                if (entityId && this._entityById.has(entityId)) {
+                    return this._entityById.get(entityId) ?? null
+                }
+                node = node.parent
+            }
+        }
+
+        return null
+    }
+
+    _tagEntityOnObject(root, entityId) {
+        if (!root || !entityId) return
+        root.userData = root.userData || {}
+        root.userData.entityId = entityId
+        root.traverse?.(node => {
+            node.userData = node.userData || {}
+            node.userData.entityId = entityId
+        })
+    }
+
     worldToScreen(worldX, worldY) {
         const point = new THREE.Vector3(worldX, 0, worldY)
         point.project(this._camera3d)
@@ -412,16 +588,6 @@ class ThreeRenderer {
             x: (point.x + 1) * 0.5 * this.canvas.width,
             y: (1 - point.y) * 0.5 * this.canvas.height
         }
-    }
-
-    _getPaletteColor(entityId) {
-        const palette = this.colorPalettes[this.activePalette] ?? this.colorPalettes.vivid
-        let hash = 0
-        const source = String(entityId || 'entity')
-        for (let i = 0; i < source.length; i++) {
-            hash = (hash * 31 + source.charCodeAt(i)) >>> 0
-        }
-        return palette[hash % palette.length]
     }
 
     _hasTag(entity, tag) {
@@ -453,7 +619,6 @@ class ThreeRenderer {
                 geometry: new THREE.CircleGeometry(radius, 18),
                 materialColor: entity?.color || '#4da6ff',
                 shaderType: 'water',
-                paletteDriven: false,
                 baseY: 0.03,
                 rotation: { x: -Math.PI / 2, y: 0, z: 0 },
                 lerp: 0.28
@@ -467,7 +632,6 @@ class ThreeRenderer {
             return {
                 geometry: new THREE.BoxGeometry(length, thickness, thickness * 1.2),
                 materialColor: entity?.color || '#8b5a2b',
-                paletteDriven: false,
                 baseY: 0.06 + thickness * 0.5,
                 rotation: {
                     x: (unitA - 0.5) * 0.16,
@@ -486,7 +650,6 @@ class ThreeRenderer {
                 materialColor: entity?.color || '#8b7355',
                 useRockModel: !!this._rockModelRoot,
                 modelScale: 0.06 + unitA * 0.05,
-                paletteDriven: false,
                 baseY: radius * 0.68,
                 rotation: {
                     x: (unitA - 0.5) * 0.28,
@@ -506,7 +669,6 @@ class ThreeRenderer {
                 materialColor: entity?.color || '#9acd32',
                 shaderType: 'foliage',
                 swayStrength: 0.4 + unitA * 0.22,
-                paletteDriven: false,
                 baseY: height * 0.5,
                 rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                 lerp: 0.26
@@ -520,8 +682,9 @@ class ThreeRenderer {
                 materialColor: entity?.color || '#74b94a',
                 shaderType: 'foliage',
                 swayStrength: 0.32 + unitB * 0.14,
-                paletteDriven: false,
                 baseY: height * 0.5,
+                useGrassModel: !!this._grassModelRoot,
+                grassTargetHeight: height,
                 rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
                 lerp: 0.2
             }
@@ -532,7 +695,6 @@ class ThreeRenderer {
             return {
                 geometry: new THREE.OctahedronGeometry(radius, 0),
                 materialColor: entity?.color || '#7cfc00',
-                paletteDriven: false,
                 baseY: radius,
                 rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                 lerp: 0.22
@@ -540,18 +702,26 @@ class ThreeRenderer {
         }
 
         if (entity?.type === 'tree') {
-            const stageScale = entity?.stage === 'adult' ? 1 : entity?.stage === 'sapling' ? 0.62 : 0.35
-            const height = Math.max(5, (9 + unitA * 14) * stageScale)
-            const radius = Math.max(0.6, height * 0.08)
+            const isSapling = entity?.stage === 'sapling'
+            const isSmallTreeStage = isSapling
+            const stageScale = entity?.stage === 'adult' ? 1 : isSapling ? 0.62 : 0.35
+            const baseHeight = Math.max(5, (9 + unitA * 14) * stageScale)
+            const height = isSapling ? baseHeight * 2 : baseHeight
+            const radius = Math.max(0.6, baseHeight * 0.08)
+            const leafColor = entity?.color || '#5e8f3f'
             return {
                 geometry: new THREE.CylinderGeometry(radius * 0.75, radius, height, 8),
-                materialColor: entity?.color || '#5e8f3f',
+                materialColor: leafColor,
+                leafColor,
+                trunkColor: '#6b4f2a',
                 shaderType: 'foliage',
                 swayStrength: 0.18 + unitA * 0.08,
-                paletteDriven: false,
                 baseY: height * 0.5,
-                modelScale: 0.2 + unitA * 0.08,
+                modelScale: (0.2 + unitA * 0.08) * 3,
+                modelScaleY: isSapling ? 0.6 : 1,
                 useTreeModel: !!this._treeModelRoot,
+                useSmallTreeVariantModel: false,
+                smallTreeModelScale: 0.18 + unitA * 0.05,
                 rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                 lerp: 0.24
             }
@@ -561,12 +731,17 @@ class ThreeRenderer {
             const height = Math.max(2, 2.4 + unitA * 4.2)
             const radius = Math.max(1.2, 1.3 + unitB * 2.2)
             return {
-                geometry: new THREE.CylinderGeometry(radius * 0.85, radius, height, 8),
+                geometry: new THREE.SphereGeometry(radius * 0.8, 10, 8),
                 materialColor: entity?.color || '#6c9a4d',
                 shaderType: 'foliage',
                 swayStrength: 0.28 + unitB * 0.14,
-                paletteDriven: false,
-                baseY: height * 0.5,
+                baseY: radius * 0.88,
+                bushHeight: height,
+                bushRadius: radius,
+                useBushVariantModel: false,
+                useBushModel: !!this._bushModelRoot,
+                useBushLeafTexture: !!this._bushLeafTexture,
+                modelScale: 0.16 + unitA * 0.07,
                 rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
                 lerp: 0.24
             }
@@ -575,8 +750,7 @@ class ThreeRenderer {
         if (entity?.subtype === 'pawn') {
             return {
                 geometry: new THREE.CylinderGeometry(1.8, 2.3, 7.5, 6),
-                materialColor: this._getPaletteColor(entity?.id),
-                paletteDriven: true,
+                materialColor: entity?.color || '#3498db',
                 baseY: 3.75,
                 rotation: { x: 0, y: 0, z: 0 },
                 lerp: 0.38
@@ -589,8 +763,7 @@ class ThreeRenderer {
                 geometry: isAnimal
                     ? new THREE.ConeGeometry(2.8, 8.2, 6)
                     : new THREE.OctahedronGeometry(2.5, 0),
-                materialColor: this._getPaletteColor(entity?.id),
-                paletteDriven: true,
+                materialColor: entity?.color || '#c79b5f',
                 useAnimalModel: isAnimal && !!this._animalModelRoot,
                 modelScale: 0.22 + unitA * 0.1,
                 baseY: 4.1,
@@ -601,8 +774,7 @@ class ThreeRenderer {
 
         return {
             geometry: new THREE.BoxGeometry(5, 5, 5),
-            materialColor: entity?.color || this._getPaletteColor(entity?.id),
-            paletteDriven: !entity?.color,
+            materialColor: entity?.color || '#888888',
             baseY: 2.5,
             rotation: { x: 0, y: 0, z: 0 },
             lerp: 0.3
@@ -696,11 +868,51 @@ class ThreeRenderer {
     }
 
     _createTreeTrunkMaterial(baseColor) {
+        const trunkColor = new THREE.Color(baseColor || '#6b4f2a')
+        trunkColor.offsetHSL(0.01, -0.05, -0.06)
         return new THREE.MeshStandardMaterial({
-            color: new THREE.Color(baseColor).offsetHSL(-0.02, -0.18, -0.28),
+            color: trunkColor,
             roughness: 0.95,
             metalness: 0.0
         })
+    }
+
+    _createTreeGradientMaterial() {
+        return new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.92,
+            metalness: 0.0
+        })
+    }
+
+    _applyTreeGradientColors(geometry, trunkColor, leafColor) {
+        const position = geometry.getAttribute('position')
+        if (!position) return
+
+        geometry.computeBoundingBox()
+        const bounds = geometry.boundingBox
+        if (!bounds) return
+
+        const minY = bounds.min.y
+        const maxY = bounds.max.y
+        const height = Math.max(0.001, maxY - minY)
+        const colorArray = new Float32Array(position.count * 3)
+        const trunk = new THREE.Color(trunkColor || '#6b4f2a')
+        const leaf = new THREE.Color(leafColor || '#5e8f3f')
+        const mixed = new THREE.Color()
+
+        for (let i = 0; i < position.count; i++) {
+            const y = position.getY(i)
+            const t = (y - minY) / height
+            const ramp = Math.min(1, Math.max(0, (t - 0.28) / 0.42))
+            mixed.copy(trunk).lerp(leaf, ramp)
+            const index = i * 3
+            colorArray[index] = mixed.r
+            colorArray[index + 1] = mixed.g
+            colorArray[index + 2] = mixed.b
+        }
+
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorArray, 3))
     }
 
     _createRockMaterial(baseColor, variation = 0) {
@@ -714,11 +926,6 @@ class ThreeRenderer {
     }
 
     _splitTreeMaterialsByHeight(model, profile) {
-        model.updateMatrixWorld(true)
-        const worldBounds = new THREE.Box3().setFromObject(model)
-        const totalHeight = Math.max(0.001, worldBounds.max.y - worldBounds.min.y)
-        const splitY = worldBounds.min.y + totalHeight * 0.38
-
         model.traverse(node => {
             if (!node.isMesh || !node.geometry) return
 
@@ -726,26 +933,8 @@ class ThreeRenderer {
             node.castShadow = false
             node.receiveShadow = false
 
-            node.geometry.computeBoundingBox()
-            const localBox = node.geometry.boundingBox
-            if (!localBox) {
-                node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-                return
-            }
-
-            const center = new THREE.Vector3(
-                (localBox.min.x + localBox.max.x) * 0.5,
-                (localBox.min.y + localBox.max.y) * 0.5,
-                (localBox.min.z + localBox.max.z) * 0.5
-            )
-            center.applyMatrix4(node.matrixWorld)
-            const isTrunk = center.y <= splitY
-
-            if (isTrunk) {
-                node.material = this._createTreeTrunkMaterial(profile.materialColor)
-            } else {
-                node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-            }
+            this._applyTreeGradientColors(node.geometry, profile.trunkColor, profile.leafColor ?? profile.materialColor)
+            node.material = this._createTreeGradientMaterial()
         })
     }
 
@@ -826,7 +1015,8 @@ class ThreeRenderer {
     _buildTreeModelInstance(profile) {
         const model = this._treeModelRoot.clone(true)
         const scale = profile.modelScale ?? 0.2
-        model.scale.setScalar(scale)
+        const scaleY = scale * (profile.modelScaleY ?? 1)
+        model.scale.set(scale, scaleY, scale)
         model.userData.profile = profile
         model.userData.motionInitialized = false
         model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
@@ -837,12 +1027,16 @@ class ThreeRenderer {
     }
 
     _buildRockModelInstance(entity, profile) {
-        const model = this._rockModelRoot.clone(true)
+        const variantIndex = this._getRockVariantIndex(entity)
+        const source = this._rockModelVariants[variantIndex] ?? this._rockModelRoot
+        const model = source.clone(true)
         const scale = profile.modelScale ?? 0.08
         model.scale.setScalar(scale)
         model.userData.profile = profile
         model.userData.motionInitialized = false
         model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+
+        this._centerModelToOrigin(model)
 
         const variation = this._hashUnit(entity?.id, 'rockmat')
         model.traverse(node => {
@@ -857,6 +1051,194 @@ class ThreeRenderer {
         return model
     }
 
+    _buildGrassModelInstance(entity, profile) {
+        const model = this._grassModelRoot.clone(true)
+        const sourceHeight = Math.max(0.001, this._grassModelMeta?.height ?? 1)
+        const targetHeight = Math.max(0.7, profile.grassTargetHeight ?? 1.3)
+        const normalizedScale = Math.max(0.02, Math.min(6, targetHeight / sourceHeight))
+        const randomScale = 0.9 + this._hashUnit(entity?.id, 'grass-scale') * 0.35
+        const scale = normalizedScale * randomScale
+
+        model.scale.setScalar(scale)
+        model.userData.profile = profile
+        model.userData.motionInitialized = false
+        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+
+        this._centerModelToOrigin(model)
+
+        model.traverse(node => {
+            if (!node.isMesh || !node.geometry) return
+            node.geometry = node.geometry.clone()
+            node.castShadow = false
+            node.receiveShadow = false
+            node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
+        })
+
+        model.userData.groundOffset = this._captureGroundOffset(model)
+        return model
+    }
+
+    _buildBushModelInstance(profile) {
+        const model = this._bushModelRoot.clone(true)
+        const scale = profile.modelScale ?? 0.18
+        model.scale.setScalar(scale)
+        model.userData.profile = profile
+        model.userData.motionInitialized = false
+        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+
+        this._centerModelToOrigin(model)
+
+        model.traverse(node => {
+            if (!node.isMesh || !node.geometry) return
+            node.geometry = node.geometry.clone()
+            node.castShadow = false
+            node.receiveShadow = false
+            node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
+        })
+
+        model.userData.groundOffset = this._captureGroundOffset(model)
+        return model
+    }
+
+    _getPartsVariantIndex(entity, salt, count) {
+        if (!count) return -1
+        const hashed = Math.floor(this._hashUnit(entity?.id ?? entity?.name, salt) * count)
+        return Math.max(0, Math.min(count - 1, hashed))
+    }
+
+    _buildSmallTreeVariantInstance(entity, profile) {
+        const index = this._getPartsVariantIndex(entity, 'parts-small-tree', this._partsForSaleSmallTreeVariants.length)
+        if (index < 0) return null
+
+        const source = this._partsForSaleSmallTreeVariants[index]
+        if (!source) return null
+
+        const model = source.clone(true)
+        const scale = profile.smallTreeModelScale ?? profile.modelScale ?? 0.2
+        const scaleY = scale * (profile.modelScaleY ?? 1)
+        model.scale.set(scale, scaleY, scale)
+        model.userData.profile = profile
+        model.userData.motionInitialized = false
+        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+
+        this._centerModelToOrigin(model)
+        this._splitTreeMaterialsByHeight(model, profile)
+        model.userData.groundOffset = this._captureGroundOffset(model)
+        return model
+    }
+
+    _buildBushVariantModelInstance(entity, profile) {
+        const index = this._getPartsVariantIndex(entity, 'parts-bush', this._partsForSaleBushVariants.length)
+        if (index < 0) return null
+
+        const source = this._partsForSaleBushVariants[index]
+        if (!source) return null
+
+        const model = source.clone(true)
+        const scale = profile.modelScale ?? 0.18
+        model.scale.setScalar(scale)
+        model.userData.profile = profile
+        model.userData.motionInitialized = false
+        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+
+        this._centerModelToOrigin(model)
+        model.traverse(node => {
+            if (!node.isMesh || !node.geometry) return
+            node.geometry = node.geometry.clone()
+            node.castShadow = false
+            node.receiveShadow = false
+            node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
+        })
+
+        model.userData.groundOffset = this._captureGroundOffset(model)
+        return model
+    }
+
+    _buildBushLeafBillboardInstance(entity, profile) {
+        const group = new THREE.Group()
+        const leafHeight = 7.5
+        const leafWidth = 3.1
+        const material = new THREE.MeshStandardMaterial({
+            map: this._bushLeafTexture,
+            color: profile.materialColor,
+            transparent: true,
+            alphaTest: 0.35,
+            side: THREE.DoubleSide,
+            roughness: 0.92,
+            metalness: 0.0
+        })
+
+        const plane = new THREE.PlaneGeometry(leafWidth, leafHeight)
+        const crosses = 3
+        for (let i = 0; i < crosses; i++) {
+            const mesh = new THREE.Mesh(plane, material.clone())
+            const angleJitter = (this._hashUnit(entity?.id, `bush-leaf-angle-${i}`) - 0.5) * 0.22
+            mesh.rotation.y = (i / crosses) * Math.PI + angleJitter
+            mesh.position.y = leafHeight * 0.5
+            mesh.castShadow = false
+            mesh.receiveShadow = false
+            group.add(mesh)
+        }
+
+        group.userData.profile = profile
+        group.userData.motionInitialized = false
+        group.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+        group.userData.groundOffset = 0
+        return group
+    }
+
+    _buildProceduralBushInstance(entity, profile) {
+        const group = new THREE.Group()
+        const radius = Math.max(1, profile.bushRadius ?? 1.8)
+        const canopyMaterial = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
+
+        const canopyDefs = [
+            { x: 0, y: radius * 0.95, z: 0, scale: 1 },
+            { x: -radius * 0.48, y: radius * 0.82, z: radius * 0.24, scale: 0.68 },
+            { x: radius * 0.44, y: radius * 0.8, z: radius * 0.28, scale: 0.62 },
+            { x: 0, y: radius * 0.72, z: -radius * 0.46, scale: 0.7 }
+        ]
+
+        for (let i = 0; i < canopyDefs.length; i++) {
+            const def = canopyDefs[i]
+            const jitter = this._hashUnit(entity?.id, `bush-canopy-${i}`)
+            const sphere = new THREE.Mesh(
+                new THREE.SphereGeometry(radius * def.scale, 9, 7),
+                canopyMaterial
+            )
+            sphere.position.set(
+                def.x + (jitter - 0.5) * radius * 0.16,
+                def.y,
+                def.z + (0.5 - jitter) * radius * 0.16
+            )
+            sphere.castShadow = false
+            sphere.receiveShadow = false
+            group.add(sphere)
+        }
+
+        const trunk = new THREE.Mesh(
+            new THREE.CylinderGeometry(radius * 0.16, radius * 0.2, Math.max(0.8, radius * 0.85), 6),
+            this._createTreeTrunkMaterial('#6b4f2a')
+        )
+        trunk.position.y = Math.max(0.4, radius * 0.42)
+        trunk.castShadow = false
+        trunk.receiveShadow = false
+        group.add(trunk)
+
+        group.userData.profile = profile
+        group.userData.motionInitialized = false
+        group.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+        group.userData.groundOffset = this._captureGroundOffset(group)
+        return group
+    }
+
+    _getRockVariantIndex(entity) {
+        const count = this._rockModelVariants.length
+        if (!count) return -1
+        const hashed = Math.floor(this._hashUnit(entity?.id ?? entity?.name, 'rock-variant') * count)
+        return Math.max(0, Math.min(count - 1, hashed))
+    }
+
     _buildAnimalModelInstance(entity, profile) {
         const variantIndex = this._getAnimalVariantIndex(entity)
         if (variantIndex < 0) return null
@@ -867,9 +1249,15 @@ class ThreeRenderer {
         const model = source.clone(true)
         const variantMeta = this._animalVariantMeta[variantIndex]
         const normalizedScale = variantMeta?.baseScale ?? 1
-        const scale = (profile.modelScale ?? 0.25) * normalizedScale
+        const baseScale = (profile.modelScale ?? 0.25) * normalizedScale
         const mappedName = this._animalPackOrder[variantIndex] ?? `variant_${variantIndex + 1}`
         const speciesName = this._normalizeSpeciesName(entity) || 'unknown'
+        const deerTargetHeight = 6.8
+        const unscaledHeight = Math.max(0.001, variantMeta?.height ?? 1)
+        const deerScaleMultiplier = speciesName === 'deer'
+            ? Math.max(0.5, Math.min(8, deerTargetHeight / (unscaledHeight * baseScale)))
+            : 1
+        const scale = baseScale * deerScaleMultiplier
         model.scale.setScalar(scale)
         model.userData.profile = profile
         model.userData.motionInitialized = false
@@ -912,6 +1300,21 @@ class ThreeRenderer {
 
     _createMeshForEntity(entity) {
         const profile = this._getEntityRenderProfile(entity)
+
+        if (profile.useGrassModel && this._grassModelRoot) {
+            const model = this._buildGrassModelInstance(entity, profile)
+            this.scene.add(model)
+            return model
+        }
+
+        if (profile.useSmallTreeVariantModel && this._partsForSaleSmallTreeVariants.length) {
+            const model = this._buildSmallTreeVariantInstance(entity, profile)
+            if (model) {
+                this.scene.add(model)
+                return model
+            }
+        }
+
         if (profile.useTreeModel && this._treeModelRoot) {
             const model = this._buildTreeModelInstance(profile)
             this.scene.add(model)
@@ -920,6 +1323,32 @@ class ThreeRenderer {
 
         if (profile.useRockModel && this._rockModelRoot) {
             const model = this._buildRockModelInstance(entity, profile)
+            this.scene.add(model)
+            return model
+        }
+
+        if (profile.useBushVariantModel && this._partsForSaleBushVariants.length) {
+            const model = this._buildBushVariantModelInstance(entity, profile)
+            if (model) {
+                this.scene.add(model)
+                return model
+            }
+        }
+
+        if (profile.useBushModel && this._bushModelRoot) {
+            const model = this._buildBushModelInstance(profile)
+            this.scene.add(model)
+            return model
+        }
+
+        if (profile.useBushLeafTexture && this._bushLeafTexture) {
+            const model = this._buildBushLeafBillboardInstance(entity, profile)
+            this.scene.add(model)
+            return model
+        }
+
+        if (entity?.type === 'bush' || entity?.subtype === 'plant') {
+            const model = this._buildProceduralBushInstance(entity, profile)
             this.scene.add(model)
             return model
         }
@@ -958,10 +1387,14 @@ class ThreeRenderer {
         const y = prevY + (entity.y - prevY) * progress
 
         const followLift = entity === this.followedEntity && entity?.type === 'mobile' ? 1 : 0
-        const groundedOffset = Number.isFinite(mesh.userData.groundOffset)
+        const hasModelGroundOffset = Number.isFinite(mesh.userData.groundOffset)
+        const groundedOffset = hasModelGroundOffset
             ? mesh.userData.groundOffset
             : (profile.baseY ?? 2.5)
-        const baseHeight = groundedOffset + followLift
+        const modelGroundBias = hasModelGroundOffset
+            ? (this._ground?.position?.y ?? 0) + 0.02
+            : 0
+        const baseHeight = groundedOffset + modelGroundBias + followLift
         this._tmpTargetPosition.set(x, baseHeight, y)
         if (!mesh.userData.motionInitialized) {
             mesh.position.copy(this._tmpTargetPosition)
@@ -978,7 +1411,16 @@ class ThreeRenderer {
         }
 
         const isHighlighted = entity === this.highlightedEntity && Date.now() < this.highlightEndTime
-        mesh.scale.setScalar(isHighlighted ? 1.35 : 1)
+        if (!mesh.userData.baseScale) {
+            mesh.userData.baseScale = mesh.scale.clone()
+        }
+        const highlightScale = isHighlighted ? 1.35 : 1
+        const baseScale = mesh.userData.baseScale
+        mesh.scale.set(
+            baseScale.x * highlightScale,
+            baseScale.y * highlightScale,
+            baseScale.z * highlightScale
+        )
     }
 
     _disposeMesh(id) {
@@ -999,25 +1441,6 @@ class ThreeRenderer {
 
         this._meshById.delete(id)
         this._entityById.delete(id)
-    }
-
-    _syncPaletteColors() {
-        if (this._lastPalette === this.activePalette) return
-        this._lastPalette = this.activePalette
-
-        for (const [id, mesh] of this._meshById.entries()) {
-            if (!mesh.userData.profile?.paletteDriven) continue
-            const nextColor = this._getPaletteColor(id)
-            if (mesh.isMesh) {
-                mesh.material?.color?.set(nextColor)
-                continue
-            }
-
-            mesh.traverse(node => {
-                if (!node.isMesh) return
-                node.material?.color?.set(nextColor)
-            })
-        }
     }
 
     _updateCamera() {
@@ -1091,7 +1514,6 @@ class ThreeRenderer {
     render() {
         const { progress } = this.world.clock.getProgress()
         this._timeUniform.value = performance.now() * 0.001
-        this._syncPaletteColors()
         this._updateCamera()
 
         this._gridHelper.visible = !!this.showGrid
@@ -1106,6 +1528,7 @@ class ThreeRenderer {
             if (!mesh) {
                 mesh = this._createMeshForEntity(entity)
                 this._meshById.set(entity.id, mesh)
+                this._tagEntityOnObject(mesh, entity.id)
             }
             this._entityById.set(entity.id, entity)
             this._updateMeshPose(entity, mesh, progress)

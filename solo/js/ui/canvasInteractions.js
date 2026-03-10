@@ -14,7 +14,8 @@ export function setupCanvasInteractions(world, renderer, createEntitySummary) {
         }
         const worldX = worldPoint.x
         const worldY = worldPoint.y
-        const entity = findEntityAtPosition(world, worldX, worldY)
+        const entity = renderer.getEntityAtScreen?.(clickX, clickY)
+            ?? findEntityAtPosition(world, worldX, worldY)
         if (entity) {
             console.log('Selected Entity:', entity)
             const summary = createEntitySummary(entity)
