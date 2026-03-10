@@ -216,7 +216,10 @@ function preSimulateAndStart() {
     const text = overlay.querySelector('#presim-text')
 
     const params = new URLSearchParams(location.search)
-    const preSimDays = Number(params.get('preSimDays')) || 30
+    const host = location.hostname
+    const isDevHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
+    const defaultPreSimDays = isDevHost ? 7 : 30
+    const preSimDays = Number(params.get('preSimDays')) || defaultPreSimDays
     const overrideTicks = Number(params.get('preSimTicks')) || null
     // 1 day = 6 game hours = 360 ticks
     const totalTicks = overrideTicks ?? preSimDays * 360

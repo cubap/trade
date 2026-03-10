@@ -21,6 +21,10 @@ app.get('/', (req, res) => {
   res.send('Server is running')
 })
 
+app.get('/favicon.ico', (req, res) => {
+  res.status(204).end()
+})
+
 // MongoDB and game logic are optional - comment out if not needed
 import setupGameLogic from './gameLogic.js'
 import connectDB from './config/db.js'

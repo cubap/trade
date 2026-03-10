@@ -199,6 +199,93 @@ function setupControls(world, renderer, playerMode, options = {}) {
     debugModuleText.style.color = '#bcd'
     debugModuleText.textContent = 'Steer:n/a | Input:n/a | Feedback:n/a'
 
+    const visualTuningLabel = document.createElement('span')
+    visualTuningLabel.textContent = 'Visual FX:'
+    visualTuningLabel.style.marginLeft = '10px'
+    visualTuningLabel.style.fontSize = '12px'
+
+    const shimmerLabel = document.createElement('span')
+    shimmerLabel.textContent = 'Shimmer'
+    shimmerLabel.style.fontSize = '11px'
+
+    const shimmerSlider = document.createElement('input')
+    shimmerSlider.type = 'range'
+    shimmerSlider.min = '0'
+    shimmerSlider.max = '4'
+    shimmerSlider.step = '0.05'
+    shimmerSlider.style.width = '110px'
+
+    const shimmerValue = document.createElement('span')
+    shimmerValue.style.fontSize = '11px'
+    shimmerValue.style.minWidth = '34px'
+
+    const swayLabel = document.createElement('span')
+    swayLabel.textContent = 'Sway'
+    swayLabel.style.fontSize = '11px'
+
+    const swaySlider = document.createElement('input')
+    swaySlider.type = 'range'
+    swaySlider.min = '0'
+    swaySlider.max = '3'
+    swaySlider.step = '0.05'
+    swaySlider.style.width = '90px'
+
+    const swayValue = document.createElement('span')
+    swayValue.style.fontSize = '11px'
+    swayValue.style.minWidth = '34px'
+
+    const animalLabelsWrap = document.createElement('label')
+    animalLabelsWrap.style.display = 'inline-flex'
+    animalLabelsWrap.style.alignItems = 'center'
+    animalLabelsWrap.style.gap = '4px'
+    animalLabelsWrap.style.marginLeft = '10px'
+    animalLabelsWrap.style.fontSize = '11px'
+
+    const animalLabelsToggle = document.createElement('input')
+    animalLabelsToggle.type = 'checkbox'
+    animalLabelsToggle.style.margin = '0'
+    animalLabelsWrap.appendChild(animalLabelsToggle)
+
+    const animalLabelsText = document.createElement('span')
+    animalLabelsText.textContent = 'Animal Labels'
+    animalLabelsWrap.appendChild(animalLabelsText)
+
+    const hasVisualTuning = typeof renderer?.setVisualTuning === 'function' && typeof renderer?.getVisualTuning === 'function'
+    if (hasVisualTuning) {
+        const current = renderer.getVisualTuning()
+        shimmerSlider.value = String(current?.waterShimmer ?? 1.8)
+        shimmerValue.textContent = Number(shimmerSlider.value).toFixed(2)
+        swaySlider.value = String(current?.foliageSway ?? 1.0)
+        swayValue.textContent = Number(swaySlider.value).toFixed(2)
+
+        const applyVisualTuning = () => {
+            const waterShimmer = Number(shimmerSlider.value)
+            const foliageSway = Number(swaySlider.value)
+            renderer.setVisualTuning({ waterShimmer, foliageSway })
+            shimmerValue.textContent = waterShimmer.toFixed(2)
+            swayValue.textContent = foliageSway.toFixed(2)
+        }
+
+        shimmerSlider.oninput = applyVisualTuning
+        swaySlider.oninput = applyVisualTuning
+    } else {
+        shimmerSlider.disabled = true
+        swaySlider.disabled = true
+        shimmerValue.textContent = 'n/a'
+        swayValue.textContent = 'n/a'
+    }
+
+    const canToggleAnimalLabels = typeof renderer?.setAnimalLabelsVisible === 'function' && typeof renderer?.getAnimalLabelsVisible === 'function'
+    if (canToggleAnimalLabels) {
+        animalLabelsToggle.checked = !!renderer.getAnimalLabelsVisible()
+        animalLabelsToggle.onchange = () => {
+            renderer.setAnimalLabelsVisible(!!animalLabelsToggle.checked)
+        }
+    } else {
+        animalLabelsToggle.disabled = true
+        animalLabelsText.textContent = 'Animal Labels (n/a)'
+    }
+
     // Group command controls (minimal live testing for follow/obey)
     const leaderSelect = document.createElement('select')
     leaderSelect.style.marginLeft = '10px'
@@ -340,6 +427,14 @@ function setupControls(world, renderer, playerMode, options = {}) {
     devRow.appendChild(applyPhaseButton)
     devRow.appendChild(debugCapabilityText)
     devRow.appendChild(debugModuleText)
+    devRow.appendChild(visualTuningLabel)
+    devRow.appendChild(shimmerLabel)
+    devRow.appendChild(shimmerSlider)
+    devRow.appendChild(shimmerValue)
+    devRow.appendChild(swayLabel)
+    devRow.appendChild(swaySlider)
+    devRow.appendChild(swayValue)
+    devRow.appendChild(animalLabelsWrap)
 
     // Mode switcher (pawn / overseer / god) — only mount if playerMode is provided
     let modeSwitcher = null

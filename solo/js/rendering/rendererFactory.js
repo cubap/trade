@@ -1,4 +1,5 @@
 import CanvasRenderer from './CanvasRenderer.js'
+import ThreeRenderer from './ThreeRenderer.js'
 
 export const DEFAULT_RENDERER_KEY = 'canvas'
 
@@ -29,7 +30,14 @@ export function createRenderer(world, canvasId, rendererKey = DEFAULT_RENDERER_K
         return { key, instance: new CanvasRenderer(world, canvasId) }
     }
 
-    // 3D backend is not wired yet; keep simulation running on the default renderer.
-    console.warn(`[renderer] '${key}' requested but unavailable; falling back to '${DEFAULT_RENDERER_KEY}'`)
+    if (key === 'three') {
+        try {
+            return { key, instance: new ThreeRenderer(world, canvasId) }
+        } catch (error) {
+            console.warn(`[renderer] failed to initialize '${key}', falling back to '${DEFAULT_RENDERER_KEY}'`, error)
+            return { key: DEFAULT_RENDERER_KEY, instance: new CanvasRenderer(world, canvasId) }
+        }
+    }
+
     return { key: DEFAULT_RENDERER_KEY, instance: new CanvasRenderer(world, canvasId) }
 }

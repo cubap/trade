@@ -8,8 +8,12 @@ export function setupCanvasInteractions(world, renderer, createEntitySummary) {
         const rect = canvas.getBoundingClientRect()
         const clickX = event.clientX - rect.left
         const clickY = event.clientY - rect.top
-        const worldX = renderer.viewX + (clickX - canvas.width/2) / renderer.zoomLevel
-        const worldY = renderer.viewY + (clickY - canvas.height/2) / renderer.zoomLevel
+        const worldPoint = renderer.screenToWorld?.(clickX, clickY) ?? {
+            x: renderer.viewX + (clickX - canvas.width / 2) / renderer.zoomLevel,
+            y: renderer.viewY + (clickY - canvas.height / 2) / renderer.zoomLevel
+        }
+        const worldX = worldPoint.x
+        const worldY = worldPoint.y
         const entity = findEntityAtPosition(world, worldX, worldY)
         if (entity) {
             console.log('Selected Entity:', entity)
