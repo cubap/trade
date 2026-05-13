@@ -46,6 +46,9 @@ class ResourceGenerator {
             case 'plains':
                 foodTypes = ['Grain Field', 'Fruit Tree', 'Herb Patch']
                 break
+            case 'hills':
+                foodTypes = ['Wild Tubers', 'Berry Bush', 'Nut Tree']
+                break
             case 'wetland':
                 foodTypes = ['Water Plants', 'Marsh Berry', 'Reed Shoots']
                 break
@@ -115,6 +118,9 @@ class ResourceGenerator {
             case 'mountain':
                 waterTypes = ['Mountain Spring', 'Stream', 'Snow Melt']
                 break
+            case 'hills':
+                waterTypes = ['Spring', 'Creek', 'Pond']
+                break
             case 'forest':
                 waterTypes = ['Forest Spring', 'Creek', 'Pond']
                 break
@@ -163,6 +169,9 @@ class ResourceGenerator {
                 break
             case 'mountain':
                 coverTypes = ['Rock Formation', 'Cave', 'Stone Shelter', 'Cliff Overhang']
+                break
+            case 'hills':
+                coverTypes = ['Rock Outcrop', 'Shrub', 'Tree', 'Stone Shelter']
                 break
             case 'plains':
                 coverTypes = ['Tall Grass', 'Rock Outcrop', 'Shrub']

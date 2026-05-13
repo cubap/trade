@@ -89,6 +89,11 @@ class Pawn extends MobileEntity {
         this.memoryMap = [] // List of known landmarks
         this.maxLandmarks = 5 // Can be increased by skills
 
+        // Home landmark tracking for civic group formation
+        this.homeLandmark = null // { x, y, sleepCount, lastSleptAt, significance }
+        this.homeReusePasses = 0 // Reuse passes before home becomes significant
+        this.maxHomeReuseForSignificance = 3 // Sleep 3+ times at same spot = home
+
         // Resource memory: tracks seen resources for planning
         // Phase 1: Egocentric (direction-based, must update as pawn moves)
         // Phase 2: Allocentric (compass directions, fixed origin, compressed vectors)
@@ -111,6 +116,9 @@ class Pawn extends MobileEntity {
         }
         this.groupTrust = {} // { pawnId: trustScore }
         this.groupCommandQueue = [] // pending commands for this pawn
+        this.groupNegotiation = null // pending civic negotiation state
+        this.groupMemberships = {} // { [groupId]: { id, type, role, leaderId, joinedAt, cohesion } }
+        this.groupAffiliationsByType = {} // { [groupType]: groupId }
         this.groupMarks = [] // shared attention markers
         this.groupStats = {
             obeyedCommands: 0,
@@ -1683,6 +1691,97 @@ class Pawn extends MobileEntity {
         return sharedCount
     }
 
+    shareSocialLandmarks(otherPawn, options = {}) {
+        if (!otherPawn || otherPawn === this) return 0
+
+        const maxShare = options.maxShare ?? 2
+        const minSignificance = options.minSignificance ?? 3
+        const allowedTypes = new Set(options.allowedTypes ?? ['resource_cache', 'shelter', 'water_source', 'cover', 'home'])
+        const storytelling = this.getSkill('storytelling')
+        const confidenceFactor = Math.min(1, 0.65 + storytelling * 0.02)
+        const knownLandmarks = Array.isArray(otherPawn.memoryMap) ? otherPawn.memoryMap : []
+
+        const candidates = []
+        for (const landmark of this.memoryMap ?? []) {
+            if (!landmark?.type || !allowedTypes.has(landmark.type)) continue
+            if ((landmark.significance ?? 1) < minSignificance) continue
+            candidates.push(landmark)
+        }
+
+        if (this.homeLandmark && allowedTypes.has('home')) {
+            candidates.push({
+                x: this.homeLandmark.x,
+                y: this.homeLandmark.y,
+                type: 'home',
+                significance: Math.max(2, this.homeLandmark.significance ?? 1),
+                name: `${this.name} Home`,
+                event: 'shared_home'
+            })
+        }
+
+        if (!candidates.length) return 0
+
+        candidates.sort((a, b) => {
+            const significanceDelta = (b.significance ?? 1) - (a.significance ?? 1)
+            if (significanceDelta !== 0) return significanceDelta
+            return (b.timestamp ?? 0) - (a.timestamp ?? 0)
+        })
+
+        let sharedCount = 0
+        for (const landmark of candidates) {
+            if (sharedCount >= maxShare) break
+
+            const alreadyKnown = knownLandmarks.some(existing => {
+                if (existing?.type !== landmark.type) return false
+                const dx = (existing.x ?? 0) - (landmark.x ?? 0)
+                const dy = (existing.y ?? 0) - (landmark.y ?? 0)
+                return Math.sqrt(dx * dx + dy * dy) <= 20
+            })
+
+            if (alreadyKnown) continue
+
+            otherPawn.rememberLandmark?.({
+                x: landmark.x,
+                y: landmark.y,
+                type: landmark.type,
+                significance: Math.max(1, (landmark.significance ?? 1) * confidenceFactor),
+                name: confidenceFactor >= 0.75 ? landmark.name ?? null : null,
+                event: 'shared_social',
+                sourcePawnId: this.id,
+                sharedBy: this.name,
+                confidence: confidenceFactor
+            })
+            sharedCount++
+        }
+
+        if (sharedCount > 0) {
+            this.increaseSkill('storytelling', 0.02 * sharedCount)
+            otherPawn.increaseSkill?.('memoryClustering', 0.01 * sharedCount)
+        }
+
+        return sharedCount
+    }
+
+    registerHuntSuccessFromResource(resource, options = {}) {
+        if (!resource) return
+
+        const subtype = String(resource.subtype ?? resource.type ?? '').toLowerCase()
+        const tags = resource.tags
+        const hasAnimalTag = Array.isArray(tags)
+            ? tags.includes('animal')
+            : typeof tags?.has === 'function'
+                ? tags.has('animal')
+                : false
+
+        const isHuntSource = subtype === 'animal' || subtype === 'carcass' || hasAnimalTag
+        if (!isHuntSource) return
+
+        const nearbyPartners = this.getNearbyPawns(options.radius ?? 36)
+        if (nearbyPartners.length === 0) return
+
+        this.registerHuntSuccess(nearbyPartners)
+    }
+
     learnResourceLocation(knowledge = {}) {
         const type = knowledge.type
         const x = knowledge.x
@@ -1892,7 +1991,7 @@ class Pawn extends MobileEntity {
             const dx = (entity.x ?? 0) - this.x
             const dy = (entity.y ?? 0) - this.y
             return Math.sqrt(dx * dx + dy * dy) <= 30
-        }).length
+        })
 
         if (!nearCover) {
             this.exposedNights++
@@ -1908,11 +2007,20 @@ class Pawn extends MobileEntity {
             }
         } else {
             this.exposedNights = 0
+            // Safe night with shelter: additional trust boost to nearby pawns
+            if (nearbyPawns.length >= 1) {
+                this.registerSafeNightTrust(nearbyPawns)
+            }
         }
 
-        if (nearbyPawns >= 2) {
+        if (nearbyPawns.length >= 1) {
+            // Gain proximity-based trust with nearby pawns
+            this.registerProximityTrustGain(nearbyPawns)
+        }
+
+        if (nearbyPawns.length >= 2) {
             this.groupCampNights++
-            this.recordChallengeContext('group_camp_nights', 0.06, { durationTicks: 1000, nearbyPawns })
+            this.recordChallengeContext('group_camp_nights', 0.06, { durationTicks: 1000, nearbyPawns: nearbyPawns.length })
             if (this.groupCampNights >= 3) {
                 this.addThought('Camping together this long makes me want a permanent place.', 'settlement')
                 this.ponderProblem('need_shelter', {
@@ -1928,8 +2036,282 @@ class Pawn extends MobileEntity {
             this.addThought('Rest gave me time to connect the pieces in my head.', 'insight')
         }
 
+        // NEW: Update home landmark tracking
+        this.updateHomeLandmark()
+
         this.setRecentAction('Reflecting during rest')
         this.lastSleepTime = tick
+    }
+
+    updateHomeLandmark() {
+        // Called during rest to track/update home location
+        // When a pawn sleeps in same location multiple times, it becomes "home"
+        if (!this.world?.clock) return
+
+        const sleepX = Math.round(this.x / 10) * 10  // Quantize to 10-unit grid
+        const sleepY = Math.round(this.y / 10) * 10
+
+        if (!this.homeLandmark) {
+            this.homeLandmark = {
+                x: sleepX,
+                y: sleepY,
+                sleepCount: 1,
+                lastSleptAt: this.world.clock.currentTick,
+                significance: 1
+            }
+            return
+        }
+
+        // Check if slept at same location (within 10-unit grid)
+        const sameLocation = Math.abs(this.homeLandmark.x - sleepX) <= 5 &&
+                            Math.abs(this.homeLandmark.y - sleepY) <= 5
+
+        if (sameLocation) {
+            this.homeLandmark.sleepCount++
+            this.homeLandmark.lastSleptAt = this.world.clock.currentTick
+
+            // Home becomes significant after N reuses
+            if (this.homeLandmark.sleepCount >= this.maxHomeReuseForSignificance) {
+                this.homeLandmark.significance = Math.max(
+                    this.homeLandmark.significance,
+                    2 + (this.homeLandmark.sleepCount - this.maxHomeReuseForSignificance) * 0.2
+                )
+            }
+        } else {
+            // Moved to new location; reset tracking
+            this.homeLandmark = {
+                x: sleepX,
+                y: sleepY,
+                sleepCount: 1,
+                lastSleptAt: this.world.clock.currentTick,
+                significance: 1
+            }
+        }
+    }
+
+    registerProximityTrustGain(nearbyPawns = []) {
+        // When pawns sleep together, they gain mutual trust
+        if (!nearbyPawns.length) return
+
+        for (const otherPawn of nearbyPawns) {
+            if (!otherPawn?.id || otherPawn.id === this.id) continue
+
+            // Gain modest trust from proximity + shared sleep
+            const baseTrust = 0.08
+            const currentTrust = this.getGroupTrustIn(otherPawn) ?? 0
+            const newTrust = Math.min(1, currentTrust + baseTrust)
+
+            this.setGroupTrustIn(otherPawn, newTrust)
+
+            // Log thought about the shared experience
+            if (newTrust >= 0.2) {
+                this.addThought(`Spending a safe night near ${otherPawn.name} builds familiarity.`, 'social')
+            }
+        }
+    }
+
+    checkCivicGroupFormationTrigger() {
+        // Detect when 2+ pawns with sufficient mutual trust + home overlap
+        // should consider forming a civic group (typically 3+ total for stability)
+        if (!this.world?.entitiesMap) return null
+
+        const otherPawns = Array.from(this.world.entitiesMap.values()).filter(e =>
+            e?.subtype === 'pawn' && e.id !== this.id
+        )
+
+        if (otherPawns.length < 1) return null  // Need at least 1 other (2 total minimum)
+
+        // Find pawns with trust >= 0.2 and home location within 50 units
+        const potentialMembers = otherPawns.filter(p => {
+            const trust = this.getGroupTrustIn(p) ?? 0
+            if (trust < 0.2) return false
+
+            const otherHome = p.homeLandmark
+            const thisHome = this.homeLandmark
+
+            if (!otherHome || !thisHome) return false
+
+            const dist = Math.sqrt(
+                Math.pow(otherHome.x - thisHome.x, 2) +
+                Math.pow(otherHome.y - thisHome.y, 2)
+            )
+
+            return dist <= 50
+        })
+
+        if (potentialMembers.length < 1) return null  // Need at least 1 other
+
+        return {
+            type: 'civic',
+            initiatorId: this.id,
+            members: [this, ...potentialMembers],
+            homeLocation: this.homeLandmark,
+            baseTrust: Math.min(...potentialMembers.map(p => this.getGroupTrustIn(p) ?? 0))
+        }
+    }
+
+    registerHuntSuccess(huntingPartners = []) {
+        // When pawn successfully hunts (kills animal), gain trust with hunting partners
+        // Represents shared danger, success, and meat-sharing
+        if (!huntingPartners.length) return
+
+        for (const partner of huntingPartners) {
+            if (!partner?.id || partner.id === this.id) continue
+
+            // Hunt success: +0.15 trust (significant cooperative achievement)
+            const baseTrust = 0.15
+            const currentTrust = this.getGroupTrustIn(partner) ?? 0
+            const newTrust = Math.min(1, currentTrust + baseTrust)
+
+            this.setGroupTrustIn(partner, newTrust)
+
+            // Log thought about shared hunt success
+            this.addThought(`Successfully hunted together with ${partner.name}. We work well as a team.`, 'social')
+        }
+    }
+
+    notifyCacheSharing(cacheBuilderId) {
+        // When pawn uses resources from someone else's cache, gain modest trust
+        // Represents relying on someone's preparation and resource management
+        if (!cacheBuilderId) return
+        const cacheBuilder = this.world?.entitiesMap?.get(cacheBuilderId)
+        if (!cacheBuilder || cacheBuilder.id === this.id) return
+
+        // Cache sharing: +0.10 trust (modest, represents reliance on preparation)
+        const baseTrust = 0.10
+        const currentTrust = this.getGroupTrustIn(cacheBuilder) ?? 0
+        const newTrust = Math.min(1, currentTrust + baseTrust)
+
+        this.setGroupTrustIn(cacheBuilder, newTrust)
+
+        // Log thought about shared resources
+        this.addThought(`Using ${cacheBuilder.name}'s cache reminds me they think ahead.`, 'social')
+    }
+
+    registerSharedCacheContribution(cacheId, otherContributors = []) {
+        // When pawn adds to a shared cache location, gain trust with other contributors
+        // Represents collaborative resource building and investment in shared future
+        if (!cacheId || !otherContributors.length) return
+
+        for (const contributor of otherContributors) {
+            if (!contributor?.id || contributor.id === this.id) continue
+
+            // Shared cache contribution: +0.12 trust (more than single cache use, represents collective work)
+            const baseTrust = 0.12
+            const currentTrust = this.getGroupTrustIn(contributor) ?? 0
+            const newTrust = Math.min(1, currentTrust + baseTrust)
+
+            this.setGroupTrustIn(contributor, newTrust)
+
+            // Log thought about shared resource investment
+            this.addThought(`Adding to the shared cache with ${contributor.name} builds our common reserve.`, 'social')
+        }
+    }
+
+    registerSafeNightTrust(nearbyPawns = []) {
+        // When pawn sleeps safely with shelter/group, gain modest trust with shelter provider
+        // Represents safety, reliability, and mutual care
+        if (!nearbyPawns.length) return
+
+        for (const otherPawn of nearbyPawns) {
+            if (!otherPawn?.id || otherPawn.id === this.id) continue
+
+            // Safe night: +0.05 trust (modest, represents comfort and safety)
+            // This accumulates slowly but is more reliable than hunt trust
+            const baseTrust = 0.05
+            const currentTrust = this.getGroupTrustIn(otherPawn) ?? 0
+            const newTrust = Math.min(1, currentTrust + baseTrust)
+
+            this.setGroupTrustIn(otherPawn, newTrust)
+
+            // Log thought about shared safety (less effusive than hunts)
+            if (newTrust % 0.2 < 0.06) {  // Log at trust milestones
+                this.addThought(`Sleeping safely near ${otherPawn.name} is comforting.`, 'social')
+            }
+        }
+    }
+
+    checkTerritorialOverlapTrigger() {
+        // Detect when pawns have memory of overlapping territory (>30% of landmarks)
+        // This triggers tribal group formation (territory-based, not proximity-based)
+        if (!this.world?.entitiesMap) return null
+
+        const otherPawns = Array.from(this.world.entitiesMap.values()).filter(e =>
+            e?.subtype === 'pawn' && e.id !== this.id
+        )
+
+        if (otherPawns.length < 1) return null
+
+        // Find pawns with overlapping resource memory (territory overlap)
+        const potentialMembers = otherPawns.filter(p => {
+            const trust = this.getGroupTrustIn(p) ?? 0
+            if (trust < 0.15) return false  // Slightly lower threshold than civic (territory-based)
+
+            // Check if memory landmarks overlap
+            const thisMemory = this.memoryMap.slice(0, 10)  // Recent landmarks
+            const otherMemory = p.memoryMap?.slice(0, 10) ?? []
+
+            if (!thisMemory.length || !otherMemory.length) return false
+
+            const overlapCount = thisMemory.filter(lm1 =>
+                otherMemory.some(lm2 =>
+                    Math.hypot(lm2.x - lm1.x, lm2.y - lm1.y) < 40  // Within 40 units = same region
+                )
+            ).length
+
+            const overlapRatio = overlapCount / Math.min(thisMemory.length, otherMemory.length)
+            return overlapRatio >= 0.3  // 30% overlap = shared territory
+        })
+
+        if (potentialMembers.length < 1) return null
+
+        return {
+            type: 'tribal',
+            initiatorId: this.id,
+            members: [this, ...potentialMembers],
+            territoryOrigin: { x: this.x, y: this.y },
+            baseTrust: Math.min(...potentialMembers.map(p => this.getGroupTrustIn(p) ?? 0))
+        }
+    }
+
+    checkMercantileGroupFormationTrigger() {
+        // Detect when pawns have high skill specialization and fair trade history
+        // This triggers mercantile group formation (trade-based, expertise-diverse)
+        if (!this.world?.entitiesMap) return null
+
+        const otherPawns = Array.from(this.world.entitiesMap.values()).filter(e =>
+            e?.subtype === 'pawn' && e.id !== this.id
+        )
+
+        if (otherPawns.length < 1) return null
+
+        // Find pawns with complementary skills and consistent positive trades
+        const potentialMembers = otherPawns.filter(p => {
+            const trust = this.getGroupTrustIn(p) ?? 0
+            if (trust < 0.25) return false  // Slightly higher threshold (commerce requires reliability)
+
+            // Check if skills are complementary (different domains)
+            const mySkills = Object.keys(this.skills).filter(s => (this.skills[s] ?? 0) > 0.3)
+            const theirSkills = Object.keys(p.skills || {}).filter(s => (p.skills[s] ?? 0) > 0.3)
+
+            if (!mySkills.length || !theirSkills.length) return false
+
+            // Simple check: do we have different specializations?
+            const overlap = mySkills.filter(s => theirSkills.includes(s)).length
+            const diversity = (mySkills.length + theirSkills.length - overlap) / (mySkills.length + theirSkills.length)
+
+            return diversity > 0.4  // 40% different skills = good complementarity
+        })
+
+        if (potentialMembers.length < 1) return null
+
+        return {
+            type: 'mercantile',
+            initiatorId: this.id,
+            members: [this, ...potentialMembers],
+            tradeValue: 100,  // Base value for trade routes
+            baseTrust: Math.min(...potentialMembers.map(p => this.getGroupTrustIn(p) ?? 0))
+        }
     }
 
     auditRememberedCaches() {
@@ -2432,45 +2814,247 @@ class Pawn extends MobileEntity {
         this.groupTrust[targetPawn.id] = Math.max(-1, Math.min(1, trust ?? 0))
     }
 
-    createGroup(groupId = `group-${this.id}-${Date.now()}`) {
-        this.groupState = {
+    inferGroupType(groupId = '') {
+        const normalized = String(groupId ?? '').toLowerCase()
+        if (normalized.startsWith('civic-')) return 'civic'
+        if (normalized.startsWith('tribal-')) return 'tribal'
+        if (normalized.startsWith('mercantile-')) return 'mercantile'
+        return 'generic'
+    }
+
+    setActiveGroupState(groupId = null) {
+        if (!groupId) {
+            this.groupState = {
+                id: null,
+                role: 'none',
+                leaderId: null,
+                joinedAt: null,
+                cohesion: 0
+            }
+            return
+        }
+
+        const membership = this.groupMemberships[groupId]
+        if (!membership) {
+            this.setActiveGroupState(null)
+            return
+        }
+
+        this.groupState = membership
+    }
+
+    registerGroupMembership(groupId, { role = 'member', leaderId = null, cohesion = 0.1, type = null } = {}) {
+        if (!groupId) return null
+
+        const groupType = type ?? this.inferGroupType(groupId)
+        const existingForType = this.groupAffiliationsByType[groupType]
+        if (existingForType && existingForType !== groupId) {
+            this.leaveGroup(existingForType)
+        }
+
+        const existing = this.groupMemberships[groupId] ?? {}
+        const membership = {
             id: groupId,
+            type: groupType,
+            role,
+            leaderId,
+            joinedAt: existing.joinedAt ?? Date.now(),
+            cohesion: Math.max(existing.cohesion ?? 0, cohesion)
+        }
+
+        this.groupMemberships[groupId] = membership
+        this.groupAffiliationsByType[groupType] = groupId
+        this.reputation.membership[groupId] = role
+        this.setActiveGroupState(groupId)
+        return membership
+    }
+
+    createGroup(groupId = `group-${this.id}-${Date.now()}`) {
+        this.registerGroupMembership(groupId, {
             role: 'leader',
             leaderId: this.id,
-            joinedAt: Date.now(),
-            cohesion: Math.max(this.groupState?.cohesion ?? 0, 0.2)
-        }
-        this.reputation.membership[groupId] = 'leader'
+            cohesion: Math.max(this.groupState?.cohesion ?? 0, 0.2),
+            type: this.inferGroupType(groupId)
+        })
         return groupId
     }
 
     joinGroup(leaderPawn, groupId = leaderPawn?.groupState?.id) {
         if (!leaderPawn?.id || !groupId) return false
 
-        this.groupState = {
-            id: groupId,
+        this.registerGroupMembership(groupId, {
             role: 'member',
             leaderId: leaderPawn.id,
-            joinedAt: Date.now(),
-            cohesion: Math.max(this.groupState?.cohesion ?? 0, 0.1)
-        }
-        this.reputation.membership[groupId] = 'member'
+            cohesion: Math.max(this.groupState?.cohesion ?? 0, 0.1),
+            type: this.inferGroupType(groupId)
+        })
         return true
     }
 
-    leaveGroup() {
-        const groupId = this.groupState?.id
+    leaveGroup(groupId = this.groupState?.id) {
+        if (!groupId) return
+
+        const membership = this.groupMemberships[groupId]
+        const groupType = membership?.type ?? this.inferGroupType(groupId)
+
         if (groupId && this.reputation?.membership) {
             delete this.reputation.membership[groupId]
         }
-        this.groupState = {
-            id: null,
-            role: 'none',
-            leaderId: null,
-            joinedAt: null,
-            cohesion: 0
+
+        if (this.groupMemberships[groupId]) {
+            delete this.groupMemberships[groupId]
         }
-        this.groupCommandQueue = []
+
+        if (this.groupAffiliationsByType[groupType] === groupId) {
+            delete this.groupAffiliationsByType[groupType]
+        }
+
+        if (this.groupNegotiation?.groupId === groupId) {
+            this.groupNegotiation = null
+        }
+
+        if (this.groupState?.id === groupId) {
+            const nextGroupId = Object.keys(this.groupMemberships)[0] ?? null
+            this.setActiveGroupState(nextGroupId)
+            this.groupCommandQueue = []
+        }
+    }
+
+    getNearbyPawns(radius = 30, includeSelf = false) {
+        if (!this.world?.entitiesMap) return []
+
+        return Array.from(this.world.entitiesMap.values()).filter(entity => {
+            if (entity?.subtype !== 'pawn') return false
+            if (!includeSelf && entity.id === this.id) return false
+
+            const dx = (entity.x ?? 0) - this.x
+            const dy = (entity.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= radius
+        })
+    }
+
+    getCivicNegotiationMembers(trigger = null, meetingRadius = 34) {
+        const civicTrigger = trigger ?? this.checkCivicGroupFormationTrigger?.()
+        if (!civicTrigger?.members?.length) return []
+
+        return civicTrigger.members.filter(member => {
+            if (!member?.id) return false
+            if (member.id === this.id) return true
+
+            const dx = (member.x ?? 0) - this.x
+            const dy = (member.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= meetingRadius
+        })
+    }
+
+    beginCivicNegotiation(trigger = null, options = {}) {
+        const civicTrigger = trigger ?? this.checkCivicGroupFormationTrigger?.()
+        if (!civicTrigger?.members?.length) return null
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const dayPhase = this.world?.clock?.getDayPhase?.() ?? 'day'
+        const meetingRadius = options.meetingRadius ?? 34
+        const presentMembers = this.getCivicNegotiationMembers(civicTrigger, meetingRadius)
+
+        if (presentMembers.length < 2) return null
+
+        const nearbyCivicGroupId = presentMembers
+            .map(member => member.groupAffiliationsByType?.civic ?? null)
+            .find(Boolean) ?? null
+
+        const existingGroupId = this.groupAffiliationsByType?.civic ?? null
+        const groupId = nearbyCivicGroupId || existingGroupId || civicTrigger.groupId || `civic-${this.id}-${tick}`
+        const recruitmentDeadlineTick = tick + (options.recruitmentWindowTicks ?? 720)
+        const memberIds = civicTrigger.members.map(member => member.id)
+
+        if (!this.groupMemberships?.[groupId]) {
+            this.createGroup(groupId)
+        }
+
+        const existingMembers = this.getGroupMembers(groupId)
+        const leader = existingMembers.find(member => {
+            const role = member.groupMemberships?.[groupId]?.role ?? member.groupState?.role
+            return role === 'leader'
+        }) ?? this.getGroupLeader?.() ?? this
+        const groupMembers = presentMembers.slice()
+
+        for (const member of groupMembers) {
+            const currentCivicGroup = member.groupAffiliationsByType?.civic
+            if (currentCivicGroup && currentCivicGroup !== groupId) {
+                member.leaveGroup(currentCivicGroup)
+            }
+
+            if (member.id === leader.id) {
+                member.registerGroupMembership(groupId, {
+                    role: 'leader',
+                    leaderId: leader.id,
+                    cohesion: Math.max(member.groupState?.cohesion ?? 0, groupMembers.length >= 3 ? 0.45 : 0.3),
+                    type: 'civic'
+                })
+                continue
+            }
+
+            member.joinGroup(leader, groupId)
+            member.groupState.cohesion = Math.max(member.groupState.cohesion ?? 0, groupMembers.length >= 3 ? 0.35 : 0.2)
+        }
+
+        for (const member of groupMembers) {
+            member.groupNegotiation = {
+                type: 'civic',
+                groupId,
+                initiatedBy: this.id,
+                targetCount: 3,
+                memberIds,
+                presentMemberIds: groupMembers.map(entry => entry.id),
+                pendingThird: groupMembers.length < 3 || memberIds.length > groupMembers.length,
+                createdAt: tick,
+                recruitmentDeadlineTick,
+                nextRecruitAttemptTick: tick + 60,
+                dayPhase
+            }
+        }
+
+        if (groupMembers.length >= 3) {
+            for (const member of groupMembers) {
+                member.groupNegotiation.pendingThird = false
+            }
+        }
+
+        const bonusTrust = groupMembers.length >= 3 ? 0.12 : 0.08
+        for (const member of groupMembers) {
+            for (const other of groupMembers) {
+                if (member.id === other.id) continue
+                const currentTrust = member.getGroupTrustIn(other) ?? 0
+                member.setGroupTrustIn(other, Math.min(1, currentTrust + bonusTrust))
+            }
+
+            member.addThought(
+                groupMembers.length >= 3
+                    ? 'We settled our plans together and the group feels real now.'
+                    : 'We started a civic plan and will need one more voice soon.',
+                'social'
+            )
+        }
+
+        return {
+            groupId,
+            members: groupMembers,
+            pendingThird: groupMembers.length < 3,
+            recruitmentDeadlineTick
+        }
+    }
+
+    completeCivicNegotiation(goal = null) {
+        const trigger = goal?.negotiationTrigger ?? this.checkCivicGroupFormationTrigger?.()
+        const meetingRadius = goal?.meetingRadius ?? 34
+        const participants = goal?.negotiationMembers ?? this.getCivicNegotiationMembers(trigger, meetingRadius)
+
+        if (participants.length < 2) return null
+
+        return this.beginCivicNegotiation(trigger ?? { members: participants }, {
+            meetingRadius,
+            recruitmentWindowTicks: goal?.recruitmentWindowTicks ?? 720
+        })
     }
 
     getGroupLeader() {
@@ -2479,13 +3063,12 @@ class Pawn extends MobileEntity {
         return this.world.entitiesMap.get(leaderId) ?? null
     }
 
-    getGroupMembers() {
-        const groupId = this.groupState?.id
+    getGroupMembers(groupId = this.groupState?.id) {
         if (!groupId || !this.world?.entitiesMap) return []
 
         return Array.from(this.world.entitiesMap.values()).filter(entity =>
             entity?.subtype === 'pawn' &&
-            entity.groupState?.id === groupId
+            (entity.groupMemberships?.[groupId] || entity.groupState?.id === groupId)
         )
     }
 
@@ -2689,6 +3272,29 @@ class Pawn extends MobileEntity {
 
     updateGroupDynamics(tick) {
         if (!this.groupState?.id || tick % 50 !== 0) return
+
+        if (this.groupNegotiation?.recruitmentDeadlineTick && tick > this.groupNegotiation.recruitmentDeadlineTick) {
+            const negotiationGroupId = this.groupNegotiation.groupId ?? this.groupState?.id
+            const groupType = this.inferGroupType(negotiationGroupId)
+            const members = this.getGroupMembers(negotiationGroupId)
+
+            if (this.groupNegotiation.pendingThird && groupType === 'civic' && members.length > 0 && members.length < 3) {
+                for (const member of members) {
+                    member.addThought('Our civic plan lost momentum and dissolved.', 'social')
+                    member.leaveGroup(negotiationGroupId)
+                }
+                return
+            }
+
+            this.groupNegotiation = null
+        }
+
+        if (this.groupNegotiation?.pendingThird && (this.groupState?.id || this.groupNegotiation?.groupId)) {
+            const members = this.getGroupMembers(this.groupNegotiation.groupId ?? this.groupState?.id)
+            if (members.length >= 3) {
+                this.groupNegotiation.pendingThird = false
+            }
+        }
 
         if (this.groupState.role === 'leader') {
             this.groupState.cohesion = Math.max(0.1, (this.groupState.cohesion ?? 0) - 0.001)
@@ -3092,6 +3698,22 @@ class Pawn extends MobileEntity {
         }
 
         if (moved > 0) {
+            if (!Array.isArray(targetCache.contributorIds)) {
+                targetCache.contributorIds = []
+            }
+            if (!targetCache.contributorIds.includes(this.id)) {
+                targetCache.contributorIds.push(this.id)
+            }
+
+            const contributors = targetCache.contributorIds
+                .filter(id => id && id !== this.id)
+                .map(id => this.world?.entitiesMap?.get(id))
+                .filter(entity => entity?.subtype === 'pawn')
+
+            if (contributors.length > 0) {
+                this.registerSharedCacheContribution(targetCache.id, contributors)
+            }
+
             this.rememberResourceCache(targetCache, {
                 significance: Math.min(8, 4 + moved * 0.2),
                 event: 'stashed'
@@ -3118,6 +3740,16 @@ class Pawn extends MobileEntity {
         }
 
         if (added > 0) {
+            const contributorIds = Array.isArray(cache.contributorIds) ? cache.contributorIds : []
+            const trustedContributorId = contributorIds.find(id => id && id !== this.id) ?? null
+            const builderId = cache.ownerId && cache.ownerId !== this.id
+                ? cache.ownerId
+                : trustedContributorId
+
+            if (builderId) {
+                this.notifyCacheSharing(builderId)
+            }
+
             this.rememberResourceCache(cache, { significance: 5, event: 'retrieved' })
             this.setRecentAction(`Retrieved ${added} ${itemType} from cache`)
         }

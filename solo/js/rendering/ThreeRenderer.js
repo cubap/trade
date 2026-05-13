@@ -80,6 +80,11 @@ class ThreeRenderer {
         this._animalModelVariants = []
         this._animalVariantMeta = []
         this._animalPackOrder = ['elephant', 'deer', 'bear', 'dog', 'cat', 'horse', 'lion', 'giraffe']
+        this._pawnModelRoot = null
+        this._pawnModelFailed = false
+        this._pawnTexture = null
+        this._pawnTextureFailed = false
+        this._skyboxTexture = null
         this.showAnimalLabels = true
         this._animalLabelLayer = null
 
@@ -99,12 +104,17 @@ class ThreeRenderer {
         this.scene.add(this._ambient)
         this.scene.add(this._sun)
 
+        const terrainSegmentsX = Math.max(50, Math.min(180, Math.floor(this.world.width / 120)))
+        const terrainSegmentsY = Math.max(50, Math.min(180, Math.floor(this.world.height / 120)))
+        const terrainGeometry = new THREE.PlaneGeometry(this.world.width, this.world.height, terrainSegmentsX, terrainSegmentsY)
+        this._applyGroundRelief(terrainGeometry)
+
         this._ground = new THREE.Mesh(
-            new THREE.PlaneGeometry(this.world.width, this.world.height, 1, 1),
-            new THREE.MeshStandardMaterial({ color: '#355f2f', roughness: 1, metalness: 0 })
+            terrainGeometry,
+            new THREE.MeshStandardMaterial({ color: '#355f2f', roughness: 1, metalness: 0, vertexColors: true })
         )
         this._ground.rotation.x = -Math.PI / 2
-        this._ground.position.set(this.world.width / 2, -0.5, this.world.height / 2)
+        this._ground.position.set(this.world.width / 2, 0, this.world.height / 2)
         this.scene.add(this._ground)
 
         this._gridHelper = new THREE.GridHelper(Math.max(this.world.width, this.world.height), 40, 0x999999, 0x555555)
@@ -137,6 +147,74 @@ class ThreeRenderer {
         this._loadGrassModel()
         this._loadPartsForSaleModel()
         this._loadAnimalModel()
+        this._loadOpenGameArtSkybox()
+        this._loadPawnModel()
+    }
+
+    _getGroundHeightAt(worldX, worldY) {
+        const chunkManager = this.world?.chunkManager
+        if (!chunkManager?.getElevationAt) return this._ground?.position?.y ?? 0
+        return chunkManager.getElevationAt(worldX, worldY)
+    }
+
+    _applyGroundRelief(geometry) {
+        const positions = geometry.getAttribute('position')
+        if (!positions) return
+
+        for (let i = 0; i < positions.count; i++) {
+            const localX = positions.getX(i)
+            const localY = positions.getY(i)
+            const worldX = localX + this.world.width / 2
+            const worldY = localY + this.world.height / 2
+            const height = this._getGroundHeightAt(worldX, worldY)
+            positions.setZ(i, height)
+        }
+
+        positions.needsUpdate = true
+        geometry.computeVertexNormals()
+
+        const colors = new Float32Array(positions.count * 3)
+        for (let i = 0; i < positions.count; i++) {
+            const localX = positions.getX(i)
+            const localY = positions.getY(i)
+            const worldX = localX + this.world.width / 2
+            const worldY = localY + this.world.height / 2
+            const height = positions.getZ(i)
+            const color = this._getTerrainColor(worldX, worldY, height)
+            const index = i * 3
+            colors[index] = color.r
+            colors[index + 1] = color.g
+            colors[index + 2] = color.b
+        }
+
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+    }
+
+    _getTerrainColor(worldX, worldY, height) {
+        const chunk = this.world?.chunkManager?.getChunkAtPosition?.(worldX, worldY)
+        const biome = chunk?.biome ?? 'plains'
+        const tint = new THREE.Color()
+        const elevationBoost = Math.max(0, Math.min(1, (height + 1) / 8))
+        const detail = this._hashUnit(`${Math.floor(worldX / 12)}:${Math.floor(worldY / 12)}`, 'terrain-detail')
+
+        switch (biome) {
+            case 'forest':
+                tint.set('#355f2b')
+                tint.lerp(new THREE.Color('#24441f'), 0.28 + detail * 0.22)
+                break
+            case 'hills':
+                tint.set('#7a7649')
+                tint.lerp(new THREE.Color('#9a8f66'), 0.24 + detail * 0.26)
+                break
+            default:
+                tint.set('#6e9a4a')
+                tint.lerp(new THREE.Color('#8fbf67'), 0.24 + detail * 0.2)
+                break
+        }
+
+        const slopeShade = 0.78 + elevationBoost * 0.38
+        tint.multiplyScalar(slopeShade)
+        return tint
     }
 
     _ensureAnimalLabelLayer() {
@@ -317,6 +395,68 @@ class ThreeRenderer {
         )
     }
 
+    _loadOpenGameArtSkybox() {
+        const faces = [
+            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_rt.png',
+            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_lf.png',
+            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_up.png',
+            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_dn.png',
+            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_ft.png',
+            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_bk.png'
+        ]
+
+        const loader = new THREE.CubeTextureLoader()
+        loader.load(
+            faces,
+            texture => {
+                if (texture && 'colorSpace' in texture && THREE.SRGBColorSpace) {
+                    texture.colorSpace = THREE.SRGBColorSpace
+                }
+
+                this._skyboxTexture = texture
+                this.scene.background = texture
+                if (this._skyDome) this._skyDome.visible = false
+            },
+            undefined,
+            error => {
+                console.warn('[three] failed to load OpenGameArt skybox, using procedural sky dome', error)
+                if (this._skyDome) this._skyDome.visible = true
+            }
+        )
+    }
+
+    _loadPawnModel() {
+        const textureLoader = new THREE.TextureLoader()
+        textureLoader.load(
+            '/solo/assets/models/opengameart/pawn_rpg_kit/textures/boy_Albedo.png',
+            texture => {
+                if (texture && 'colorSpace' in texture && THREE.SRGBColorSpace) {
+                    texture.colorSpace = THREE.SRGBColorSpace
+                }
+                this._pawnTexture = texture
+                this._refreshPawnMeshes()
+            },
+            undefined,
+            () => {
+                this._pawnTextureFailed = true
+            }
+        )
+
+        const loader = new FBXLoader()
+        loader.load(
+            '/solo/assets/models/opengameart/pawn_rpg_kit/source/boy.fbx',
+            object => {
+                this._pawnModelRoot = object
+                this._refreshPawnMeshes()
+            },
+            undefined,
+            error => {
+                this._pawnModelFailed = true
+                console.warn('[three] failed to load OpenGameArt pawn model, using procedural pawn', error)
+            }
+        )
+    }
+
     _refreshTreeMeshes() {
         if (!this._treeModelRoot && !this._partsForSaleSmallTreeVariants.length) return
 
@@ -369,6 +509,20 @@ class ThreeRenderer {
         }
 
         for (const id of animalIds) {
+            this._disposeMesh(id)
+        }
+    }
+
+    _refreshPawnMeshes() {
+        if (!this._pawnModelRoot) return
+
+        const pawnIds = []
+        for (const [id, entity] of this._entityById.entries()) {
+            if (entity?.subtype !== 'pawn') continue
+            pawnIds.push(id)
+        }
+
+        for (const id of pawnIds) {
             this._disposeMesh(id)
         }
     }
@@ -536,6 +690,12 @@ class ThreeRenderer {
         this._pointer.x = (screenX / this.canvas.width) * 2 - 1
         this._pointer.y = -(screenY / this.canvas.height) * 2 + 1
         this._raycaster.setFromCamera(this._pointer, this._camera3d)
+
+        const terrainHits = this._raycaster.intersectObject(this._ground, false)
+        if (terrainHits.length > 0) {
+            const point = terrainHits[0].point
+            return { x: point.x, y: point.z }
+        }
 
         const point = new THREE.Vector3()
         const hit = this._raycaster.ray.intersectPlane(this._groundPlane, point)
@@ -751,6 +911,8 @@ class ThreeRenderer {
             return {
                 geometry: new THREE.CylinderGeometry(1.8, 2.3, 7.5, 6),
                 materialColor: entity?.color || '#3498db',
+                usePawnModel: !!this._pawnModelRoot,
+                modelScale: 0.022 + unitA * 0.006,
                 baseY: 3.75,
                 rotation: { x: 0, y: 0, z: 0 },
                 lerp: 0.38
@@ -1282,6 +1444,34 @@ class ThreeRenderer {
         return model
     }
 
+    _buildPawnModelInstance(entity, profile) {
+        const model = this._pawnModelRoot.clone(true)
+        const scale = profile.modelScale ?? 0.024
+        model.scale.setScalar(scale)
+        model.userData.profile = profile
+        model.userData.motionInitialized = false
+        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+
+        this._centerModelToOrigin(model)
+
+        model.traverse(node => {
+            if (!node.isMesh || !node.geometry) return
+            node.geometry = node.geometry.clone()
+            node.castShadow = false
+            node.receiveShadow = false
+
+            node.material = new THREE.MeshStandardMaterial({
+                color: this._pawnTexture ? '#ffffff' : profile.materialColor,
+                map: this._pawnTexture ?? null,
+                roughness: 0.84,
+                metalness: 0.03
+            })
+        })
+
+        model.userData.groundOffset = this._captureGroundOffset(model)
+        return model
+    }
+
     _createMaterialForProfile(profile) {
         if (profile.shaderType === 'water') {
             return this._createWaterMaterial(profile.materialColor)
@@ -1347,6 +1537,12 @@ class ThreeRenderer {
             return model
         }
 
+        if (profile.usePawnModel && this._pawnModelRoot) {
+            const model = this._buildPawnModelInstance(entity, profile)
+            this.scene.add(model)
+            return model
+        }
+
         if (entity?.type === 'bush' || entity?.subtype === 'plant') {
             const model = this._buildProceduralBushInstance(entity, profile)
             this.scene.add(model)
@@ -1394,7 +1590,8 @@ class ThreeRenderer {
         const modelGroundBias = hasModelGroundOffset
             ? (this._ground?.position?.y ?? 0) + 0.02
             : 0
-        const baseHeight = groundedOffset + modelGroundBias + followLift
+        const terrainHeight = this._getGroundHeightAt(x, y)
+        const baseHeight = terrainHeight + groundedOffset + modelGroundBias + followLift
         this._tmpTargetPosition.set(x, baseHeight, y)
         if (!mesh.userData.motionInitialized) {
             mesh.position.copy(this._tmpTargetPosition)
@@ -1410,6 +1607,36 @@ class ThreeRenderer {
             mesh.rotation.y = this._easeAngle(mesh.rotation.y, targetYaw, mesh.userData, 'turnVelocity')
         }
 
+        if (entity.subtype === 'pawn') {
+            const interactionYaw = this._getPawnInteractionYaw(entity)
+            const movementDx = (entity.x ?? 0) - prevX
+            const movementDy = (entity.y ?? 0) - prevY
+            const hasMovement = Math.hypot(movementDx, movementDy) > 0.06
+
+            let targetYaw = null
+            if (Number.isFinite(interactionYaw)) {
+                targetYaw = interactionYaw
+            } else if (hasMovement) {
+                targetYaw = -Math.atan2(movementDy, movementDx) + Math.PI / 2
+            }
+
+            if (Number.isFinite(targetYaw)) {
+                mesh.rotation.y = this._easeAngle(
+                    mesh.rotation.y,
+                    targetYaw,
+                    mesh.userData,
+                    'turnVelocityPawn',
+                    {
+                        response: Number.isFinite(interactionYaw) ? 0.32 : 0.22,
+                        damping: Number.isFinite(interactionYaw) ? 0.82 : 0.84,
+                        maxSpeed: Number.isFinite(interactionYaw) ? 0.24 : 0.16,
+                        snapThreshold: 0.0025,
+                        stopVelocity: 0.0018
+                    }
+                )
+            }
+        }
+
         const isHighlighted = entity === this.highlightedEntity && Date.now() < this.highlightEndTime
         if (!mesh.userData.baseScale) {
             mesh.userData.baseScale = mesh.scale.clone()
@@ -1421,6 +1648,66 @@ class ThreeRenderer {
             baseScale.y * highlightScale,
             baseScale.z * highlightScale
         )
+    }
+
+    _getPawnInteractionYaw(pawn) {
+        const goal = pawn?.goals?.currentGoal
+        if (!goal) return null
+
+        const interactionTypes = new Set([
+            'socialize',
+            'negotiate_group',
+            'collaborative_craft',
+            'teach_skill',
+            'train_skill',
+            'apprentice_skill'
+        ])
+
+        if (!interactionTypes.has(goal.type)) return null
+
+        const target = this._resolveGoalEntityTarget(goal)
+        if (target?.id && target.id !== pawn.id && Number.isFinite(target.x) && Number.isFinite(target.y)) {
+            const dx = target.x - pawn.x
+            const dy = target.y - pawn.y
+            if (Math.hypot(dx, dy) > 0.01) {
+                return -Math.atan2(dy, dx) + Math.PI / 2
+            }
+        }
+
+        if (goal.type === 'negotiate_group') {
+            const members = Array.isArray(goal.negotiationMembers)
+                ? goal.negotiationMembers.filter(member => member?.id && member.id !== pawn.id)
+                : []
+
+            if (members.length) {
+                const centerX = members.reduce((sum, member) => sum + (member.x ?? pawn.x), 0) / members.length
+                const centerY = members.reduce((sum, member) => sum + (member.y ?? pawn.y), 0) / members.length
+                const dx = centerX - pawn.x
+                const dy = centerY - pawn.y
+                if (Math.hypot(dx, dy) > 0.01) {
+                    return -Math.atan2(dy, dx) + Math.PI / 2
+                }
+            }
+        }
+
+        if (goal.partner?.id && goal.partner.id !== pawn.id) {
+            const dx = (goal.partner.x ?? pawn.x) - pawn.x
+            const dy = (goal.partner.y ?? pawn.y) - pawn.y
+            if (Math.hypot(dx, dy) > 0.01) {
+                return -Math.atan2(dy, dx) + Math.PI / 2
+            }
+        }
+
+        return null
+    }
+
+    _resolveGoalEntityTarget(goal) {
+        if (goal?.target && Number.isFinite(goal.target.x) && Number.isFinite(goal.target.y)) {
+            return goal.target
+        }
+
+        if (!goal?.targetId || !this.world?.entitiesMap) return null
+        return this.world.entitiesMap.get(goal.targetId) ?? null
     }
 
     _disposeMesh(id) {
@@ -1468,7 +1755,8 @@ class ThreeRenderer {
             )
             dir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
 
-            const targetEye = new THREE.Vector3(this.followedEntity.x, this.firstPersonHeight, this.followedEntity.y)
+            const eyeGround = this._getGroundHeightAt(this.followedEntity.x, this.followedEntity.y)
+            const targetEye = new THREE.Vector3(this.followedEntity.x, eyeGround + this.firstPersonHeight, this.followedEntity.y)
             this._smoothedFirstPersonEye.lerp(targetEye, 0.48)
             this._smoothedFirstPersonDir.lerp(dir, 0.4).normalize()
 
@@ -1478,8 +1766,9 @@ class ThreeRenderer {
             return
         }
 
-        const target = new THREE.Vector3(this.viewX, 0, this.viewY)
-        const elevated = new THREE.Vector3(this.viewX, this.cameraDistance * 0.45, this.viewY + this.cameraDistance)
+        const viewGround = this._getGroundHeightAt(this.viewX, this.viewY)
+        const target = new THREE.Vector3(this.viewX, viewGround, this.viewY)
+        const elevated = new THREE.Vector3(this.viewX, viewGround + this.cameraDistance * 0.45, this.viewY + this.cameraDistance)
         this._camera3d.position.lerp(elevated, 0.15)
         this._smoothedCameraTarget.lerp(target, 0.22)
         this._camera3d.lookAt(this._smoothedCameraTarget)
@@ -1634,6 +1923,8 @@ class ThreeRenderer {
         this._ground.material?.dispose?.()
         this._skyDome.geometry?.dispose?.()
         this._skyDome.material?.dispose?.()
+        this._skyboxTexture?.dispose?.()
+        this._pawnTexture?.dispose?.()
 
         this.webglRenderer.dispose()
         this.webglRenderer.forceContextLoss?.()

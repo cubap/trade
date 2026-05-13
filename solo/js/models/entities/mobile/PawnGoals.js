@@ -45,6 +45,7 @@ class PawnGoals {
         // Add some long-term goals if immediate needs are met
         if (needsPriority.length === 0 || needsPriority[0].priority <= 2) {
             this.addLongTermGoals()
+            this.addCivicNegotiationGoals()
         }
         
         // Re-evaluate deferred goals periodically
@@ -274,6 +275,44 @@ class PawnGoals {
         const selected = this.selectRandomGoals(longTermGoals, count)
         this.goalQueue.push(...selected)
     }
+
+    addCivicNegotiationGoals() {
+        const phase = this.pawn.world?.clock?.getDayPhase?.() ?? 'day'
+        const pendingNegotiation = this.pawn.groupNegotiation
+        const civicTrigger = this.pawn.checkCivicGroupFormationTrigger?.()
+        const shouldNegotiateNow = phase === 'dusk' || phase === 'night' || !!pendingNegotiation
+
+        if (!shouldNegotiateNow) return
+        if (!civicTrigger?.members?.length) return
+        if (this.currentGoal?.type === 'negotiate_group') return
+        if (this.goalQueue.some(goal => goal.type === 'negotiate_group')) return
+
+        const negotiationMembers = pendingNegotiation?.memberIds?.length
+            ? civicTrigger.members.filter(member => pendingNegotiation.memberIds.includes(member.id))
+            : civicTrigger.members
+
+        if (negotiationMembers.length < 2) return
+
+        const goal = {
+            type: 'negotiate_group',
+            priority: 2,
+            description: pendingNegotiation?.pendingThird
+                ? 'Bring the civic group together'
+                : 'Negotiate a civic group',
+            targetType: 'entity',
+            targetSubtype: 'pawn',
+            targetIds: negotiationMembers.map(member => member.id),
+            targetRadius: pendingNegotiation?.pendingThird ? 40 : 34,
+            action: 'negotiate',
+            duration: 60,
+            meetingRadius: pendingNegotiation?.pendingThird ? 40 : 34,
+            negotiationTrigger: civicTrigger,
+            negotiationMembers,
+            recruitmentWindowTicks: 720
+        }
+
+        this.goalQueue.unshift(goal)
+    }
     
     selectRandomGoals(goals, count) {
         // Weighted random selection based on priority
@@ -375,6 +414,7 @@ class PawnGoals {
             'rest': 'seeking_rest',
             'seek_shelter': 'seeking_shelter',
             'socialize': 'seeking_social',
+            'negotiate_group': 'negotiating',
             'work': 'working',
             'explore': 'exploring',
             'build_structure': 'building',
@@ -508,14 +548,34 @@ class PawnGoals {
 
         if (goal.type === 'socialize' && goal.target?.subtype === 'pawn') {
             const shared = this.pawn.shareResourceMemory?.(goal.target, { maxShare: 2, minConfidence: 0.55 }) ?? 0
+            const landmarkShared = this.pawn.shareSocialLandmarks?.(goal.target, { maxShare: 2, minSignificance: 3 }) ?? 0
+            const returnShared = goal.target.shareSocialLandmarks?.(this.pawn, { maxShare: 1, minSignificance: 4 }) ?? 0
             if (shared > 0) {
                 this.pawn.useSkill('storytelling', 0.05)
                 goal.target.useSkill?.('memoryClustering', 0.03)
+            }
+            if (landmarkShared > 0 || returnShared > 0) {
+                this.pawn.useSkill('storytelling', 0.03)
+                goal.target.useSkill?.('storytelling', 0.02)
             }
         }
 
         if (goal.type === 'rest') {
             this.pawn.registerRestOutcome?.(goal)
+        }
+
+        if (goal.type === 'negotiate_group') {
+            const members = Array.isArray(goal.negotiationMembers)
+                ? goal.negotiationMembers.filter(member => member?.subtype === 'pawn' && member.id !== this.pawn.id)
+                : []
+
+            if (members.length > 0) {
+                for (const member of members.slice(0, 2)) {
+                    this.pawn.shareSocialLandmarks?.(member, { maxShare: 1, minSignificance: 4 })
+                }
+            }
+            this.pawn.completeCivicNegotiation?.(goal)
+            this.pawn.setRecentAction?.('Formalized civic plans')
         }
 
         // Skill gains based on goal type (lightweight for now)
@@ -525,6 +585,7 @@ class PawnGoals {
             'rest': { composure: 0.05 },
             'seek_shelter': { composure: 0.1 },
             'socialize': { storytelling: 0.2 },
+            'negotiate_group': { planning: 0.15, cooperation: 0.2, storytelling: 0.1 },
             'work': { manipulation: 0.1 },
             'explore': { orienteering: 0.4, cartography: 0.1 },
             'build_structure': { planning: 0.3 },
@@ -1257,6 +1318,8 @@ class PawnGoals {
                         this.pawn.updateResourceMemoryConfidence(found, true)
                         if (added) {
                             this.pawn.setRecentAction?.(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
+                            this.pawn.registerHuntSuccessFromResource?.(resource)
+                            this.pawn.registerHuntSuccessFromResource?.(found)
                             goal.gatheredCount++
                             console.log(`${this.pawn.name} gathered ${gathered.type}, progress: ${goal.gatheredCount}/${goal.count || 1}`)
                         } else {
@@ -1339,6 +1402,7 @@ class PawnGoals {
 
                             if (added) {
                                 this.pawn.setRecentAction?.(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
+                                this.pawn.registerHuntSuccessFromResource?.(resource)
                                 console.log(`${this.pawn.name} gathered ${gathered.type}. Inventory: ${this.pawn.inventory.length}/${this.pawn.inventorySlots}`)
                             } else {
                                 const atSource = this.pawn.handleGatheredItemWithoutStorage?.(gathered, {
@@ -1434,10 +1498,15 @@ class PawnGoals {
                         this.pawn.increaseSkill('cooperation', 1)
                         goal.partner.increaseSkill?.('cooperation', 1)
                         const shared = this.pawn.shareResourceMemory?.(goal.partner, { maxShare: 3, minConfidence: 0.5 }) ?? 0
+                            const landmarkShared = this.pawn.shareSocialLandmarks?.(goal.partner, { maxShare: 2, minSignificance: 3 }) ?? 0
                         if (shared > 0) {
                             this.pawn.increaseSkill('routePlanning', 0.05)
                             goal.partner.increaseSkill?.('memoryClustering', 0.05)
                         }
+                            if (landmarkShared > 0) {
+                                this.pawn.increaseSkill('storytelling', 0.04)
+                                goal.partner.increaseSkill?.('storytelling', 0.02)
+                            }
                         this.completeCurrentGoal()
                     } else {
                         // Periodic skill gains during collaboration
@@ -1451,6 +1520,67 @@ class PawnGoals {
                 // No partner available, complete anyway
                 this.completeCurrentGoal()
             }
+        }
+
+        if (goal.type === 'negotiate_group') {
+            const trigger = goal.negotiationTrigger ?? this.pawn.checkCivicGroupFormationTrigger?.()
+            const targetMembers = Array.isArray(goal.negotiationMembers) && goal.negotiationMembers.length > 0
+                ? goal.negotiationMembers
+                : trigger?.members ?? []
+
+            if (targetMembers.length < 2) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const activeMembers = targetMembers.filter(member => {
+                if (!member?.id) return false
+                const dx = (member.x ?? 0) - this.pawn.x
+                const dy = (member.y ?? 0) - this.pawn.y
+                return Math.sqrt(dx * dx + dy * dy) <= (goal.meetingRadius ?? 34)
+            })
+
+            if (activeMembers.length < 2) {
+                const focus = targetMembers.find(member => member.id !== this.pawn.id) ?? targetMembers[0]
+                if (focus) {
+                    this.pawn.nextTargetX = focus.x
+                    this.pawn.nextTargetY = focus.y
+                    this.pawn.setRecentAction?.(`Heading to negotiate with ${focus.name}`)
+                }
+                return
+            }
+
+            if (!goal.startTime) {
+                goal.startTime = this.pawn.world.clock.currentTick
+                this.pawn.setRecentAction?.('Negotiating a civic group')
+            }
+
+            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+            const centerX = activeMembers.reduce((sum, member) => sum + (member.x ?? 0), 0) / activeMembers.length
+            const centerY = activeMembers.reduce((sum, member) => sum + (member.y ?? 0), 0) / activeMembers.length
+            const distanceToCenter = Math.sqrt((this.pawn.x - centerX) ** 2 + (this.pawn.y - centerY) ** 2)
+
+            if (distanceToCenter > (goal.meetingRadius ?? 34)) {
+                this.pawn.nextTargetX = centerX
+                this.pawn.nextTargetY = centerY
+                this.pawn.setRecentAction?.('Gathering the group to negotiate')
+                return
+            }
+
+            if (elapsed % 15 === 0) {
+                for (const other of activeMembers) {
+                    if (other.id === this.pawn.id) continue
+                    const currentTrust = this.pawn.getGroupTrustIn(other) ?? 0
+                    this.pawn.setGroupTrustIn(other, Math.min(1, currentTrust + 0.03))
+                }
+                this.pawn.useSkill('planning', 0.03)
+                this.pawn.useSkill('cooperation', 0.04)
+            }
+
+            if (elapsed >= (goal.duration ?? 60)) {
+                this.completeCurrentGoal()
+            }
+            return
         }
         
         // Accumulate valuables: craft high-quality items

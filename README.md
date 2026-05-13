@@ -24,6 +24,9 @@ npm run serve
 
 # Open the game
 # Navigate to http://localhost:3000/solo/index.html
+
+# Open the model troubleshooting lab
+# Navigate to http://localhost:3000/solo/entity-zoom.html
 ```
 
 ### Play Online

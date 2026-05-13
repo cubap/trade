@@ -3,8 +3,10 @@ import { createRenderer, getRendererKeyFromHash } from './rendering/rendererFact
 import setupControls from './ui/controls.js'
 import { Animal, Pawn } from './models/entities/index.js'
 import { School } from './models/entities/immobile/index.js'
+import { FoodSource, Cover, Rock, Stick, FiberPlant } from './models/entities/resources/index.js'
 // Focus on world simulation (no pawns, animals OK)
 import FloraGenerator from './core/FloraGenerator.js'
+import ResourceGenerator from './core/ResourceGenerator.js'
 import WaterGenerator from './core/WaterGenerator.js'
 import RECIPES from './models/crafting/Recipes.js'
 import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
@@ -24,7 +26,22 @@ try {
 }
 
 // Create a larger world
-const world = new World(2000, 2000)
+const runtimeParams = new URLSearchParams(location.search)
+const worldSize = Math.max(6000, Number(runtimeParams.get('worldSize')) || 12000)
+const chunkSize = Math.max(260, Number(runtimeParams.get('chunkSize')) || 420)
+const mapSeedParam = Number(runtimeParams.get('mapSeed'))
+const mapSeed = Number.isFinite(mapSeedParam) && mapSeedParam > 0 ? mapSeedParam : undefined
+const activeChunkRadius = Math.max(2, Number(runtimeParams.get('activeChunks')) || 2)
+const renderChunkRadius = Math.max(2, Number(runtimeParams.get('renderChunks')) || 2)
+const isStreamingWorld = true
+
+// Create a large procedural world tuned for broad livable biome patches.
+const world = new World(worldSize, worldSize, {
+    chunkSize,
+    mapSeed,
+    mapStyle: 'temperate_frontier'
+})
+world.renderChunkRadius = renderChunkRadius
 let activeRendererKey = getRendererKeyFromHash()
 let { key: resolvedRendererKey, instance: activeRenderer } = createRenderer(world, 'game-canvas', activeRendererKey)
 activeRendererKey = resolvedRendererKey
@@ -48,6 +65,7 @@ let trackedPlayerPawn = null
 // Expose runtime objects for debugging in DevTools
 try {
     window.world = world
+    window.mapProfile = world.chunkManager.getMapProfile?.()
     window.renderer = renderer
     window.activeRenderer = activeRenderer
     window.activeRendererKey = activeRendererKey
@@ -100,87 +118,190 @@ function hotSwapRendererFromHash() {
 window.addEventListener('hashchange', hotSwapRendererFromHash)
 
 // Add water features: a river, a couple lakes, and scattered puddles
-const waterGen = new WaterGenerator(world)
-// Long meandering river from west to east
-waterGen.placeRiver({
-    start: { x: 40, y: world.height * 0.55 },
-    end: { x: world.width - 40, y: world.height * 0.45 },
-    width: 18,
-    spacing: 24,
-    meander: 0.45,
-    name: 'River'
-})
-// Two lakes in different regions
-waterGen.placeLake(world.width * 0.28, world.height * 0.78, 90, { name: 'Lake A' })
-waterGen.placeLake(world.width * 0.78, world.height * 0.22, 70, { name: 'Lake B' })
-// Scattered low-capacity puddles that deplete fast once animals drink
-waterGen.placePuddles(18, { x: world.width * 0.1, y: world.height * 0.15, w: world.width * 0.8, h: world.height * 0.7 })
-
-// Populate world with flora instead of abstract resources
-const floraGenerator = new FloraGenerator(world)
-floraGenerator.generateFlora()
-// Add a few forest clumps
-const centers = [
-    { x: world.width * 0.25, y: world.height * 0.3, r: 140 },
-    { x: world.width * 0.65, y: world.height * 0.6, r: 160 },
-    { x: world.width * 0.5, y: world.height * 0.2, r: 110 }
-]
-for (const c of centers) floraGenerator.placeForestClump(c.x, c.y, c.r)
-
-// No pawn/animal initialization – let flora simulate toward equilibrium
-// Seed a small animal population for basic ecology (herbivores + one predator)
-function seedAnimals() {
-    const rabbits = 40
-    for (let i = 0; i < rabbits; i++) {
-        const x = Math.round(Math.random() * world.width)
-        const y = Math.round(Math.random() * world.height)
-        const a = new Animal(`rabbit_${i}`, 'Rabbit', x, y)
-        a.species = 'rabbit'
-        a.diet = 'herbivore'
-        a.traits.speed = 25
-        world.addEntity(a)
-    }
-    // One fox
-    const fox = new Animal('fox_1', 'Fox', Math.round(Math.random() * world.width), Math.round(Math.random() * world.height))
-    fox.species = 'fox'
-    fox.diet = 'carnivore'
-    fox.predator = true
-    fox.traits.speed = 28
-    world.addEntity(fox)
+function hasTag(entity, tag) {
+    if (Array.isArray(entity?.tags)) return entity.tags.includes(tag)
+    if (typeof entity?.tags?.has === 'function') return entity.tags.has(tag)
+    return false
 }
 
-// Seed harvestable crafting resources (rocks, sticks, fiber plants)
-async function seedCraftingResources() {
-    const { Rock, Stick, FiberPlant } = await import('./models/entities/resources/index.js')
-    
-    // Scatter rocks (30-40)
-    const rockCount = 30 + Math.floor(Math.random() * 10)
-    for (let i = 0; i < rockCount; i++) {
-        const x = Math.round(Math.random() * world.width)
-        const y = Math.round(Math.random() * world.height)
-        const rock = new Rock(`rock_${i}`, x, y)
-        world.addEntity(rock)
+function chunkKey(x, y) {
+    return `${x},${y}`
+}
+
+const generatedChunks = new Set()
+const floraGenerator = new FloraGenerator(world)
+const resourceGenerator = new ResourceGenerator(world)
+const waterGen = new WaterGenerator(world)
+
+function populateChunk(chunk) {
+    if (!chunk) return
+
+    const key = chunkKey(chunk.x, chunk.y)
+    if (generatedChunks.has(key)) return
+    generatedChunks.add(key)
+
+    floraGenerator.generateForChunk(chunk)
+    resourceGenerator.generateResourcesForChunk(chunk)
+
+    if (chunk.biome === 'forest' || chunk.biome === 'hills') {
+        const shouldCluster = chunk.biome === 'forest' ? Math.random() < 0.7 : Math.random() < 0.45
+        if (shouldCluster) {
+            const centerX = chunk.worldX + chunk.size * (0.3 + Math.random() * 0.4)
+            const centerY = chunk.worldY + chunk.size * (0.3 + Math.random() * 0.4)
+            floraGenerator.placeForestClump(centerX, centerY, Math.max(50, chunk.size * 0.38))
+        }
     }
-    
-    // Scatter sticks (40-60, more common)
-    const stickCount = 40 + Math.floor(Math.random() * 20)
-    for (let i = 0; i < stickCount; i++) {
-        const x = Math.round(Math.random() * world.width)
-        const y = Math.round(Math.random() * world.height)
-        const stick = new Stick(`stick_${i}`, x, y)
-        world.addEntity(stick)
+
+    if (chunk.settlementSuitability >= 0.7 && Math.random() < 0.3) {
+        const x = chunk.worldX + chunk.size * (0.35 + Math.random() * 0.3)
+        const y = chunk.worldY + chunk.size * (0.35 + Math.random() * 0.3)
+        waterGen.addWater(x, y, {
+            size: 6 + Math.random() * 5,
+            quantity: 240,
+            maxQuantity: 240,
+            replenishRate: 0.55,
+            name: 'Spring'
+        })
     }
-    
-    // Fiber plants in clusters (20-30)
-    const fiberCount = 20 + Math.floor(Math.random() * 10)
-    for (let i = 0; i < fiberCount; i++) {
-        const x = Math.round(Math.random() * world.width)
-        const y = Math.round(Math.random() * world.height)
-        const fiber = new FiberPlant(`fiber_${i}`, x, y)
-        world.addEntity(fiber)
+}
+
+function populateChunksAroundWorldPoint(x, y, radiusChunks = activeChunkRadius) {
+    const { chunkX, chunkY } = world.chunkManager.getChunkCoordsAtPosition(x, y)
+    for (let dx = -radiusChunks; dx <= radiusChunks; dx++) {
+        for (let dy = -radiusChunks; dy <= radiusChunks; dy++) {
+            populateChunk(world.chunkManager.getChunk(chunkX + dx, chunkY + dy))
+        }
     }
-    
-    console.log(`Seeded ${rockCount} rocks, ${stickCount} sticks, ${fiberCount} fiber plants`)
+}
+
+function streamChunksAroundTrackedPawn(pawn, radiusChunks = activeChunkRadius) {
+    if (!pawn) return
+    world.setActiveChunkWindow?.(pawn.x, pawn.y, radiusChunks)
+    populateChunksAroundWorldPoint(pawn.x, pawn.y, radiusChunks)
+}
+
+function randomPointNear(x, y, radius) {
+    const angle = Math.random() * Math.PI * 2
+    const distance = Math.random() * radius
+    return {
+        x: Math.max(10, Math.min(world.width - 10, Math.round(x + Math.cos(angle) * distance))),
+        y: Math.max(10, Math.min(world.height - 10, Math.round(y + Math.sin(angle) * distance)))
+    }
+}
+
+function ensureStarterViability(x, y, waterGen, radius = 170) {
+    const nearby = world.getNearbyEntities(x, y, radius)
+    const foodCount = nearby.filter(entity => hasTag(entity, 'food')).length
+    const waterCount = nearby.filter(entity => hasTag(entity, 'water')).length
+    const coverCount = nearby.filter(entity => hasTag(entity, 'cover')).length
+    const rockCount = nearby.filter(entity => entity?.subtype === 'rock').length
+    const stickCount = nearby.filter(entity => entity?.subtype === 'stick').length
+    const fiberCount = nearby.filter(entity => hasTag(entity, 'fiber') || entity?.subtype === 'fiber_plant').length
+
+    const missingWater = Math.max(0, 2 - waterCount)
+    const missingFood = Math.max(0, 8 - foodCount)
+    const missingCover = Math.max(0, 4 - coverCount)
+    const missingRock = Math.max(0, 4 - rockCount)
+    const missingStick = Math.max(0, 6 - stickCount)
+    const missingFiber = Math.max(0, 4 - fiberCount)
+
+    for (let i = 0; i < missingWater; i++) {
+        const point = randomPointNear(x, y, radius * 0.7)
+        waterGen.addWater(point.x, point.y, {
+            size: 10 + Math.random() * 5,
+            quantity: 260,
+            maxQuantity: 260,
+            replenishRate: 0.6,
+            name: 'Starter Spring'
+        })
+    }
+
+    for (let i = 0; i < missingFood; i++) {
+        const point = randomPointNear(x, y, radius)
+        world.addEntity(new FoodSource(`starter_food_${x}_${y}_${i}`, 'Forage Patch', point.x, point.y))
+    }
+
+    for (let i = 0; i < missingCover; i++) {
+        const point = randomPointNear(x, y, radius)
+        world.addEntity(new Cover(`starter_cover_${x}_${y}_${i}`, 'Starter Cover', point.x, point.y))
+    }
+
+    for (let i = 0; i < missingRock; i++) {
+        const point = randomPointNear(x, y, radius)
+        world.addEntity(new Rock(`starter_rock_${x}_${y}_${i}`, point.x, point.y))
+    }
+
+    for (let i = 0; i < missingStick; i++) {
+        const point = randomPointNear(x, y, radius)
+        world.addEntity(new Stick(`starter_stick_${x}_${y}_${i}`, point.x, point.y))
+    }
+
+    for (let i = 0; i < missingFiber; i++) {
+        const point = randomPointNear(x, y, radius)
+        world.addEntity(new FiberPlant(`starter_fiber_${x}_${y}_${i}`, point.x, point.y))
+    }
+}
+
+function pickPlayerSpawnPoint() {
+    const basins = world.chunkManager.getSettlementBasins?.(6) ?? []
+    if (basins.length === 0) {
+        return {
+            x: Math.round(world.width * 0.5),
+            y: Math.round(world.height * 0.5)
+        }
+    }
+
+    const basin = basins[Math.floor(Math.random() * Math.min(3, basins.length))]
+    return {
+        x: Math.round(basin.x),
+        y: Math.round(basin.y)
+    }
+}
+
+// Populate only the nearby world bubble instead of the whole map.
+const settlementBasins = world.chunkManager.getSettlementBasins?.(10) ?? []
+
+// No whole-world initialization now; population is streamed from the pawn outward.
+function seedAnimalsNearPawn(pawn, radiusChunks = 2) {
+    if (!pawn) return
+
+    const { chunkX, chunkY } = world.chunkManager.getChunkCoordsAtPosition(pawn.x, pawn.y)
+    const candidateChunks = []
+
+    for (let dx = -radiusChunks; dx <= radiusChunks; dx++) {
+        for (let dy = -radiusChunks; dy <= radiusChunks; dy++) {
+            const chunk = world.chunkManager.getChunk(chunkX + dx, chunkY + dy)
+            if (chunk) candidateChunks.push(chunk)
+        }
+    }
+
+    const spawnAnimal = (id, name, species, x, y, diet, predator = false) => {
+        const animal = new Animal(id, name, x, y)
+        animal.species = species
+        animal.diet = diet
+        animal.predator = predator
+        animal.traits.speed = predator ? 28 : 25
+        world.addEntity(animal)
+    }
+
+    for (const chunk of candidateChunks.slice(0, 6)) {
+        const x = chunk.worldX + chunk.size * (0.2 + Math.random() * 0.6)
+        const y = chunk.worldY + chunk.size * (0.2 + Math.random() * 0.6)
+        spawnAnimal(`rabbit_${chunk.x}_${chunk.y}`, 'Rabbit', 'rabbit', Math.round(x), Math.round(y), 'herbivore')
+    }
+
+    const predatorChunk = candidateChunks[Math.floor(Math.random() * candidateChunks.length)]
+    if (predatorChunk) {
+        const x = predatorChunk.worldX + predatorChunk.size * (0.25 + Math.random() * 0.5)
+        const y = predatorChunk.worldY + predatorChunk.size * (0.25 + Math.random() * 0.5)
+        spawnAnimal(`fox_${predatorChunk.x}_${predatorChunk.y}`, 'Fox', 'fox', Math.round(x), Math.round(y), 'carnivore', true)
+    }
+}
+
+async function seedCraftingResourcesNearPawn(pawn) {
+    if (!pawn) return
+    populateChunksAroundWorldPoint(pawn.x, pawn.y, activeChunkRadius)
+    seedAnimalsNearPawn(pawn, 2)
 }
 
 // Simple overlay to show presimulation progress
@@ -213,7 +334,7 @@ function preSimulateAndStart() {
     const params = new URLSearchParams(location.search)
     const host = location.hostname
     const isDevHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
-    const defaultPreSimDays = isDevHost ? 7 : 30
+    const defaultPreSimDays = isStreamingWorld ? 0 : (isDevHost ? 7 : 30)
     const preSimDays = Number(params.get('preSimDays')) || defaultPreSimDays
     const overrideTicks = Number(params.get('preSimTicks')) || null
     // 1 day = 6 game hours = 360 ticks
@@ -224,6 +345,35 @@ function preSimulateAndStart() {
     let lastPct = -1
     const start = performance.now()
     console.log(`Pre-simulating flora: ${preSimDays} days (${totalTicks} ticks) in batches of ${batch}…`)
+
+    if (totalTicks <= 0) {
+        setTimeout(async () => {
+            const spawnPoint = pickPlayerSpawnPoint()
+            const spawnX = spawnPoint.x
+            const spawnY = spawnPoint.y
+            const player = new Pawn('player_1', 'Player', spawnX, spawnY)
+            world.addEntity(player)
+            world.setActiveChunkWindow?.(player.x, player.y, activeChunkRadius)
+            trackedPlayerPawn = player
+            playerMode.setTrackedPawn(player)
+            renderer.setFollowEntity?.(player)
+            window.player = player
+
+            populateChunksAroundWorldPoint(player.x, player.y, activeChunkRadius)
+            seedAnimalsNearPawn(player, activeChunkRadius)
+            await seedCraftingResourcesNearPawn(player)
+            ensureStarterViability(spawnX, spawnY, waterGen)
+
+            const perception = player.traits?.detection ?? 100
+            renderer.camera.setZoomToShowRadius?.(perception, 0.85)
+            const school = new School('school_1', 'School', spawnX + 60, spawnY + 40)
+            world.addEntity(school)
+
+            overlay.remove()
+            startMainLoop()
+        }, 0)
+        return
+    }
 
     function updateProgress() {
         const pct = Math.floor((processed / totalTicks) * 100)
@@ -259,15 +409,19 @@ function preSimulateAndStart() {
             const deltaTicks = Math.round(deltaSeconds / secondsPerTick)
             if (deltaTicks > 0) world.fastForwardTicks(deltaTicks)
 
-            seedAnimals()
-            await seedCraftingResources()
-            // Add one player pawn and auto-follow
-            const spawnX = Math.round(world.width * 0.5)
-            const spawnY = Math.round(world.height * 0.5)
+            // Add one player pawn in a high-suitability settlement basin.
+            const spawnPoint = pickPlayerSpawnPoint()
+            const spawnX = spawnPoint.x
+            const spawnY = spawnPoint.y
+            ensureStarterViability(spawnX, spawnY, waterGen)
             const player = new Pawn('player_1', 'Player', spawnX, spawnY)
             world.addEntity(player)
-            playerMode.setTrackedPawn(player)
+            world.setActiveChunkWindow?.(player.x, player.y, activeChunkRadius)
             trackedPlayerPawn = player
+            populateChunksAroundWorldPoint(player.x, player.y, activeChunkRadius)
+            seedAnimalsNearPawn(player, activeChunkRadius)
+            await seedCraftingResourcesNearPawn(player)
+            playerMode.setTrackedPawn(player)
             renderer.setFollowEntity?.(player)
             try {
                 window.player = player
@@ -454,6 +608,11 @@ function syncProgressionState() {
     _feedbackUI?.onProgressionPayload(payload, trackedPlayerPawn)
 }
 
+function streamAroundTrackedPawn() {
+    if (!trackedPlayerPawn) return
+    populateChunksAroundWorldPoint(trackedPlayerPawn.x, trackedPlayerPawn.y, activeChunkRadius)
+}
+
 function startMainLoop() {
     // Setup UI controls
     controls = setupControls(world, renderer, playerMode, {
@@ -507,6 +666,7 @@ function simulationLoop(timestamp) {
     try {
         // Only update the world if not paused
     if (!controls?.isPaused?.()) {
+            streamChunksAroundTrackedPawn(trackedPlayerPawn, activeChunkRadius)
             world.update(timestamp)
             syncProgressionState()
             // Refresh mode-switcher unlock state every 60 ticks (~30 s at 2 ticks/s)

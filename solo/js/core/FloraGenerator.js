@@ -23,10 +23,9 @@ class FloraGenerator {
     generateForChunk(chunk) {
         // Numbers scale by biome
         const biome = chunk.biome
-        const size = chunk.size
-        const baseTrees = biome === 'forest' ? 20 : biome === 'plains' ? 4 : 8
-        const baseBushes = biome === 'forest' ? 12 : biome === 'plains' ? 8 : 10
-        const baseGrass = biome === 'plains' ? 30 : biome === 'forest' ? 18 : 22
+        const baseTrees = biome === 'forest' ? 20 : biome === 'plains' ? 6 : biome === 'hills' ? 9 : 8
+        const baseBushes = biome === 'forest' ? 12 : biome === 'plains' ? 9 : biome === 'hills' ? 10 : 10
+        const baseGrass = biome === 'plains' ? 30 : biome === 'forest' ? 18 : biome === 'hills' ? 20 : 22
 
         this.placeTrees(chunk, baseTrees)
         this.placeBushes(chunk, baseBushes)
@@ -145,11 +144,13 @@ class FloraGenerator {
     pickTreeVariety(biome) {
         const forest = ['oak', 'maple', 'pine']
         const plains = ['oak', 'maple']
+        const hills = ['oak', 'pine']
         const mountain = ['pine']
         const wetland = ['oak']
         switch (biome) {
             case 'forest': return forest[Math.floor(Math.random() * forest.length)]
             case 'plains': return plains[Math.floor(Math.random() * plains.length)]
+            case 'hills': return hills[Math.floor(Math.random() * hills.length)]
             case 'mountain': return mountain[0]
             case 'wetland': return wetland[0]
             default: return 'oak'

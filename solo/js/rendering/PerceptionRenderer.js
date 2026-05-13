@@ -11,9 +11,19 @@ class PerceptionRenderer {
     
     // Get entities to render based on perception mode
     getEntitiesToRender(followedEntity) {
-        if (!this.perceptionMode || !followedEntity) {
-            // Render all entities in normal mode
+        if (!followedEntity) {
             return Array.from(this.world.entitiesMap.values())
+        }
+
+        const chunkRadius = this.world?.renderChunkRadius ?? 3
+        const baseEntities = this.world.chunkManager?.getEntitiesInChunkRadiusAtPosition
+            ? this.world.chunkManager.getEntitiesInChunkRadiusAtPosition(followedEntity.x, followedEntity.y, chunkRadius, true)
+            : Array.from(this.world.entitiesMap.values())
+
+        if (!this.perceptionMode) {
+            const visible = [...baseEntities]
+            if (!visible.includes(followedEntity)) visible.push(followedEntity)
+            return visible
         }
         
         // In perception mode, only render entities the followed entity can perceive

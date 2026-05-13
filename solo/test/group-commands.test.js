@@ -160,3 +160,61 @@ test('Group Commands - leader-issued obey reassigns group leadership', () => {
   assert.strictEqual(leader.groupState.leaderId, promoted.id)
   assert.strictEqual(leader.groupState.role, 'member')
 })
+
+test('Group Memberships - supports multiple group types but single allegiance per type', () => {
+  const civicLeaderA = new Pawn('l1', 'Civic A', 0, 0)
+  const civicLeaderB = new Pawn('l2', 'Civic B', 20, 20)
+  const tribalLeader = new Pawn('l3', 'Tribal', 40, 40)
+  const member = new Pawn('m1', 'Member', 10, 10)
+
+  createWorldWith(civicLeaderA, civicLeaderB, tribalLeader, member)
+
+  const civicA = civicLeaderA.createGroup('civic-a')
+  const tribalA = tribalLeader.createGroup('tribal-a')
+
+  member.joinGroup(civicLeaderA, civicA)
+  member.joinGroup(tribalLeader, tribalA)
+
+  assert.strictEqual(member.groupAffiliationsByType.civic, civicA)
+  assert.strictEqual(member.groupAffiliationsByType.tribal, tribalA)
+  assert.ok(member.groupMemberships[civicA])
+  assert.ok(member.groupMemberships[tribalA])
+
+  const civicB = civicLeaderB.createGroup('civic-b')
+  member.joinGroup(civicLeaderB, civicB)
+
+  assert.strictEqual(member.groupAffiliationsByType.civic, civicB)
+  assert.ok(!member.groupMemberships[civicA], 'Previous civic allegiance should be replaced')
+  assert.ok(member.groupMemberships[tribalA], 'Different group type should remain')
+})
+
+test('Civic Negotiation - expires and dissolves groups under three members', () => {
+  const leader = new Pawn('p1', 'Leader', 0, 0)
+  const member = new Pawn('p2', 'Member', 12, 8)
+  const world = createWorldWith(leader, member)
+
+  const groupId = leader.createGroup('civic-expiring')
+  member.joinGroup(leader, groupId)
+
+  leader.groupNegotiation = {
+    type: 'civic',
+    groupId,
+    pendingThird: true,
+    recruitmentDeadlineTick: 10
+  }
+
+  member.groupNegotiation = {
+    type: 'civic',
+    groupId,
+    pendingThird: true,
+    recruitmentDeadlineTick: 10
+  }
+
+  world.clock.currentTick = 50
+  leader.updateGroupDynamics(world.clock.currentTick)
+
+  assert.strictEqual(leader.groupState.id, null)
+  assert.strictEqual(member.groupState.id, null)
+  assert.ok(!leader.groupMemberships[groupId])
+  assert.ok(!member.groupMemberships[groupId])
+})

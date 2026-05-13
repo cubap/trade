@@ -384,8 +384,61 @@ function setupControls(world, renderer, playerMode, options = {}) {
         commandStatus.textContent = `Cmd: refreshed (${leaderSelect.options.length} pawns)`
     }
     refreshPawnSelectors()
+
+    // Civic group formation test
+    const civicInitiatorSelect = document.createElement('select')
+    civicInitiatorSelect.style.marginLeft = '10px'
+    const civicFormationButton = document.createElement('button')
+    civicFormationButton.textContent = 'Check Civic'
+    civicFormationButton.style.marginLeft = '6px'
+    const civicStatus = document.createElement('span')
+    civicStatus.style.marginLeft = '8px'
+    civicStatus.style.fontSize = '12px'
+    civicStatus.style.color = '#9f9'
+    civicStatus.textContent = 'Civic: ready'
+
+    const refreshCivicSelector = () => {
+        const pawns = Array.from(world.entitiesMap.values()).filter(e => e.subtype === 'pawn')
+        const previousValue = civicInitiatorSelect.value
+
+        civicInitiatorSelect.innerHTML = ''
+        for (const pawn of pawns) {
+            const option = document.createElement('option')
+            option.value = pawn.id
+            option.textContent = `${pawn.name}`
+            civicInitiatorSelect.appendChild(option)
+        }
+
+        if (previousValue && pawns.some(p => p.id === previousValue)) {
+            civicInitiatorSelect.value = previousValue
+        }
+    }
+
+    civicFormationButton.onclick = () => {
+        refreshCivicSelector()
+        const initiator = world.entitiesMap.get(civicInitiatorSelect.value)
+
+        if (!initiator || initiator.subtype !== 'pawn') {
+            civicStatus.textContent = 'Civic: select valid pawn'
+            return
+        }
+
+        const trigger = initiator.checkCivicGroupFormationTrigger?.()
+
+        if (!trigger) {
+            civicStatus.textContent = `Civic: no trigger for ${initiator.name}`
+            return
+        }
+
+        const memberNames = trigger.members.map(m => m.name).join(', ')
+        const trustStr = (trigger.baseTrust ?? 0).toFixed(2)
+        civicStatus.textContent = `Civic: ${memberNames} (trust: ${trustStr})`
+        console.log('Civic formation trigger:', trigger)
+    }
+
+    refreshCivicSelector()
     
-    // Add controls to panel (primary + collapsible dev tools)
+// Add controls to panel (primary + collapsible dev tools)
     primaryRow.appendChild(pauseButton)
     primaryRow.appendChild(speedSelect)
     primaryRow.appendChild(stepButton)
@@ -406,6 +459,9 @@ function setupControls(world, renderer, playerMode, options = {}) {
     devRow.appendChild(issueCommandButton)
     devRow.appendChild(refreshPawnsButton)
     devRow.appendChild(commandStatus)
+    devRow.appendChild(civicInitiatorSelect)
+    devRow.appendChild(civicFormationButton)
+    devRow.appendChild(civicStatus)
     devRow.appendChild(phaseOverrideLabel)
     devRow.appendChild(phaseOverrideSelect)
     devRow.appendChild(applyPhaseButton)

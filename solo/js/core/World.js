@@ -3,13 +3,22 @@ import GameClock from './GameClock.js'
 import ChunkManager from './ChunkManager.js'
 
 class World {
-    constructor(width = 2000, height = 2000) {
+    constructor(width = 2000, height = 2000, options = {}) {
         this.width = width
         this.height = height
         this.entitiesMap = new Map()
         this.actionQueue = new ActionQueue()
         this.clock = new GameClock(500)  // 500ms per tick
-        this.chunkManager = new ChunkManager(width, height)
+        this.activeChunkRadius = options.activeChunkRadius ?? 2
+        this.chunkManager = new ChunkManager(width, height, options.chunkSize ?? 200, {
+            seed: options.mapSeed,
+            mapStyle: options.mapStyle
+        })
+    }
+
+    setActiveChunkWindow(centerX, centerY, radius = this.activeChunkRadius) {
+        this.activeChunkRadius = radius
+        return this.chunkManager.syncActiveChunkWindow(this, centerX, centerY, radius)
     }
 
     addEntity(entity) {
@@ -72,6 +81,8 @@ class World {
             }
             this.entitiesMap.delete(id)
         }
+
+        this.chunkManager.advanceDormantSimulation?.(this, currentTick)
         
         // Only log occasional ticks to avoid console spam
         if (this.clock.currentTick % 20 === 0) {
@@ -149,6 +160,8 @@ class World {
                     this.entitiesMap.delete(id)
                 }
             }
+
+            this.chunkManager.advanceDormantSimulation?.(this, currentTick)
         }
     }
 }
