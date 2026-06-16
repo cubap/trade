@@ -1,4 +1,4 @@
-import { MODES, OVERSEER_SKILL_THRESHOLD, GOD_SKILL_THRESHOLD } from '../core/PlayerMode.js'
+import { MODES } from '../core/PlayerMode.js'
 
 const MODE_LABELS = {
     [MODES.PAWN]: '🧍 Pawn',
@@ -8,8 +8,8 @@ const MODE_LABELS = {
 
 const MODE_DESCRIPTIONS = {
     [MODES.PAWN]: `Locked pawn-follow view (2D fallback).\nTrue first-person unlocks with 3D renderer backend.`,
-    [MODES.OVERSEER]: `Wider view + map waypoints.\nUnlocks at ${OVERSEER_SKILL_THRESHOLD} total skill.`,
-    [MODES.GOD]: `Full world view + trade overlay.\nUnlocks at ${GOD_SKILL_THRESHOLD} total skill with group membership.`
+    [MODES.OVERSEER]: `Wider view + map waypoints.`,
+    [MODES.GOD]: `Full world view + trade overlay.`
 }
 
 /**
@@ -60,25 +60,6 @@ export function setupModeSwitcher(playerMode, container) {
 
     container.appendChild(wrapper)
 
-    // Badge showing next unlock hint
-    const hint = document.createElement('div')
-    hint.id = 'mode-unlock-hint'
-    hint.style.cssText = `
-        position: fixed;
-        bottom: 50px;
-        right: 10px;
-        background: rgba(30,30,40,0.85);
-        color: #94a3b8;
-        padding: 5px 10px;
-        border-left: 3px solid #3b82f6;
-        font-size: 11px;
-        font-family: monospace;
-        border-radius: 4px;
-        display: none;
-        z-index: 1100;
-    `
-    document.body.appendChild(hint)
-
     function update() {
         const unlocked = playerMode.getUnlockedModes()
         const current = playerMode.currentMode
@@ -94,25 +75,7 @@ export function setupModeSwitcher(playerMode, container) {
         }
 
         // Show next-unlock hint if not everything is unlocked
-        if (!unlocked.has(MODES.GOD)) {
-            const pawn = playerMode.trackedPawn
-            const total = pawn ? Object.values(pawn.skills || {}).reduce((s, v) => s + (v || 0), 0) : 0
-            if (!unlocked.has(MODES.OVERSEER)) {
-                hint.textContent = `Overseer unlocks at ${OVERSEER_SKILL_THRESHOLD} total skill (now ${total})`
-                hint.style.display = 'block'
-            } else {
-                const hasMembership = pawn?.reputation?.membership &&
-                    Object.keys(pawn.reputation.membership).length > 0
-                if (!hasMembership) {
-                    hint.textContent = `God mode unlocks at ${GOD_SKILL_THRESHOLD} skill + group membership (now ${total})`
-                } else {
-                    hint.textContent = `God mode unlocks at ${GOD_SKILL_THRESHOLD} total skill (now ${total})`
-                }
-                hint.style.display = 'block'
-            }
-        } else {
-            hint.style.display = 'none'
-        }
+        // (Removed — unlock hints were too dramatic)
     }
 
     // Keep buttons in sync whenever the mode changes

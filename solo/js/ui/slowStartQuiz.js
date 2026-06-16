@@ -12,6 +12,7 @@ const SLOW_START_QUESTIONS = [
         id: 'firstImpulse',
         trigger: 'wake', // Triggers immediately when pawn wakes
         prompt: 'You wake up in an unfamiliar place. What do you do first?',
+        thought: 'Where do I start?',
         choices: [
             { label: 'Look around', bias: 'explore', weight: 1.4 },
             { label: 'Check for food', bias: 'survive', weight: 1.4 },
@@ -24,6 +25,7 @@ const SLOW_START_QUESTIONS = [
         id: 'resourcePriority',
         trigger: 'resource_nearby', // Triggers when pawn is near a resource
         prompt: 'You spot a rock, a bush, and grass. Which do you approach?',
+        thought: 'This could all be useful…',
         choices: [
             { label: 'The rock', bias: 'craft', weight: 1.3 },
             { label: 'The bush', bias: 'survive', weight: 1.3 },
@@ -36,6 +38,7 @@ const SLOW_START_QUESTIONS = [
         id: 'socialTendency',
         trigger: 'entity_nearby', // Triggers when pawn encounters another entity
         prompt: 'You hear movement nearby. Another being might be close.',
+        thought: 'I\'m not alone, am I?',
         choices: [
             { label: 'Call out', bias: 'social', weight: 1.4 },
             { label: 'Watch quietly', bias: 'explore', weight: 1.2 },
@@ -48,6 +51,7 @@ const SLOW_START_QUESTIONS = [
         id: 'longTermDrive',
         trigger: 'needs_surface', // Triggers when first need drops below 70
         prompt: 'If you could build one thing right now, what would it be?',
+        thought: 'I guess this is home…',
         choices: [
             { label: 'A shelter', bias: 'build', weight: 1.4 },
             { label: 'A tool', bias: 'craft', weight: 1.4 },
@@ -208,6 +212,12 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
     function showQuestion(question, index) {
         currentQuestion = question
         questionIndex = index
+
+        // Add contextual thought to pawn's thoughtLog so the thought dome picks it up
+        const pawn = pawnGetter?.()
+        if (pawn && question.thought) {
+            pawn.addThought(question.thought, 'quiz')
+        }
 
         container.innerHTML = ''
         container.style.opacity = '1'

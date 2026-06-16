@@ -14,7 +14,7 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
     document.body.appendChild(container)
 
     let camBobPhase = 0
-    let lastThoughtTick = -1
+    let lastThoughtIndex = -1 // Track by log length, not tick (multiple thoughts can share a tick)
     let headYaw = 0 // Current head rotation angle (radians)
     let targetHeadYaw = 0 // Where the head wants to turn
 
@@ -87,14 +87,16 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
         const now = performance.now()
 
         // --- Read latest thought from pawn's thoughtLog ---
-        const latest = pawn.thoughtLog?.[pawn.thoughtLog.length - 1]
-        if (latest) {
-            const thoughtTextContent = typeof latest === 'string' ? latest : latest.text
-            const thoughtTick = latest.tick ?? 0
-            // Only update if a genuinely new thought arrived
-            if (thoughtTextContent && thoughtTick !== lastThoughtTick) {
-                addThoughtEntry(thoughtTextContent, thoughtTick)
-                lastThoughtTick = thoughtTick
+        const log = pawn.thoughtLog ?? []
+        if (log.length > lastThoughtIndex) {
+            // New thought(s) arrived — show the most recent one
+            const latest = log[log.length - 1]
+            if (latest) {
+                const thoughtTextContent = typeof latest === 'string' ? latest : latest.text
+                if (thoughtTextContent) {
+                    addThoughtEntry(thoughtTextContent, latest.tick ?? 0)
+                    lastThoughtIndex = log.length - 1
+                }
             }
         }
 

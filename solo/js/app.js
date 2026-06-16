@@ -14,10 +14,10 @@ import PlayerMode from './core/PlayerMode.js'
 import ProgressionController from './core/ProgressionController.js'
 import { setupInteractionPanel } from './ui/interactionPanel.js'
 import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
-import { SPAWN_THOUGHTS } from './ui/openingScreen.js'
 import { setupThoughtDome } from './ui/thoughtDome.js'
 import { setupSlowStartQuiz } from './ui/slowStartQuiz.js'
 import { setupCameraTuning } from './ui/cameraTuning.js'
+import { setupJournal } from './ui/journalOverlay.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -347,18 +347,8 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
     // Setup camera tuning panel (press C to toggle)
     setupCameraTuning(() => activeRenderer, () => controls)
 
-    // Queue initial spawn thoughts — seed the first thought into the pawn's thoughtLog so the dome picks it up
-    const firstSpawn = SPAWN_THOUGHTS[0]
-    if (firstSpawn) {
-        player.addThought(firstSpawn.text, 'spawn')
-    }
-    // Queue subsequent spawn thoughts
-    for (let i = 1; i < SPAWN_THOUGHTS.length; i++) {
-        const thought = SPAWN_THOUGHTS[i]
-        setTimeout(() => {
-            player.addThought(thought.text, 'spawn')
-        }, thought.delay)
-    }
+    // Setup journal overlay (press J to toggle)
+    const journal = setupJournal(() => trackedPlayerPawn)
 
     // Notify server
     try {
