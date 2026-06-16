@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OBJLoader } from '/node_modules/three/examples/jsm/loaders/OBJLoader.js'
 import { FBXLoader } from '/node_modules/three/examples/jsm/loaders/FBXLoader.js'
+import { GLTFLoader } from '/node_modules/three/examples/jsm/loaders/GLTFLoader.js'
 import PerceptionRenderer from './PerceptionRenderer.js'
 
 class ThreeRenderer {
@@ -48,6 +49,7 @@ class ThreeRenderer {
         this._smoothedCameraTarget = new THREE.Vector3(this.viewX, 0, this.viewY)
         this._firstPersonYaw = 0
         this._firstPersonYawVelocity = 0
+        this._smoothedHeadPos = new THREE.Vector3(this.viewX, this.firstPersonHeight, this.viewY)
         this._timeUniform = { value: 0 }
         this._waterShimmerUniform = { value: 1.8 }
         this._waterSpeedUniform = { value: 1.2 }
@@ -445,17 +447,17 @@ class ThreeRenderer {
             }
         )
 
-        const loader = new FBXLoader()
+        const loader = new GLTFLoader()
         loader.load(
-            '/solo/assets/models/opengameart/pawn_rpg_kit/source/boy.fbx',
-            object => {
-                this._pawnModelRoot = object
+            '/solo/assets/models/pawn.glb',
+            (gltf) => {
+                this._pawnModelRoot = gltf.scene
                 this._refreshPawnMeshes()
             },
             undefined,
-            error => {
+            (error) => {
                 this._pawnModelFailed = true
-                console.warn('[three] failed to load OpenGameArt pawn model, using procedural pawn', error)
+                console.warn('[three] failed to load pawn.glb, using procedural pawn', error)
             }
         )
     }
@@ -915,7 +917,7 @@ class ThreeRenderer {
                 geometry: new THREE.CylinderGeometry(1.8, 2.3, 7.5, 6),
                 materialColor: entity?.color || '#3498db',
                 usePawnModel: !!this._pawnModelRoot,
-                modelScale: 0.022 + unitA * 0.006,
+                modelScale: 2.5 + unitA * 0.5, // GLB scale (adjust based on model units)
                 baseY: 3.75,
                 rotation: { x: 0, y: 0, z: 0 },
                 lerp: 0.38
@@ -1449,7 +1451,7 @@ class ThreeRenderer {
 
     _buildPawnModelInstance(entity, profile) {
         const model = this._pawnModelRoot.clone(true)
-        const scale = profile.modelScale ?? 0.024
+        const scale = profile.modelScale ?? 8 // Scale to match game world units (firstPersonHeight ~8)
         model.scale.setScalar(scale)
         model.userData.profile = profile
         model.userData.motionInitialized = false
@@ -1734,52 +1736,75 @@ class ThreeRenderer {
     }
 
     _createHeadMesh() {
-        // Create a 3D head group that will be positioned in the scene
+        // Create a 3D head group — uses the pawn.glb model instead of procedural dome
         const headGroup = new THREE.Group()
 
-        // Build a single merged geometry: head + ears as one mesh
-        // This ensures uniform translucency without separate-looking parts
-        const geometries = []
+        // Load the pawn model for the head mesh
+        const loader = new GLTFLoader()
+        loader.load(
+            '/solo/assets/models/pawn.glb',
+            (gltf) => {
+                // Remove any placeholder (we'll add a simple sphere as fallback until model loads)
+                while (headGroup.children.length) {
+                    const child = headGroup.children[0]
+                    headGroup.remove(child)
+                    if (child.geometry) child.geometry.dispose()
+                    if (child.material) {
+                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose())
+                        else child.material.dispose()
+                    }
+                }
 
-        // Main head shape — ellipsoid (wider than tall, like a skull crown)
-        const headGeometry = new THREE.SphereGeometry(1, 32, 24)
-        headGeometry.scale(1.2, 0.9, 0.85) // Wider, shorter, slightly compressed depth
-        geometries.push(headGeometry)
+                const model = gltf.scene
+                // Fix GLTF orientation — model is lying on its back, need to stand it up
+                // Rotate around Z to flip from back to upright sitting position
+                model.rotation.z = Math.PI
+                
+                // Apply translucent teal material to all meshes
+                model.traverse(node => {
+                    if (node.isMesh) {
+                        node.material = new THREE.MeshStandardMaterial({
+                            color: 0x5ec4c0,
+                            roughness: 0.3,
+                            metalness: 0.05,
+                            transparent: true,
+                            opacity: 0.3,
+                            side: THREE.DoubleSide,
+                            depthWrite: false
+                        })
+                    }
+                })
 
-        // Left ear — teddy bear style nub (merged into same geometry)
-        const earGeometry = new THREE.SphereGeometry(0.22, 16, 12)
-        const leftEarGeo = earGeometry.clone()
-        leftEarGeo.translate(-0.6, 0.75, 0)
-        leftEarGeo.scale(1, 0.9, 0.8)
-        geometries.push(leftEarGeo)
+                // Center the model
+                this._centerModelToOrigin(model)
+                headGroup.add(model)
+                this._headMeshLoaded = true
+            },
+            undefined,
+            (error) => {
+                console.warn('[three] failed to load pawn.glb for head mesh, using procedural dome', error)
+                this._headMeshFailed = true
+            }
+        )
 
-        const rightEarGeo = earGeometry.clone()
-        rightEarGeo.translate(0.6, 0.75, 0)
-        rightEarGeo.scale(1, 0.9, 0.8)
-        geometries.push(rightEarGeo)
-
-        // Merge all geometries into one
-        const mergedGeometry = this._mergeGeometries(geometries)
-
-        // Translucent purple material for the "through-the-head" HUD feel
-        const headMaterial = new THREE.MeshStandardMaterial({
-            color: 0x8b7288, // Muted purple-gray
-            roughness: 0.5,
-            metalness: 0.1,
+        // Add a temporary placeholder sphere until the model loads
+        const placeholderGeo = new THREE.SphereGeometry(1, 16, 12)
+        const placeholderMat = new THREE.MeshStandardMaterial({
+            color: 0x5ec4c0,
+            roughness: 0.3,
             transparent: true,
-            opacity: 0.35, // Semi-transparent so we can see through
-            side: THREE.DoubleSide,
-            depthWrite: false, // Don't write to depth buffer for transparency
+            opacity: 0.3,
+            depthWrite: false
         })
-
-        const headMesh = new THREE.Mesh(mergedGeometry, headMaterial)
-        headGroup.add(headMesh)
+        const placeholder = new THREE.Mesh(placeholderGeo, placeholderMat)
+        placeholder.name = 'placeholder'
+        headGroup.add(placeholder)
 
         // Position at world origin (will be updated in _updateHeadMesh)
         headGroup.position.set(0, 2, 0)
-        headGroup.scale.setScalar(2.5) // Scale up for proper size
+        headGroup.scale.setScalar(2.5)
 
-        // Add to scene (not camera)
+        // Add to scene
         this.scene.add(headGroup)
         headGroup.visible = true
 
@@ -1840,67 +1865,97 @@ class ThreeRenderer {
     _updateHeadMesh() {
         if (!this._headMesh) return
 
-        // Always show head for now
-        this._headMesh.visible = true
-
-        // Position head at the bottom of the screen (in world space)
-        const camera = this._camera3d
         const head = this._headMesh
+        const pawn = this.followedEntity
 
-        // Get camera direction
-        const forward = new THREE.Vector3(0, 0, -1)
-        forward.applyQuaternion(camera.quaternion)
-        const right = new THREE.Vector3(1, 0, 0)
-        right.applyQuaternion(camera.quaternion)
-        const up = new THREE.Vector3(0, 1, 0)
-        up.applyQuaternion(camera.quaternion)
+        // Over-the-shoulder: head sits at the pawn's position, visible in center of viewport
+        // Camera is behind and above, looking over the head
+        if (pawn && this.firstPersonLocked) {
+            const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
+            const headHeight = eyeGround + this.firstPersonHeight * 0.85
+            const targetPos = new THREE.Vector3(pawn.x, headHeight, pawn.y)
 
-        // Position: at the bottom of the screen, slightly lower so crown drops off
-        // Camera is looking down, so "bottom of screen" is further away from camera
-        const distance = 8 // Units from camera (closer)
-        const bottomOffset = 4 // Units down from center (pushed further down)
+            // Smooth head position to match camera catch-up (same response/damping)
+            const headResponse = 0.18
+            const current = this._smoothedHeadPos
+            current.x += (targetPos.x - current.x) * headResponse
+            current.y += (targetPos.y - current.y) * headResponse
+            current.z += (targetPos.z - current.z) * headResponse
+            
+            // Apply procedural animations as offset to the smoothed position
+            const animOffset = this._getProceduralAnimationOffset(pawn)
+            head.position.set(current.x, current.y + animOffset, current.z)
 
-        // Calculate position at bottom of screen
-        const targetPos = camera.position.clone()
-            .add(forward.clone().multiplyScalar(distance))
-            .add(up.clone().multiplyScalar(-bottomOffset))
+            // Head faces the camera's look direction (same as pawn's facing)
+            const dir = this._smoothedFirstPersonDir
+            const lookTarget = new THREE.Vector3(
+                current.x + dir.x,
+                current.y,
+                current.z + dir.z
+            )
+            head.lookAt(lookTarget)
 
-        head.position.copy(targetPos)
+            // Apply head yaw from thoughtDome (subtle turn around Y axis)
+            const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
+            head.rotation.y += headYaw * 0.3
 
-        // Make head face the camera
-        head.lookAt(camera.position)
-
-        // Apply head yaw from thoughtDome (rotation around Y axis)
-        const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
-        head.rotation.y += headYaw * 0.5
+            // Make head visible in over-the-shoulder mode
+            head.visible = true
+        } else {
+            // Hide head in non-first-person modes
+            head.visible = false
+            return
+        }
 
         // Update head material with color gradient based on turn direction
-        // Since ears are merged, the color shift is our main indicator of turning
-        if (this._headMesh.children[0]?.material) {
-            const health = this.followedEntity?.traits?.health ?? 100
-            const healthMax = this.followedEntity?.traits?.healthMax ?? 100
-            const healthPct = Math.max(0, Math.min(1, health / healthMax))
+        // Handle both single mesh and GLTF model (multiple children)
+        const health = this.followedEntity?.traits?.health ?? 100
+        const healthMax = this.followedEntity?.traits?.healthMax ?? 100
+        const healthPct = Math.max(0, Math.min(1, health / healthMax))
 
-            // Base purple color
-            const baseR = 0.545
-            const baseG = 0.447
-            const baseB = 0.522
+        // Base teal color
+        const baseR = 0.35
+        const baseG = 0.72
+        const baseB = 0.7
 
-            // Add a warm (orange-ish) tint on the side we're turning toward
-            // and a cool (blue-ish) tint on the side we're turning away from
-            const turn = Math.sin(headYaw)
-            const turnIntensity = Math.abs(turn) * 0.2 // More noticeable gradient
-            const turnSign = Math.sign(turn)
+        const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
+        const turn = Math.sin(headYaw)
+        const turnIntensity = Math.abs(turn) * 0.15
+        const turnSign = Math.sign(turn)
 
-            // Apply gradient-like effect by shifting the overall color
-            const r = baseR + turnSign * turnIntensity * 0.6 + (1 - healthPct) * 0.2
-            const g = baseG + healthPct * 0.05
-            const b = baseB - turnSign * turnIntensity * 0.4 + healthPct * 0.1
+        const r = baseR + turnSign * turnIntensity * 0.4 + (1 - healthPct) * 0.2
+        const g = baseG + healthPct * 0.05
+        const b = baseB - turnSign * turnIntensity * 0.3 + healthPct * 0.1
+        const opacity = 0.3 + (1 - healthPct) * 0.15
 
-            this._headMesh.children[0].material.color.setRGB(r, g, b)
+        // Apply to all meshes in the head group
+        head.traverse(child => {
+            if (child.isMesh && child.material) {
+                child.material.color.setRGB(r, g, b)
+                child.material.opacity = opacity
+            }
+        })
+    }
 
-            // Update opacity based on health (more transparent when unhealthy)
-            this._headMesh.children[0].material.opacity = 0.35 + (1 - healthPct) * 0.15
+    _getProceduralAnimationOffset(pawn) {
+        const now = performance.now() * 0.001
+
+        // Determine if pawn is moving
+        const dx = pawn.x - (pawn.prevX ?? pawn.x)
+        const dy = pawn.y - (pawn.prevY ?? pawn.y)
+        const speed = Math.sqrt(dx * dx + dy * dy)
+        const isMoving = speed > 0.01
+
+        if (isMoving) {
+            // Walk cycle: subtle vertical bob
+            const walkSpeed = 4 // Hz of bob
+            const bobAmount = 0.03 // Subtle vertical bob
+            return Math.sin(now * walkSpeed) * bobAmount
+        } else {
+            // Idle breathing: gentle vertical oscillation
+            const breatheSpeed = 1.5 // Slow breathing
+            const breatheAmount = 0.015 // Very subtle
+            return Math.sin(now * breatheSpeed) * breatheAmount
         }
     }
 
@@ -1921,25 +1976,44 @@ class ThreeRenderer {
 
             const targetYaw = Math.atan2(dir.z, dir.x)
 
-            // Camera always smooth — no head influence, just gentle damping
+            // Camera smoothly catches up when pawn changes direction
             this._firstPersonYaw = this._easeAngle(
                 this._firstPersonYaw,
                 targetYaw,
                 this,
                 '_firstPersonYawVelocity',
-                { response: 0.12, damping: 0.92, maxSpeed: 0.08, snapThreshold: 0.003, stopVelocity: 0.002 }
+                { response: 0.18, damping: 0.88, maxSpeed: 0.12, snapThreshold: 0.003, stopVelocity: 0.002 }
             )
             dir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
 
             const eyeGround = this._getGroundHeightAt(this.followedEntity.x, this.followedEntity.y)
             const bobOffset = typeof this.fpsBobY === 'number' ? this.fpsBobY : 0
-            const targetEye = new THREE.Vector3(this.followedEntity.x, eyeGround + this.firstPersonHeight + bobOffset, this.followedEntity.y)
-            this._smoothedFirstPersonEye.lerp(targetEye, 0.48)
+
+            // Over-the-shoulder: camera is behind and slightly above the pawn's head
+            // Head sits at firstPersonHeight * 0.85, camera is a bit higher and behind
+            const headHeight = eyeGround + this.firstPersonHeight * 0.85
+            const cameraHeight = headHeight + 1.5 // Slightly above the head dome
+            const behindDistance = 2.5 // Close behind the head
+
+            // Camera position: behind the pawn, above the head
+            const targetEye = new THREE.Vector3(
+                this.followedEntity.x - dir.x * behindDistance,
+                cameraHeight + bobOffset,
+                this.followedEntity.y - dir.z * behindDistance
+            )
+            this._smoothedFirstPersonEye.lerp(targetEye, 0.42)
             this._smoothedFirstPersonDir.lerp(dir, 0.4).normalize()
 
-            const look = this._smoothedFirstPersonEye.clone().add(this._smoothedFirstPersonDir.clone().multiplyScalar(18))
+            // Look target: ahead of the pawn, at horizon level (over the head)
+            const lookDistance = 20
+            const lookTarget = new THREE.Vector3(
+                this.followedEntity.x + dir.x * lookDistance,
+                headHeight + 0.5, // Slightly above head so we look over it
+                this.followedEntity.y + dir.z * lookDistance
+            )
+
             this._camera3d.position.copy(this._smoothedFirstPersonEye)
-            this._camera3d.lookAt(look)
+            this._camera3d.lookAt(lookTarget)
             return
         }
 

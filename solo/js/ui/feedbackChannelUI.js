@@ -10,107 +10,20 @@
  * No direct pawn commands are issued from here.
  */
 
-const TOAST_DURATION_MS = 5000
-const REFLECT_DURATION_MS = 8000
+// ── Demoted to logging only — no visual toasts or panels ──────────────────────
 
-// ── Shared toast container ─────────────────────────────────────────────────────
-
-function ensureToastContainer() {
-    let c = document.getElementById('feedback-channel-toasts')
-    if (c) return c
-
-    c = document.createElement('div')
-    c.id = 'feedback-channel-toasts'
-    c.style.cssText = `
-        position: fixed;
-        top: 14px;
-        left: 50%;
-        transform: translateX(-50%);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
-        z-index: 1300;
-        pointer-events: none;
-        max-width: 420px;
-    `
-    document.body.appendChild(c)
-    return c
+function showToast({ text, accentColor = '#38bdf8' }) {
+    console.log(`[feedback] ${text}`)
 }
-
-function showToast({ text, accentColor = '#38bdf8', durationMs = TOAST_DURATION_MS }) {
-    const container = ensureToastContainer()
-
-    const el = document.createElement('div')
-    el.style.cssText = `
-        background: rgba(15, 23, 42, 0.88);
-        color: #e2e8f0;
-        padding: 7px 14px;
-        border-left: 4px solid ${accentColor};
-        border-radius: 4px;
-        font-family: monospace;
-        font-size: 12px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.5);
-        opacity: 0;
-        transition: opacity 0.25s ease;
-        pointer-events: auto;
-        max-width: 400px;
-        word-break: break-word;
-    `
-    el.textContent = text
-    container.appendChild(el)
-
-    requestAnimationFrame(() => { el.style.opacity = '1' })
-
-    setTimeout(() => {
-        el.style.opacity = '0'
-        setTimeout(() => el.remove(), 300)
-    }, durationMs)
-}
-
-// ── Capability reflection panel ────────────────────────────────────────────────
 
 function showCapabilityReflection(payload) {
-    const container = ensureToastContainer()
-
-    const panel = document.createElement('div')
-    panel.style.cssText = `
-        background: rgba(15, 23, 42, 0.92);
-        color: #e2e8f0;
-        padding: 10px 14px;
-        border: 1px solid rgba(99, 102, 241, 0.6);
-        border-radius: 5px;
-        font-family: monospace;
-        font-size: 12px;
-        box-shadow: 0 3px 10px rgba(0,0,0,0.6);
-        opacity: 0;
-        transition: opacity 0.3s ease;
-        pointer-events: auto;
-        max-width: 380px;
-    `
-
     const phase = payload?.phase ?? 'unknown'
     const modules = payload?.modules ?? {}
-    const camera = modules.validCamera ?? '—'
-    const minimap = modules.minimap ?? 'none'
-    const controls = Array.isArray(modules.interactionControls)
-        ? modules.interactionControls.join(', ')
-        : '—'
-
-    panel.innerHTML = `
-        <div style="font-weight:bold;color:#a5b4fc;margin-bottom:6px;">Phase transition: ${phase.replace(/_/g, ' ')}</div>
-        <div>Camera: <span style="color:#7dd3fc;">${camera.replace(/_/g, ' ')}</span></div>
-        <div>Minimap: <span style="color:#7dd3fc;">${minimap.replace(/_/g, ' ')}</span></div>
-        <div style="margin-top:4px;color:#94a3b8;font-size:11px;">Controls: ${controls.replace(/_/g, ' ')}</div>
-    `
-    container.appendChild(panel)
-
-    requestAnimationFrame(() => { panel.style.opacity = '1' })
-
-    setTimeout(() => {
-        panel.style.opacity = '0'
-        setTimeout(() => panel.remove(), 400)
-    }, REFLECT_DURATION_MS)
+    console.log(`[feedback] Phase transition: ${phase.replace(/_/g, ' ')}`, {
+        camera: modules.validCamera,
+        minimap: modules.minimap,
+        controls: Array.isArray(modules.interactionControls) ? modules.interactionControls : []
+    })
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

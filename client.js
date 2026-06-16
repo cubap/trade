@@ -1,4 +1,4 @@
-import 'dotenv/config'
+// Node 22+ loads .env via --env-file flag
 import { io } from 'socket.io-client'
 
 const validObjectId = process.env.TEST_PAWN

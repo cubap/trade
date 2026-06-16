@@ -3,6 +3,8 @@ import { Pawn } from '../models/entities/index.js'
 export function setupStatsDisplay(world, renderer, playerMode = null) {
     const statsDisplay = document.createElement('div')
     statsDisplay.id = 'stats-display'
+    // Demoted to logging — hidden from screen
+    statsDisplay.style.display = 'none'
 
     const header = document.createElement('div')
     header.style.display = 'flex'

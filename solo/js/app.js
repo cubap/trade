@@ -14,8 +14,9 @@ import PlayerMode from './core/PlayerMode.js'
 import ProgressionController from './core/ProgressionController.js'
 import { setupInteractionPanel } from './ui/interactionPanel.js'
 import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
-import { createOpeningScreen, SPAWN_THOUGHTS } from './ui/openingScreen.js'
+import { SPAWN_THOUGHTS } from './ui/openingScreen.js'
 import { setupThoughtDome } from './ui/thoughtDome.js'
+import { setupSlowStartQuiz } from './ui/slowStartQuiz.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -307,16 +308,19 @@ async function seedCraftingResourcesNearPawn(pawn) {
     seedAnimalsNearPawn(pawn, 2)
 }
 
-// Shared: create pawn from opening screen results and start the game
-async function spawnPlayerPawnAndStart(name, biases) {
+// Shared: create pawn and start the game
+// @param {boolean} skipSlowStart - If true, skip the in-game quiz (test mode)
+async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
     const spawnPoint = pickPlayerSpawnPoint()
     const spawnX = spawnPoint.x
     const spawnY = spawnPoint.y
     ensureStarterViability(spawnX, spawnY, waterGen)
     const player = new Pawn('player_1', name, spawnX, spawnY)
+    player.spawnX = spawnX
+    player.spawnY = spawnY
 
-    // Apply quiz biases to goal weights
-    if (biases && typeof biases === 'object') {
+    // Apply quiz biases to goal weights (if from pre-game quiz; slow-start applies later)
+    if (biases && typeof biases === 'object' && !skipSlowStart) {
         applyQuizBiases(player, biases)
     }
 
@@ -361,6 +365,21 @@ async function spawnPlayerPawnAndStart(name, biases) {
         }).catch(() => {})
     } catch (e) {}
 
+    // Setup slow-start quiz (in-game callouts instead of pre-game quiz)
+    if (!skipSlowStart) {
+        slowStartQuiz = setupSlowStartQuiz(
+            () => trackedPlayerPawn,
+            (chosenName, quizBiases) => {
+                // Quiz complete — update pawn name and apply biases
+                if (trackedPlayerPawn) {
+                    trackedPlayerPawn.name = chosenName
+                    applyQuizBiases(trackedPlayerPawn, quizBiases)
+                    console.log(`[slow-start] Pawn renamed to ${chosenName}, biases applied`)
+                }
+            }
+        )
+    }
+
     startMainLoop()
 }
 
@@ -398,25 +417,27 @@ function applyQuizBiases(pawn, biases) {
     console.log(`[opening] Applied quiz biases for ${pawn.name}:`, multipliers)
 }
 
-// No opening screen presimulation — world is streamed around the pawn at runtime.
-async function startWithOpeningScreen() {
+// No pre-game quiz — pawn wakes up and quiz questions surface as in-game callouts.
+// Start immediately with a temporary name; slow-start quiz will set the real name.
+async function startWithSlowStart() {
     const params = new URLSearchParams(location.search)
     if (params.get('testMode') === '1') {
-        await spawnPlayerPawnAndStart('Player', {})
+        await spawnPlayerPawnAndStart('Player', {}, true)
     } else {
-        const result = await createOpeningScreen()
-        await spawnPlayerPawnAndStart(result.name, result.biases)
+        // Start with temp name; slow-start quiz will update it
+        await spawnPlayerPawnAndStart('Wanderer', {}, false)
     }
 }
 
-// No presimulation — world is streamed around the pawn at runtime.
-startWithOpeningScreen()
+// World is streamed around the pawn at runtime.
+startWithSlowStart()
 
 // Controls are initialized after opening screen completes
 let controls
 let _modeSwitcherUpdate = null
 let _interactionPanel = null
 let _feedbackUI = null
+let slowStartQuiz = null
 
 function buildRouteTraceSegments() {
     if (!trackedPlayerPawn) return []
@@ -523,6 +544,8 @@ function simulationLoop(timestamp) {
             streamChunksAroundTrackedPawn(trackedPlayerPawn, activeChunkRadius)
             world.update(timestamp)
             syncProgressionState()
+            // Slow-start quiz trigger checks
+            slowStartQuiz?.update(trackedPlayerPawn)
             // Refresh mode-switcher unlock state every 60 ticks (~30 s at 2 ticks/s)
             if (world.clock.currentTick % 60 === 0) _modeSwitcherUpdate?.()
         } else {

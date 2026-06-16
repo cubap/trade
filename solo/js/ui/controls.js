@@ -12,6 +12,8 @@ function setupControls(world, renderer, playerMode, options = {}) {
     const controlPanel = document.createElement('div')
     controlPanel.id = 'control-panel'
     controlPanel.style.margin = '10px 0'
+    // Demoted to logging — hidden from screen; keyboard shortcuts still work
+    controlPanel.style.display = 'none'
 
     const primaryRow = document.createElement('div')
     primaryRow.style.display = 'flex'
@@ -176,12 +178,14 @@ function setupControls(world, renderer, playerMode, options = {}) {
     debugCapabilityText.style.marginLeft = '10px'
     debugCapabilityText.style.fontSize = '12px'
     debugCapabilityText.style.color = '#ddd'
+    debugCapabilityText.style.display = 'none' // Demoted to logging
     debugCapabilityText.textContent = 'Phase: auto'
 
     const debugModuleText = document.createElement('span')
     debugModuleText.style.marginLeft = '10px'
     debugModuleText.style.fontSize = '11px'
     debugModuleText.style.color = '#bcd'
+    debugModuleText.style.display = 'none' // Demoted to logging
     debugModuleText.textContent = 'Steer:n/a | Input:n/a | Feedback:n/a'
 
     const visualTuningLabel = document.createElement('span')
@@ -539,43 +543,14 @@ function setupControls(world, renderer, playerMode, options = {}) {
         }
     })
 
-    // --- Unlock hint UI ---
+    // --- Unlock hint — demoted to logging only ---
     const unlockContainer = document.createElement('div')
     unlockContainer.id = 'unlock-hints'
-    unlockContainer.style.cssText = `
-        position: fixed;
-        bottom: 10px;
-        right: 10px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        z-index: 1200;
-        max-width: 240px;
-    `
+    unlockContainer.style.display = 'none' // Hidden from screen
     document.body.appendChild(unlockContainer)
 
     function pushUnlockHint(type, name) {
-        const el = document.createElement('div')
-        el.style.cssText = `
-            background: rgba(30,30,40,0.85);
-            color: #fff;
-            padding: 6px 10px;
-            border-left: 4px solid ${type === 'skill' ? '#2ecc71' : type === 'goal' ? '#3498db' : '#f1c40f'};
-            font-size: 12px;
-            font-family: monospace;
-            border-radius: 4px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.4);
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        `
-        el.textContent = `${type.toUpperCase()} unlocked: ${name}`
-        unlockContainer.appendChild(el)
-        requestAnimationFrame(() => { el.style.opacity = '1' })
-        // Auto-remove after 6s
-        setTimeout(() => {
-            el.style.opacity = '0'
-            setTimeout(() => el.remove(), 500)
-        }, 6000)
+        console.log(`[unlock] ${type.toUpperCase()} unlocked: ${name}`)
     }
 
     setUnlockListener(({ skills = [], goals = [], recipes = [], pawn }) => {

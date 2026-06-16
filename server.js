@@ -1,4 +1,4 @@
-import 'dotenv/config'
+// Node 22+ loads .env via --env-file flag
 import express from 'express'
 import cors from 'cors'
 import { createServer } from 'http'

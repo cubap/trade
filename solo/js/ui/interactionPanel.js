@@ -37,6 +37,8 @@ const PANEL_STYLE = `
     min-width: 190px;
     max-width: 270px;
     display: none;
+    visibility: hidden;
+    pointer-events: none;
 `
 
 const BTN_BASE = `

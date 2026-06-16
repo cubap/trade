@@ -36,6 +36,8 @@ function capState(playerMode, overlayId) {
 export function setupDeveloperOverlays(world, renderer, playerMode, getTrackedPawn) {
     const root = document.createElement('div')
     root.id = 'dev-overlays-root'
+    // Demoted to logging — hidden from screen
+    root.style.display = 'none'
     root.innerHTML = OVERLAY_DEFS.map(def => `
         <section class="dev-overlay-panel" data-overlay-id="${def.id}" hidden>
             <header class="dev-overlay-header">
