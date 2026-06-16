@@ -1737,9 +1737,29 @@ class ThreeRenderer {
         // Create a 3D head group that will be positioned in the scene
         const headGroup = new THREE.Group()
 
+        // Build a single merged geometry: head + ears as one mesh
+        // This ensures uniform translucency without separate-looking parts
+        const geometries = []
+
         // Main head shape — ellipsoid (wider than tall, like a skull crown)
         const headGeometry = new THREE.SphereGeometry(1, 32, 24)
         headGeometry.scale(1.2, 0.9, 0.85) // Wider, shorter, slightly compressed depth
+        geometries.push(headGeometry)
+
+        // Left ear — teddy bear style nub (merged into same geometry)
+        const earGeometry = new THREE.SphereGeometry(0.22, 16, 12)
+        const leftEarGeo = earGeometry.clone()
+        leftEarGeo.translate(-0.6, 0.75, 0)
+        leftEarGeo.scale(1, 0.9, 0.8)
+        geometries.push(leftEarGeo)
+
+        const rightEarGeo = earGeometry.clone()
+        rightEarGeo.translate(0.6, 0.75, 0)
+        rightEarGeo.scale(1, 0.9, 0.8)
+        geometries.push(rightEarGeo)
+
+        // Merge all geometries into one
+        const mergedGeometry = this._mergeGeometries(geometries)
 
         // Translucent purple material for the "through-the-head" HUD feel
         const headMaterial = new THREE.MeshStandardMaterial({
@@ -1752,31 +1772,8 @@ class ThreeRenderer {
             depthWrite: false, // Don't write to depth buffer for transparency
         })
 
-        const headMesh = new THREE.Mesh(headGeometry, headMaterial)
+        const headMesh = new THREE.Mesh(mergedGeometry, headMaterial)
         headGroup.add(headMesh)
-
-        // Left ear — teddy bear style nub on top-left
-        const earGeometry = new THREE.SphereGeometry(0.22, 16, 12)
-        const earMaterial = new THREE.MeshStandardMaterial({
-            color: 0x8b7288, // Match head color
-            roughness: 0.5,
-            metalness: 0.1,
-            transparent: true,
-            opacity: 0.4, // Slightly more opaque than head
-            depthWrite: false,
-        })
-
-        const leftEar = new THREE.Mesh(earGeometry, earMaterial)
-        leftEar.position.set(-0.6, 0.75, 0) // Higher up on the head
-        leftEar.scale.set(1, 0.9, 0.8)
-        headGroup.add(leftEar)
-        headGroup.leftEar = leftEar
-
-        const rightEar = new THREE.Mesh(earGeometry, earMaterial)
-        rightEar.position.set(0.6, 0.75, 0) // Higher up on the head
-        rightEar.scale.set(1, 0.9, 0.8)
-        headGroup.add(rightEar)
-        headGroup.rightEar = rightEar
 
         // Position at world origin (will be updated in _updateHeadMesh)
         headGroup.position.set(0, 2, 0)
@@ -1788,6 +1785,56 @@ class ThreeRenderer {
 
         this._headMesh = headGroup
         return headGroup
+    }
+
+    _mergeGeometries(geometries) {
+        // Manual geometry merge (avoids importing BufferGeometryUtils)
+        let totalVerts = 0
+        let totalIdx = 0
+        for (const geo of geometries) {
+            totalVerts += geo.attributes.position.count
+            const idx = geo.index
+            totalIdx += idx ? idx.count : geo.attributes.position.count
+        }
+
+        const positions = new Float32Array(totalVerts * 3)
+        const normals = new Float32Array(totalVerts * 3)
+        const indices = new Uint32Array(totalIdx)
+
+        let vertOffset = 0
+        let idxOffset = 0
+        let indexOffset = 0
+
+        for (const geo of geometries) {
+            const pos = geo.attributes.position.array
+            const nor = geo.attributes.normal.array
+            positions.set(pos, vertOffset * 3)
+            normals.set(nor, vertOffset * 3)
+
+            const idx = geo.index
+            if (idx) {
+                const arr = idx.array
+                for (let i = 0; i < arr.length; i++) {
+                    indices[idxOffset + i] = arr[i] + vertOffset
+                }
+                idxOffset += arr.length
+            } else {
+                const count = geo.attributes.position.count
+                for (let i = 0; i < count; i++) {
+                    indices[idxOffset + i] = vertOffset + i
+                }
+                idxOffset += count
+            }
+
+            vertOffset += geo.attributes.position.count
+        }
+
+        const merged = new THREE.BufferGeometry()
+        merged.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+        merged.setIndex(new THREE.BufferAttribute(indices, 1))
+
+        return merged
     }
 
     _updateHeadMesh() {
@@ -1808,10 +1855,10 @@ class ThreeRenderer {
         const up = new THREE.Vector3(0, 1, 0)
         up.applyQuaternion(camera.quaternion)
 
-        // Position: at the bottom of the screen
+        // Position: at the bottom of the screen, slightly lower so crown drops off
         // Camera is looking down, so "bottom of screen" is further away from camera
         const distance = 8 // Units from camera (closer)
-        const bottomOffset = 2.5 // Units down from center (in screen space)
+        const bottomOffset = 4 // Units down from center (pushed further down)
 
         // Calculate position at bottom of screen
         const targetPos = camera.position.clone()
@@ -1827,17 +1874,8 @@ class ThreeRenderer {
         const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
         head.rotation.y += headYaw * 0.5
 
-        // Update ear scales based on head turn (3D perspective)
-        const turn = Math.sin(headYaw)
-        if (head.leftEar && head.rightEar) {
-            const leftScale = 1 + turn * 0.3
-            const rightScale = 1 - turn * 0.3
-            head.leftEar.scale.setScalar(leftScale)
-            head.rightEar.scale.setScalar(rightScale)
-        }
-
         // Update head material with color gradient based on turn direction
-        // This helps show which way the head is "turning"
+        // Since ears are merged, the color shift is our main indicator of turning
         if (this._headMesh.children[0]?.material) {
             const health = this.followedEntity?.traits?.health ?? 100
             const healthMax = this.followedEntity?.traits?.healthMax ?? 100
@@ -1850,32 +1888,19 @@ class ThreeRenderer {
 
             // Add a warm (orange-ish) tint on the side we're turning toward
             // and a cool (blue-ish) tint on the side we're turning away from
-            const turnIntensity = Math.abs(turn) * 0.15 // Subtle effect
+            const turn = Math.sin(headYaw)
+            const turnIntensity = Math.abs(turn) * 0.2 // More noticeable gradient
             const turnSign = Math.sign(turn)
 
             // Apply gradient-like effect by shifting the overall color
-            const r = baseR + turnSign * turnIntensity * 0.5 + (1 - healthPct) * 0.2
+            const r = baseR + turnSign * turnIntensity * 0.6 + (1 - healthPct) * 0.2
             const g = baseG + healthPct * 0.05
-            const b = baseB - turnSign * turnIntensity * 0.3 + healthPct * 0.1
+            const b = baseB - turnSign * turnIntensity * 0.4 + healthPct * 0.1
 
             this._headMesh.children[0].material.color.setRGB(r, g, b)
 
             // Update opacity based on health (more transparent when unhealthy)
             this._headMesh.children[0].material.opacity = 0.35 + (1 - healthPct) * 0.15
-        }
-
-        // Update ear materials with turn-based color
-        if (head.leftEar?.material && head.rightEar?.material) {
-            const baseR = 0.545
-            const baseG = 0.447
-            const baseB = 0.522
-
-            // Left ear gets warmer when turning left, right ear gets warmer when turning right
-            const leftWarmth = turn < 0 ? 0.1 : 0
-            const rightWarmth = turn > 0 ? 0.1 : 0
-
-            head.leftEar.material.color.setRGB(baseR + leftWarmth, baseG, baseB - leftWarmth * 0.5)
-            head.rightEar.material.color.setRGB(baseR + rightWarmth, baseG, baseB - rightWarmth * 0.5)
         }
     }
 
