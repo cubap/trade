@@ -49,8 +49,27 @@ class ThreeRenderer {
         this._smoothedCameraTarget = new THREE.Vector3(this.viewX, 0, this.viewY)
         this._firstPersonYaw = 0
         this._firstPersonYawVelocity = 0
-        this._smoothedHeadPos = new THREE.Vector3(this.viewX, this.firstPersonHeight, this.viewY)
         this._smoothedPawnRotY = 0 // Smooth Y rotation for the pawn model
+        this._smoothedPawnPos = new THREE.Vector3() // Smoothed pawn world position (no tick-boundary bob)
+        
+        // Camera tuning — adjustable via sliders
+        // Defaults: camera ~3 units above ground, looking at ~1 unit height (pawn level)
+        this.cameraTuning = {
+            behindDistance: 1.7,
+            cameraHeight: 3.0,
+            lookDistance: 9.0,
+            lookHeight: 4.6
+        }
+        
+        // Pawn tuning — adjustable via sliders
+        this.pawnTuning = {
+            pawnScale: 3.1,
+            pawnYOffset: -0.1
+        }
+        
+        // Pause state (set by cameraTuning UI)
+        this.paused = false
+        
         this._timeUniform = { value: 0 }
         this._waterShimmerUniform = { value: 1.8 }
         this._waterSpeedUniform = { value: 1.2 }
@@ -1776,33 +1795,31 @@ class ThreeRenderer {
                 // Try no rotation first — model might already be upright
                 // model.rotation.z = Math.PI // Uncomment if needed
                 
-                // Apply bright solid material for debugging
+                // Apply solid material
                 model.traverse(node => {
                     if (node.isMesh) {
                         node.material = new THREE.MeshStandardMaterial({
                             color: 0x5ec4c0,
                             roughness: 0.3,
                             metalness: 0.05,
-                            transparent: false, // Solid for debugging
+                            transparent: false,
                             side: THREE.DoubleSide,
-                            depthWrite: true,
-                            wireframe: true // Wireframe to make it more visible
+                            depthWrite: true
                         })
+                    }
+                })
+
+                // Center the model
+                this._centerModelToOrigin(model)
+                headGroup.add(model)
+                this._headMeshLoaded = true
+            },
+            undefined,
+            (error) => {
+                console.warn('[three] failed to load pawn.glb for head mesh, using procedural dome', error)
+                this._headMeshFailed = true
             }
         )
-
-        // Add a temporary placeholder sphere until the model loads
-        const placeholderGeo = new THREE.SphereGeometry(1, 16, 12)
-        const placeholderMat = new THREE.MeshStandardMaterial({
-            color: 0x5ec4c0,
-            roughness: 0.3,
-            transparent: true,
-            opacity: 0.3,
-            depthWrite: false
-        })
-        const placeholder = new THREE.Mesh(placeholderGeo, placeholderMat)
-        placeholder.name = 'placeholder'
-        headGroup.add(placeholder)
 
         // Position at world origin (will be updated in _updateHeadMesh)
         headGroup.position.set(0, 0, 0)
@@ -1866,87 +1883,49 @@ class ThreeRenderer {
         return merged
     }
 
-    _updateHeadMesh() {
+    _updateHeadMesh(progress) {
         if (!this._headMesh) return
 
         const head = this._headMesh
         const pawn = this.followedEntity
 
-        // Over-the-shoulder: full pawn model sits at ground level, visible in center of viewport
-        // Camera is behind and above, looking over the pawn
         if (pawn && this.firstPersonLocked) {
-            const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
-            // Pawn sits slightly above ground to avoid clipping
-            const pawnHeight = eyeGround + 0.1
-            const targetPos = new THREE.Vector3(pawn.x, pawnHeight, pawn.y)
+            // Interpolate position for smooth movement
+            const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
+            const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
+            const interpX = pX + (pawn.x - pX) * (progress ?? 0)
+            const interpY = pY + (pawn.y - pY) * (progress ?? 0)
 
-            // Smooth pawn position to match camera catch-up
-            const headResponse = 0.18
-            const current = this._smoothedHeadPos
-            current.x += (targetPos.x - current.x) * headResponse
-            current.y += (targetPos.y - current.y) * headResponse
-            current.z += (targetPos.z - current.z) * headResponse
-            
-            // Apply procedural animations as offset to the smoothed position
-            const animOffset = this._getProceduralAnimationOffset(pawn)
-            head.position.set(current.x, current.y + animOffset, current.z)
+            const eyeGround = this._getGroundHeightAt(interpX, interpY)
+            const yOff = this.pawnTuning?.pawnYOffset ?? 0
 
-            // Debug: log position occasionally
-            if (!this._debugLogged || Math.abs(current.y - this._debugLogged) > 1) {
-                console.log('[three] pawn pos:', current.x.toFixed(1), current.y.toFixed(1), current.z.toFixed(1), 'camera:', this._camera3d.position.x.toFixed(1), this._camera3d.position.y.toFixed(1), this._camera3d.position.z.toFixed(1))
-                this._debugLogged = current.y
-            }
+            // Lerp toward target to eliminate tick-boundary bob
+            const target = new THREE.Vector3(interpX, eyeGround + yOff, interpY)
+            this._smoothedPawnPos.lerp(target, 0.35)
+            head.position.copy(this._smoothedPawnPos)
 
-            // Smooth Y rotation to face movement direction (no snapping)
+            // Apply scale from tuning
+            const scale = this.pawnTuning?.pawnScale ?? 2.5
+            head.scale.setScalar(scale)
+
+            // Smooth Y rotation to face movement direction
             const dir = this._smoothedFirstPersonDir
             const targetRotY = Math.atan2(dir.z, dir.x)
             this._smoothedPawnRotY += (targetRotY - this._smoothedPawnRotY) * 0.15
             head.rotation.y = this._smoothedPawnRotY
 
-            // Make head visible in over-the-shoulder mode
             head.visible = true
         } else {
-            // Hide head in non-first-person modes
             head.visible = false
             return
         }
-
-        // Update head material with color gradient based on turn direction
-        // Handle both single mesh and GLTF model (multiple children)
-        const health = this.followedEntity?.traits?.health ?? 100
-        const healthMax = this.followedEntity?.traits?.healthMax ?? 100
-        const healthPct = Math.max(0, Math.min(1, health / healthMax))
-
-        // Base teal color
-        const baseR = 0.35
-        const baseG = 0.72
-        const baseB = 0.7
-
-        const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
-        const turn = Math.sin(headYaw)
-        const turnIntensity = Math.abs(turn) * 0.15
-        const turnSign = Math.sign(turn)
- (skip debug materials)
-        head.traverse(child => {
-            if (child.isMesh && child.material && !child.material._debugM.05
-        const b = baseB - turnSign * turnIntensity * 0.3 + healthPct * 0.1
-        const opacity = 0.3 + (1 - healthPct) * 0.15
-
-        // Apply to all meshes in the head group (skip debug materials)
-        head.traverse(child => {
-            if (child.isMesh && child.material && !child.material._debugMaterial) {
-                child.material.color.setRGB(r, g, b)
-                child.material.opacity = opacity
-            }
-        })
     }
 
     _getProceduralAnimationOffset(pawn) {
-        // Disabled for troubleshooting
         return 0
     }
 
-    _updateCamera() {
+    _updateCamera(progress) {
         if (this.followMode && this.followedEntity) {
             this.viewX = this.followedEntity.x
             this.viewY = this.followedEntity.y
@@ -1955,9 +1934,13 @@ class ThreeRenderer {
         this._skyDome.position.set(this.viewX, 0, this.viewY)
 
         if (this.firstPersonLocked && this.followedEntity) {
-            const prevX = Number.isFinite(this.followedEntity.prevX) ? this.followedEntity.prevX : this.followedEntity.x - 1
-            const prevY = Number.isFinite(this.followedEntity.prevY) ? this.followedEntity.prevY : this.followedEntity.y
-            const dir = new THREE.Vector3(this.followedEntity.x - prevX, 0, this.followedEntity.y - prevY)
+            // Interpolate pawn position for smooth camera tracking
+            const pX = Number.isFinite(this.followedEntity.prevX) ? this.followedEntity.prevX : this.followedEntity.x
+            const pY = Number.isFinite(this.followedEntity.prevY) ? this.followedEntity.prevY : this.followedEntity.y
+            const interpX = pX + (this.followedEntity.x - pX) * (progress ?? 0)
+            const interpY = pY + (this.followedEntity.y - pY) * (progress ?? 0)
+
+            const dir = new THREE.Vector3(this.followedEntity.x - pX, 0, this.followedEntity.y - pY)
             if (dir.lengthSq() < 0.0001) dir.set(1, 0, 0)
             dir.normalize()
 
@@ -1973,30 +1956,28 @@ class ThreeRenderer {
             )
             dir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
 
-            const eyeGround = this._getGroundHeightAt(this.followedEntity.x, this.followedEntity.y)
+            const eyeGround = this._getGroundHeightAt(interpX, interpY)
             const bobOffset = 0 // Disabled for troubleshooting
 
-            // Over-the-shoulder: camera is behind and slightly above the pawn's head
-            // Head sits at firstPersonHeight * 0.85, camera is a bit higher and behind
-            const headHeight = eyeGround + this.firstPersonHeight * 0.85
-            const cameraHeight = headHeight + 1.5 // Slightly above the head dome
-            const behindDistance = 2.5 // Close behind the head
+            // Camera position: behind the pawn, height above ground
+            // Use tunable values from cameraTuning (all relative to ground)
+            const behindDistance = this.cameraTuning.behindDistance
+            const camHeight = eyeGround + this.cameraTuning.cameraHeight
 
-            // Camera position: behind the pawn, above the head
             const targetEye = new THREE.Vector3(
-                this.followedEntity.x - dir.x * behindDistance,
-                cameraHeight + bobOffset,
-                this.followedEntity.y - dir.z * behindDistance
+                interpX - dir.x * behindDistance,
+                camHeight + bobOffset,
+                interpY - dir.z * behindDistance
             )
             this._smoothedFirstPersonEye.lerp(targetEye, 0.42)
             this._smoothedFirstPersonDir.lerp(dir, 0.4).normalize()
 
-            // Look target: ahead of the pawn, at horizon level (over the head)
-            const lookDistance = 20
+            // Look target: ahead of the pawn, height above ground
+            const lookDistance = this.cameraTuning.lookDistance
             const lookTarget = new THREE.Vector3(
-                this.followedEntity.x + dir.x * lookDistance,
-                headHeight + 0.5, // Slightly above head so we look over it
-                this.followedEntity.y + dir.z * lookDistance
+                interpX + dir.x * lookDistance,
+                eyeGround + this.cameraTuning.lookHeight,
+                interpY + dir.z * lookDistance
             )
 
             this._camera3d.position.copy(this._smoothedFirstPersonEye)
@@ -2040,9 +2021,13 @@ class ThreeRenderer {
 
     render() {
         const { progress } = this.world.clock.getProgress()
-        this._timeUniform.value = performance.now() * 0.001
-        this._updateCamera()
-        this._updateHeadMesh()
+
+        // Pause check — skip updates but still render the scene
+        if (!this.paused) {
+            this._timeUniform.value = performance.now() * 0.001
+            this._updateCamera(progress)
+            this._updateHeadMesh(progress)
+        }
 
         this._gridHelper.visible = !!this.showGrid
 
@@ -2051,6 +2036,9 @@ class ThreeRenderer {
 
         for (const entity of entitiesToRender) {
             if (!entity?.id) continue
+            // Skip rendering the player pawn as a regular entity when in first-person mode
+            // (it's already rendered by _headMesh)
+            if (this.firstPersonLocked && entity === this.followedEntity) continue
             visibleIds.add(entity.id)
             let mesh = this._meshById.get(entity.id)
             if (!mesh) {

@@ -17,6 +17,7 @@ import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
 import { SPAWN_THOUGHTS } from './ui/openingScreen.js'
 import { setupThoughtDome } from './ui/thoughtDome.js'
 import { setupSlowStartQuiz } from './ui/slowStartQuiz.js'
+import { setupCameraTuning } from './ui/cameraTuning.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -342,6 +343,9 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
 
     // Setup thought dome — reads from pawn's thoughtLog, gets renderer for FPS camera bob
     thoughtDome = setupThoughtDome(() => trackedPlayerPawn, () => activeRenderer)
+
+    // Setup camera tuning panel (press C to toggle)
+    setupCameraTuning(() => activeRenderer, () => controls)
 
     // Queue initial spawn thoughts — seed the first thought into the pawn's thoughtLog so the dome picks it up
     const firstSpawn = SPAWN_THOUGHTS[0]
