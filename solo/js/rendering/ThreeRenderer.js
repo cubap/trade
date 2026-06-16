@@ -50,6 +50,7 @@ class ThreeRenderer {
         this._firstPersonYaw = 0
         this._firstPersonYawVelocity = 0
         this._smoothedHeadPos = new THREE.Vector3(this.viewX, this.firstPersonHeight, this.viewY)
+        this._smoothedPawnRotY = 0 // Smooth Y rotation for the pawn model
         this._timeUniform = { value: 0 }
         this._waterShimmerUniform = { value: 1.8 }
         this._waterSpeedUniform = { value: 1.2 }
@@ -1756,34 +1757,37 @@ class ThreeRenderer {
                 }
 
                 const model = gltf.scene
-                // Fix GLTF orientation — model is lying on its back, need to stand it up
-                // Rotate around Z to flip from back to upright sitting position
-                model.rotation.z = Math.PI
+                // Debug: log model structure and bounds
+                console.log('[three] pawn.glb loaded, children:', model.children.length)
+                let meshCount = 0
+                model.traverse((node) => {
+                    if (node.isMesh) {
+                        meshCount++
+                        console.log(`[three]   mesh[${meshCount}]:`, node.name || 'unnamed', 'geometry:', node.geometry?.type, 'material:', node.material?.type)
+                    }
+                })
+                console.log('[three] total meshes:', meshCount)
                 
-                // Apply translucent teal material to all meshes
+                // Log bounding box before any rotation
+                const bbox = new THREE.Box3().setFromObject(model)
+                console.log('[three] bounds:', bbox.min.x.toFixed(1), bbox.min.y.toFixed(1), bbox.min.z.toFixed(1), '→', bbox.max.x.toFixed(1), bbox.max.y.toFixed(1), bbox.max.z.toFixed(1))
+                console.log('[three] size:', (bbox.max.x - bbox.min.x).toFixed(1), (bbox.max.y - bbox.min.y).toFixed(1), (bbox.max.z - bbox.min.z).toFixed(1))
+                
+                // Try no rotation first — model might already be upright
+                // model.rotation.z = Math.PI // Uncomment if needed
+                
+                // Apply bright solid material for debugging
                 model.traverse(node => {
                     if (node.isMesh) {
                         node.material = new THREE.MeshStandardMaterial({
                             color: 0x5ec4c0,
                             roughness: 0.3,
                             metalness: 0.05,
-                            transparent: true,
-                            opacity: 0.3,
+                            transparent: false, // Solid for debugging
                             side: THREE.DoubleSide,
-                            depthWrite: false
+                            depthWrite: true,
+                            wireframe: true // Wireframe to make it more visible
                         })
-                    }
-                })
-
-                // Center the model
-                this._centerModelToOrigin(model)
-                headGroup.add(model)
-                this._headMeshLoaded = true
-            },
-            undefined,
-            (error) => {
-                console.warn('[three] failed to load pawn.glb for head mesh, using procedural dome', error)
-                this._headMeshFailed = true
             }
         )
 
@@ -1801,7 +1805,7 @@ class ThreeRenderer {
         headGroup.add(placeholder)
 
         // Position at world origin (will be updated in _updateHeadMesh)
-        headGroup.position.set(0, 2, 0)
+        headGroup.position.set(0, 0, 0)
         headGroup.scale.setScalar(2.5)
 
         // Add to scene
@@ -1868,14 +1872,15 @@ class ThreeRenderer {
         const head = this._headMesh
         const pawn = this.followedEntity
 
-        // Over-the-shoulder: head sits at the pawn's position, visible in center of viewport
-        // Camera is behind and above, looking over the head
+        // Over-the-shoulder: full pawn model sits at ground level, visible in center of viewport
+        // Camera is behind and above, looking over the pawn
         if (pawn && this.firstPersonLocked) {
             const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
-            const headHeight = eyeGround + this.firstPersonHeight * 0.85
-            const targetPos = new THREE.Vector3(pawn.x, headHeight, pawn.y)
+            // Pawn sits slightly above ground to avoid clipping
+            const pawnHeight = eyeGround + 0.1
+            const targetPos = new THREE.Vector3(pawn.x, pawnHeight, pawn.y)
 
-            // Smooth head position to match camera catch-up (same response/damping)
+            // Smooth pawn position to match camera catch-up
             const headResponse = 0.18
             const current = this._smoothedHeadPos
             current.x += (targetPos.x - current.x) * headResponse
@@ -1886,18 +1891,17 @@ class ThreeRenderer {
             const animOffset = this._getProceduralAnimationOffset(pawn)
             head.position.set(current.x, current.y + animOffset, current.z)
 
-            // Head faces the camera's look direction (same as pawn's facing)
-            const dir = this._smoothedFirstPersonDir
-            const lookTarget = new THREE.Vector3(
-                current.x + dir.x,
-                current.y,
-                current.z + dir.z
-            )
-            head.lookAt(lookTarget)
+            // Debug: log position occasionally
+            if (!this._debugLogged || Math.abs(current.y - this._debugLogged) > 1) {
+                console.log('[three] pawn pos:', current.x.toFixed(1), current.y.toFixed(1), current.z.toFixed(1), 'camera:', this._camera3d.position.x.toFixed(1), this._camera3d.position.y.toFixed(1), this._camera3d.position.z.toFixed(1))
+                this._debugLogged = current.y
+            }
 
-            // Apply head yaw from thoughtDome (subtle turn around Y axis)
-            const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
-            head.rotation.y += headYaw * 0.3
+            // Smooth Y rotation to face movement direction (no snapping)
+            const dir = this._smoothedFirstPersonDir
+            const targetRotY = Math.atan2(dir.z, dir.x)
+            this._smoothedPawnRotY += (targetRotY - this._smoothedPawnRotY) * 0.15
+            head.rotation.y = this._smoothedPawnRotY
 
             // Make head visible in over-the-shoulder mode
             head.visible = true
@@ -1922,15 +1926,15 @@ class ThreeRenderer {
         const turn = Math.sin(headYaw)
         const turnIntensity = Math.abs(turn) * 0.15
         const turnSign = Math.sign(turn)
-
-        const r = baseR + turnSign * turnIntensity * 0.4 + (1 - healthPct) * 0.2
-        const g = baseG + healthPct * 0.05
+ (skip debug materials)
+        head.traverse(child => {
+            if (child.isMesh && child.material && !child.material._debugM.05
         const b = baseB - turnSign * turnIntensity * 0.3 + healthPct * 0.1
         const opacity = 0.3 + (1 - healthPct) * 0.15
 
-        // Apply to all meshes in the head group
+        // Apply to all meshes in the head group (skip debug materials)
         head.traverse(child => {
-            if (child.isMesh && child.material) {
+            if (child.isMesh && child.material && !child.material._debugMaterial) {
                 child.material.color.setRGB(r, g, b)
                 child.material.opacity = opacity
             }
@@ -1938,25 +1942,8 @@ class ThreeRenderer {
     }
 
     _getProceduralAnimationOffset(pawn) {
-        const now = performance.now() * 0.001
-
-        // Determine if pawn is moving
-        const dx = pawn.x - (pawn.prevX ?? pawn.x)
-        const dy = pawn.y - (pawn.prevY ?? pawn.y)
-        const speed = Math.sqrt(dx * dx + dy * dy)
-        const isMoving = speed > 0.01
-
-        if (isMoving) {
-            // Walk cycle: subtle vertical bob
-            const walkSpeed = 4 // Hz of bob
-            const bobAmount = 0.03 // Subtle vertical bob
-            return Math.sin(now * walkSpeed) * bobAmount
-        } else {
-            // Idle breathing: gentle vertical oscillation
-            const breatheSpeed = 1.5 // Slow breathing
-            const breatheAmount = 0.015 // Very subtle
-            return Math.sin(now * breatheSpeed) * breatheAmount
-        }
+        // Disabled for troubleshooting
+        return 0
     }
 
     _updateCamera() {
@@ -1987,7 +1974,7 @@ class ThreeRenderer {
             dir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
 
             const eyeGround = this._getGroundHeightAt(this.followedEntity.x, this.followedEntity.y)
-            const bobOffset = typeof this.fpsBobY === 'number' ? this.fpsBobY : 0
+            const bobOffset = 0 // Disabled for troubleshooting
 
             // Over-the-shoulder: camera is behind and slightly above the pawn's head
             // Head sits at firstPersonHeight * 0.85, camera is a bit higher and behind
