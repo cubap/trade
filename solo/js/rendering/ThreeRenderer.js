@@ -85,7 +85,7 @@ class ThreeRenderer {
         this._pawnTexture = null
         this._pawnTextureFailed = false
         this._skyboxTexture = null
-        this.showAnimalLabels = true
+        this.showAnimalLabels = false
         this._animalLabelLayer = null
 
         this.scene = new THREE.Scene()
@@ -97,6 +97,9 @@ class ThreeRenderer {
         this._camera3d = new THREE.PerspectiveCamera(65, 1, 0.1, 12000)
         this.webglRenderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true })
         this.webglRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+
+        // 3D head mesh — child of the camera for first-person view
+        this._headMesh = this._createHeadMesh()
 
         this._ambient = new THREE.AmbientLight(0xffffff, 0.7)
         this._sun = new THREE.DirectionalLight(0xffffff, 0.7)
@@ -1730,6 +1733,152 @@ class ThreeRenderer {
         this._entityById.delete(id)
     }
 
+    _createHeadMesh() {
+        // Create a 3D head group that will be positioned in the scene
+        const headGroup = new THREE.Group()
+
+        // Main head shape — ellipsoid (wider than tall, like a skull crown)
+        const headGeometry = new THREE.SphereGeometry(1, 32, 24)
+        headGeometry.scale(1.2, 0.9, 0.85) // Wider, shorter, slightly compressed depth
+
+        // Translucent purple material for the "through-the-head" HUD feel
+        const headMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8b7288, // Muted purple-gray
+            roughness: 0.5,
+            metalness: 0.1,
+            transparent: true,
+            opacity: 0.35, // Semi-transparent so we can see through
+            side: THREE.DoubleSide,
+            depthWrite: false, // Don't write to depth buffer for transparency
+        })
+
+        const headMesh = new THREE.Mesh(headGeometry, headMaterial)
+        headGroup.add(headMesh)
+
+        // Left ear — teddy bear style nub on top-left
+        const earGeometry = new THREE.SphereGeometry(0.22, 16, 12)
+        const earMaterial = new THREE.MeshStandardMaterial({
+            color: 0x8b7288, // Match head color
+            roughness: 0.5,
+            metalness: 0.1,
+            transparent: true,
+            opacity: 0.4, // Slightly more opaque than head
+            depthWrite: false,
+        })
+
+        const leftEar = new THREE.Mesh(earGeometry, earMaterial)
+        leftEar.position.set(-0.6, 0.75, 0) // Higher up on the head
+        leftEar.scale.set(1, 0.9, 0.8)
+        headGroup.add(leftEar)
+        headGroup.leftEar = leftEar
+
+        const rightEar = new THREE.Mesh(earGeometry, earMaterial)
+        rightEar.position.set(0.6, 0.75, 0) // Higher up on the head
+        rightEar.scale.set(1, 0.9, 0.8)
+        headGroup.add(rightEar)
+        headGroup.rightEar = rightEar
+
+        // Position at world origin (will be updated in _updateHeadMesh)
+        headGroup.position.set(0, 2, 0)
+        headGroup.scale.setScalar(2.5) // Scale up for proper size
+
+        // Add to scene (not camera)
+        this.scene.add(headGroup)
+        headGroup.visible = true
+
+        this._headMesh = headGroup
+        return headGroup
+    }
+
+    _updateHeadMesh() {
+        if (!this._headMesh) return
+
+        // Always show head for now
+        this._headMesh.visible = true
+
+        // Position head at the bottom of the screen (in world space)
+        const camera = this._camera3d
+        const head = this._headMesh
+
+        // Get camera direction
+        const forward = new THREE.Vector3(0, 0, -1)
+        forward.applyQuaternion(camera.quaternion)
+        const right = new THREE.Vector3(1, 0, 0)
+        right.applyQuaternion(camera.quaternion)
+        const up = new THREE.Vector3(0, 1, 0)
+        up.applyQuaternion(camera.quaternion)
+
+        // Position: at the bottom of the screen
+        // Camera is looking down, so "bottom of screen" is further away from camera
+        const distance = 8 // Units from camera (closer)
+        const bottomOffset = 2.5 // Units down from center (in screen space)
+
+        // Calculate position at bottom of screen
+        const targetPos = camera.position.clone()
+            .add(forward.clone().multiplyScalar(distance))
+            .add(up.clone().multiplyScalar(-bottomOffset))
+
+        head.position.copy(targetPos)
+
+        // Make head face the camera
+        head.lookAt(camera.position)
+
+        // Apply head yaw from thoughtDome (rotation around Y axis)
+        const headYaw = typeof this.headYaw === 'number' ? this.headYaw : 0
+        head.rotation.y += headYaw * 0.5
+
+        // Update ear scales based on head turn (3D perspective)
+        const turn = Math.sin(headYaw)
+        if (head.leftEar && head.rightEar) {
+            const leftScale = 1 + turn * 0.3
+            const rightScale = 1 - turn * 0.3
+            head.leftEar.scale.setScalar(leftScale)
+            head.rightEar.scale.setScalar(rightScale)
+        }
+
+        // Update head material with color gradient based on turn direction
+        // This helps show which way the head is "turning"
+        if (this._headMesh.children[0]?.material) {
+            const health = this.followedEntity?.traits?.health ?? 100
+            const healthMax = this.followedEntity?.traits?.healthMax ?? 100
+            const healthPct = Math.max(0, Math.min(1, health / healthMax))
+
+            // Base purple color
+            const baseR = 0.545
+            const baseG = 0.447
+            const baseB = 0.522
+
+            // Add a warm (orange-ish) tint on the side we're turning toward
+            // and a cool (blue-ish) tint on the side we're turning away from
+            const turnIntensity = Math.abs(turn) * 0.15 // Subtle effect
+            const turnSign = Math.sign(turn)
+
+            // Apply gradient-like effect by shifting the overall color
+            const r = baseR + turnSign * turnIntensity * 0.5 + (1 - healthPct) * 0.2
+            const g = baseG + healthPct * 0.05
+            const b = baseB - turnSign * turnIntensity * 0.3 + healthPct * 0.1
+
+            this._headMesh.children[0].material.color.setRGB(r, g, b)
+
+            // Update opacity based on health (more transparent when unhealthy)
+            this._headMesh.children[0].material.opacity = 0.35 + (1 - healthPct) * 0.15
+        }
+
+        // Update ear materials with turn-based color
+        if (head.leftEar?.material && head.rightEar?.material) {
+            const baseR = 0.545
+            const baseG = 0.447
+            const baseB = 0.522
+
+            // Left ear gets warmer when turning left, right ear gets warmer when turning right
+            const leftWarmth = turn < 0 ? 0.1 : 0
+            const rightWarmth = turn > 0 ? 0.1 : 0
+
+            head.leftEar.material.color.setRGB(baseR + leftWarmth, baseG, baseB - leftWarmth * 0.5)
+            head.rightEar.material.color.setRGB(baseR + rightWarmth, baseG, baseB - rightWarmth * 0.5)
+        }
+    }
+
     _updateCamera() {
         if (this.followMode && this.followedEntity) {
             this.viewX = this.followedEntity.x
@@ -1746,17 +1895,20 @@ class ThreeRenderer {
             dir.normalize()
 
             const targetYaw = Math.atan2(dir.z, dir.x)
+
+            // Camera always smooth — no head influence, just gentle damping
             this._firstPersonYaw = this._easeAngle(
                 this._firstPersonYaw,
                 targetYaw,
                 this,
                 '_firstPersonYawVelocity',
-                { response: 0.26, damping: 0.86, maxSpeed: 0.12 }
+                { response: 0.12, damping: 0.92, maxSpeed: 0.08, snapThreshold: 0.003, stopVelocity: 0.002 }
             )
             dir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
 
             const eyeGround = this._getGroundHeightAt(this.followedEntity.x, this.followedEntity.y)
-            const targetEye = new THREE.Vector3(this.followedEntity.x, eyeGround + this.firstPersonHeight, this.followedEntity.y)
+            const bobOffset = typeof this.fpsBobY === 'number' ? this.fpsBobY : 0
+            const targetEye = new THREE.Vector3(this.followedEntity.x, eyeGround + this.firstPersonHeight + bobOffset, this.followedEntity.y)
             this._smoothedFirstPersonEye.lerp(targetEye, 0.48)
             this._smoothedFirstPersonDir.lerp(dir, 0.4).normalize()
 
@@ -1804,6 +1956,7 @@ class ThreeRenderer {
         const { progress } = this.world.clock.getProgress()
         this._timeUniform.value = performance.now() * 0.001
         this._updateCamera()
+        this._updateHeadMesh()
 
         this._gridHelper.visible = !!this.showGrid
 

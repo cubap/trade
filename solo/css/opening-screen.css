@@ -160,14 +160,12 @@
 }
 
 /* Thought Dome HUD — through-the-head view */
-
 #thought-dome {
     position: fixed;
     bottom: 0;
-    left: 50%;
-    transform: translateX(-50%);
-    width: min(520px, 90vw);
-    text-align: center;
+    left: 0;
+    right: 0;
+    height: 160px;
     z-index: 150;
     pointer-events: none;
 }
@@ -175,20 +173,72 @@
 /* The skull outline — frames the bottom of the screen like looking into the back of a head */
 #thought-skull {
     position: absolute;
-    bottom: -1px;
+    bottom: -30px;
     left: 50%;
-    transform: translateX(-50%);
-    width: 100%;
-    height: 110px;
-    border-radius: 50% 50% 8% 8% / 70% 70% 15% 15%;
+    /* transform handled entirely by JS (thoughtDome.js) to preserve translateX(-50%) centering */
+    width: min(360px, 33vw);
+    height: 140px;
+    border-radius: 50% 50% 12% 12% / 55% 55% 20% 20%;
     border: 2px solid rgba(90, 75, 85, 0.5);
     border-bottom: none;
-    background: radial-gradient(ellipse at 50% 90%, rgba(20, 18, 28, 0.4) 0%, transparent 70%);
+    background: radial-gradient(ellipse at 50% 75%, rgba(30, 25, 40, 0.35) 0%, rgba(20, 18, 28, 0.15) 60%, transparent 80%);
     box-shadow: inset 0 0 30px rgba(50, 40, 55, 0.15), 0 0 15px rgba(50, 40, 55, 0.1);
     transition: border-color 0.5s ease, box-shadow 0.5s ease;
 }
 
-/* Thought text — lives inside the skull cavity */
+/* Teddy bear ears — real DOM elements, transformed by JS for head turning */
+.thought-ear {
+    position: absolute;
+    top: -16px;
+    width: 28px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid rgba(90, 75, 85, 0.5);
+    background: radial-gradient(ellipse at 50% 60%, rgba(30, 25, 40, 0.3) 0%, rgba(20, 18, 28, 0.15) 70%);
+    box-shadow: inset 0 0 8px rgba(50, 40, 55, 0.15);
+    transition: border-color 0.5s ease, box-shadow 0.5s ease;
+}
+
+#thought-ear-left {
+    left: 28%;
+    /* transform set by JS: translateX(-50%) rotate(angle) */
+}
+
+#thought-ear-right {
+    right: 28%;
+    /* transform set by JS: translateX(50%) rotate(angle) */
+}
+
+/* Thought queue — stacked thoughts that fade up inside the skull cavity */
+#thought-queue {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80%;
+    height: 80px;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.thought-entry {
+    position: absolute;
+    width: 100%;
+    text-align: center;
+    color: #c8c0cc;
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 14px;
+    font-style: italic;
+    line-height: 1.4;
+    text-shadow: 0 0 12px rgba(180, 160, 190, 0.3), 0 1px 4px rgba(0, 0, 0, 0.6);
+    letter-spacing: 0.3px;
+    opacity: 0;
+    padding: 0 40px;
+    pointer-events: none;
+}
+
+/* Thought text — lives inside the skull cavity (legacy, kept for compatibility) */
 #thought-text {
     position: relative;
     z-index: 2;

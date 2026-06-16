@@ -336,11 +336,21 @@ async function spawnPlayerPawnAndStart(name, biases) {
     const school = new School('school_1', 'School', spawnX + 60, spawnY + 40)
     world.addEntity(school)
 
-    // Setup thought dome
-    thoughtDome = setupThoughtDome(() => trackedPlayerPawn)
+    // Setup thought dome — reads from pawn's thoughtLog, gets renderer for FPS camera bob
+    thoughtDome = setupThoughtDome(() => trackedPlayerPawn, () => activeRenderer)
 
-    // Queue initial spawn thoughts
-    queueSpawnThoughts(player)
+    // Queue initial spawn thoughts — seed the first thought into the pawn's thoughtLog so the dome picks it up
+    const firstSpawn = SPAWN_THOUGHTS[0]
+    if (firstSpawn) {
+        player.addThought(firstSpawn.text, 'spawn')
+    }
+    // Queue subsequent spawn thoughts
+    for (let i = 1; i < SPAWN_THOUGHTS.length; i++) {
+        const thought = SPAWN_THOUGHTS[i]
+        setTimeout(() => {
+            player.addThought(thought.text, 'spawn')
+        }, thought.delay)
+    }
 
     // Notify server
     try {
@@ -388,25 +398,7 @@ function applyQuizBiases(pawn, biases) {
     console.log(`[opening] Applied quiz biases for ${pawn.name}:`, multipliers)
 }
 
-// Queue initial spawn thoughts for the thought dome
-function queueSpawnThoughts(pawn) {
-    if (!thoughtDome) return
-
-    // Add first thought immediately
-    pawn.addThought(SPAWN_THOUGHTS[0].text, 'spawn')
-    thoughtDome.setThought(SPAWN_THOUGHTS[0].text)
-
-    // Queue subsequent thoughts
-    for (let i = 1; i < SPAWN_THOUGHTS.length; i++) {
-        const thought = SPAWN_THOUGHTS[i]
-        setTimeout(() => {
-            pawn.addThought(thought.text, 'spawn')
-            thoughtDome?.setThought(thought.text)
-        }, thought.delay)
-    }
-}
-
-// Start with opening screen (test mode skips to direct spawn)
+// No opening screen presimulation — world is streamed around the pawn at runtime.
 async function startWithOpeningScreen() {
     const params = new URLSearchParams(location.search)
     if (params.get('testMode') === '1') {

@@ -101,28 +101,11 @@ export function setupStatsDisplay(world, renderer, playerMode = null) {
                     ${stageProgress ? `<div><strong>Build Staging</strong>: ${stageProgress}</div>` : ''}
                     ${buildProgress ? `<div><strong>Build Progress</strong>: ${buildProgress}</div>` : ''}
                     ${(hasStatus('task_intent') || statusCaps.length === 0) ? `<div><strong>Action</strong>: ${actionText}</div>` : ''}
-                    ${(hasStatus('task_intent') || statusCaps.length === 0) ? `<div><strong>Thought</strong>: ${latestThought}</div>` : ''}
                     ${(hasStatus('inventory_summary') || hasStatus('inventory_detail') || statusCaps.length === 0) ? `<div><strong>Inventory</strong>: ${formatInventory(pawn)}</div>` : ''}
                     ${(hasStatus('memory_confidence') || statusCaps.length === 0) ? `<div><strong>Caches</strong>: ${knownCaches}</div>` : ''}
                     ${(hasStatus('vitals_basic') || hasStatus('vitals_trend') || hasStatus('needs_stack') || hasStatus('condition_flags') || statusCaps.length === 0) ? `<div><strong>Status</strong>: ${pawn.behaviorState ?? 'idle'} | H:${getNeed(pawn, 'hunger')} T:${getNeed(pawn, 'thirst')} E:${getNeed(pawn, 'energy')}</div>` : ''}
                 </div>
             ` : '<div><strong>Pawn</strong>: none tracked</div>'}
-
-            <details style="margin-top: 6px;">
-                <summary style="cursor: pointer; font-size: 12px;">World/debug</summary>
-                <div style="margin-top: 4px;">
-                    <div>Tick: ${world.clock.currentTick}</div>
-                    <div>Time: ${gameHour}:${gameMinute.toString().padStart(2, '0')} (${dayNight})</div>
-                    <div>Zoom: ${renderer.zoomLevel.toFixed(2)}x</div>
-                    <div>Entities: ${world.entitiesMap.size}</div>
-                    <div>View: (${Math.round(renderer.viewX)}, ${Math.round(renderer.viewY)})</div>
-                    <div>Grid: ${renderer.showGrid ? 'On' : 'Off'}</div>
-                    ${renderer.followMode ? `<div>Following: ${renderer.followedEntity?.name || 'Unknown'}</div>` : ''}
-                    ${renderer.perceptionMode ? '<div>Perception Mode: ON</div>' : ''}
-                    ${renderer.isPanning ? '<div>Panning</div>' : ''}
-                </div>
-            </details>
-            <div style="font-size: 10px; margin-top: 5px;">Press H for camera help</div>
         `
         requestAnimationFrame(updateStats)
     }
