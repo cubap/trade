@@ -23,26 +23,6 @@ This deploys the static solo game.
 
 **Root URL automatically redirects to the solo game.**
 
-## Step 2: Deploy to Railway (5 minutes)
-
-This deploys the full multiplayer server.
-
-1. Go to [railway.app](https://railway.app/)
-2. Click "New Project" → "Deploy from GitHub repo"
-3. Select `cubap/trade` repository
-4. Click on your deployed service
-5. Go to "Variables" tab and add:
-
-   | Variable | Value (from your .env) |
-   |----------|----------------------|
-   | `MONGO_URI` | `mongodb+srv://patrickmcuba_db_user:ZaXy2IjZndRkcYqS@tiggles.7cxvkvh.mongodb.net/game?retryWrites=true&w=majority` |
-   | `NODE_ENV` | `production` |
-   | `PORT` | `5000` |
-   | `TEST_PAWN` | `670df72d7c18731aceacb1a0` |
-
-6. Click "Deploy" (Railway auto-detects Node.js and uses `npm run serve`)
-7. Done! Your server is live at `https://trade-production.up.railway.app` (URL varies)
-
 ## Step 3: Enable Multiplayer Features (2 minutes)
 
 In `server.js`, uncomment these lines:
@@ -72,14 +52,12 @@ Ensure your MongoDB cluster allows Railway connections:
 You now have:
 
 ✅ **Netlify** - Fast static solo game at `https://[your-name].netlify.app`  
-✅ **Railway** - Full multiplayer server at `https://[your-app].up.railway.app`  
 ✅ **Both auto-deploy** on every push to `main`  
 ✅ **MongoDB Atlas** - Shared database for both local and production
 
 ## Costs
 
 - **Netlify**: Free (100GB bandwidth, 300 build minutes/month)
-- **Railway**: $5/month free credit (~500 hours runtime)
 - **MongoDB Atlas**: Free M0 tier (512MB storage)
 
 Total: **$0/month** for small projects within free tier limits
@@ -89,22 +67,7 @@ Total: **$0/month** for small projects within free tier limits
 ### Solo Game (Netlify)
 Open your Netlify URL in a browser - the game runs entirely client-side.
 
-### Multiplayer Server (Railway)
-```bash
-# Test the health endpoint
-curl https://your-app.up.railway.app/
-
-# Connect client to your Railway server
-# Edit client.js to use your Railway URL
-node client.js
-```
-
 ## Troubleshooting
-
-### Railway deployment fails
-- Check logs in Railway dashboard
-- Verify `MONGO_URI` environment variable is set
-- Ensure multiplayer features are uncommented in `server.js`
 
 ### MongoDB connection fails
 - Verify Network Access in Atlas (allow `0.0.0.0/0`)
@@ -118,7 +81,6 @@ node client.js
 ## Monitoring
 
 - **Netlify logs**: Site dashboard → Deploys
-- **Railway logs**: Project dashboard → Deployments
 - **MongoDB metrics**: Atlas dashboard → Metrics
 
 ## Next Steps
@@ -126,8 +88,7 @@ node client.js
 1. ✅ Push to GitHub to trigger deployments
 2. ⏱️ Wait 2-3 minutes for builds
 3. 🎮 Open your Netlify URL to play solo
-4. 🔗 Connect client to Railway URL for multiplayer
-5. 📊 Monitor usage in dashboards
+4. 📊 Monitor usage in dashboards
 
 ---
 

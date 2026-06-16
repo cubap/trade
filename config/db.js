@@ -5,8 +5,8 @@ const connectDB = async () => {
     await mongoose.connect(process.env.MONGO_URI)
     console.log('MongoDB connected')
   } catch (err) {
-    console.error(err.message)
-    process.exit(1)
+    console.warn('MongoDB not available — running in offline mode.')
+    console.warn('(Set MONGO_URI in .env to enable persistence)')
   }
 }
 

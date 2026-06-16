@@ -14,6 +14,8 @@ import PlayerMode from './core/PlayerMode.js'
 import ProgressionController from './core/ProgressionController.js'
 import { setupInteractionPanel } from './ui/interactionPanel.js'
 import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
+import { createOpeningScreen, SPAWN_THOUGHTS } from './ui/openingScreen.js'
+import { setupThoughtDome } from './ui/thoughtDome.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -61,6 +63,7 @@ const renderer = new Proxy({}, {
 const playerMode = new PlayerMode(world, renderer)
 const progression = new ProgressionController()
 let trackedPlayerPawn = null
+let thoughtDome = null
 
 // Expose runtime objects for debugging in DevTools
 try {
@@ -304,261 +307,120 @@ async function seedCraftingResourcesNearPawn(pawn) {
     seedAnimalsNearPawn(pawn, 2)
 }
 
-// Simple overlay to show presimulation progress
-function createPreSimOverlay() {
-    const overlay = document.createElement('div')
-    overlay.id = 'presim-overlay'
-    Object.assign(overlay.style, {
-        position: 'fixed', inset: '0', background: 'rgba(10,12,16,0.8)',
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', zIndex: 9999
-    })
-    overlay.innerHTML = `
-        <div style="color:#cbd5e1;font-family:system-ui,Segoe UI,Roboto,Arial;font-size:16px;margin-bottom:12px;">
-            Initializing world…
-        </div>
-        <div style="width:70%;max-width:680px;background:#1f2937;border-radius:6px;overflow:hidden;border:1px solid #374151;">
-            <div id="presim-bar" style="width:0%;height:14px;background:#10b981;transition:width .1s ease;"></div>
-        </div>
-        <div id="presim-text" style="color:#94a3b8;margin-top:10px;font-family:system-ui,Segoe UI,Roboto,Arial;font-size:13px;"></div>
-    `
-    document.body.appendChild(overlay)
-    return overlay
+// Shared: create pawn from opening screen results and start the game
+async function spawnPlayerPawnAndStart(name, biases) {
+    const spawnPoint = pickPlayerSpawnPoint()
+    const spawnX = spawnPoint.x
+    const spawnY = spawnPoint.y
+    ensureStarterViability(spawnX, spawnY, waterGen)
+    const player = new Pawn('player_1', name, spawnX, spawnY)
+
+    // Apply quiz biases to goal weights
+    if (biases && typeof biases === 'object') {
+        applyQuizBiases(player, biases)
+    }
+
+    world.addEntity(player)
+    world.setActiveChunkWindow?.(player.x, player.y, activeChunkRadius)
+    trackedPlayerPawn = player
+    playerMode.setTrackedPawn(player)
+    renderer.setFollowEntity?.(player)
+    try { window.player = player } catch (e) {}
+
+    populateChunksAroundWorldPoint(player.x, player.y, activeChunkRadius)
+    seedAnimalsNearPawn(player, activeChunkRadius)
+    await seedCraftingResourcesNearPawn(player)
+
+    const perception = player.traits?.detection ?? 100
+    renderer.camera.setZoomToShowRadius?.(perception, 0.85)
+    const school = new School('school_1', 'School', spawnX + 60, spawnY + 40)
+    world.addEntity(school)
+
+    // Setup thought dome
+    thoughtDome = setupThoughtDome(() => trackedPlayerPawn)
+
+    // Queue initial spawn thoughts
+    queueSpawnThoughts(player)
+
+    // Notify server
+    try {
+        fetch('/_dev/log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag: 'client-ready', message: `player:${player.name}` })
+        }).catch(() => {})
+    } catch (e) {}
+
+    startMainLoop()
 }
 
-// Batched presimulation so the UI can update; then seed animals and align to 06:00
-function preSimulateAndStart() {
-    const overlay = createPreSimOverlay()
-    const bar = overlay.querySelector('#presim-bar')
-    const text = overlay.querySelector('#presim-text')
+// Apply quiz biases to pawn goal weights
+function applyQuizBiases(pawn, biases) {
+    // Map quiz bias keys to goal planner weight multipliers
+    const biasMap = {
+        explore: { explore: 1.4, gather: 0.9 },
+        survive: { gather: 1.3, consume: 1.3 },
+        ponder: { ponder: 1.4, study: 1.3 },
+        craft: { craft: 1.4, build: 1.2 },
+        social: { social: 1.4, teach: 1.2 },
+        build: { build: 1.4, craft: 1.1 },
+    }
 
+    // Accumulate multipliers per goal type
+    const multipliers = {}
+    for (const answer of Object.values(biases)) {
+        const bias = answer?.bias
+        if (!bias || !biasMap[bias]) continue
+        for (const [goalType, weight] of Object.entries(biasMap[bias])) {
+            multipliers[goalType] = (multipliers[goalType] ?? 1) * weight
+        }
+    }
+
+    // Apply to pawn's goal weights if the goals system supports it
+    if (pawn.goals?.goalWeights) {
+        for (const [type, mult] of Object.entries(multipliers)) {
+            pawn.goals.goalWeights[type] = mult
+        }
+    }
+
+    // Store for runtime access
+    pawn.quizBiases = multipliers
+    console.log(`[opening] Applied quiz biases for ${pawn.name}:`, multipliers)
+}
+
+// Queue initial spawn thoughts for the thought dome
+function queueSpawnThoughts(pawn) {
+    if (!thoughtDome) return
+
+    // Add first thought immediately
+    pawn.addThought(SPAWN_THOUGHTS[0].text, 'spawn')
+    thoughtDome.setThought(SPAWN_THOUGHTS[0].text)
+
+    // Queue subsequent thoughts
+    for (let i = 1; i < SPAWN_THOUGHTS.length; i++) {
+        const thought = SPAWN_THOUGHTS[i]
+        setTimeout(() => {
+            pawn.addThought(thought.text, 'spawn')
+            thoughtDome?.setThought(thought.text)
+        }, thought.delay)
+    }
+}
+
+// Start with opening screen (test mode skips to direct spawn)
+async function startWithOpeningScreen() {
     const params = new URLSearchParams(location.search)
-    const host = location.hostname
-    const isDevHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0'
-    const defaultPreSimDays = isStreamingWorld ? 0 : (isDevHost ? 7 : 30)
-    const preSimDays = Number(params.get('preSimDays')) || defaultPreSimDays
-    const overrideTicks = Number(params.get('preSimTicks')) || null
-    // 1 day = 6 game hours = 360 ticks
-    const totalTicks = overrideTicks ?? preSimDays * 360
-    const batch = Math.max(200, Math.floor(totalTicks / 100)) // ~100 steps max
-
-    let processed = 0
-    let lastPct = -1
-    const start = performance.now()
-    console.log(`Pre-simulating flora: ${preSimDays} days (${totalTicks} ticks) in batches of ${batch}…`)
-
-    if (totalTicks <= 0) {
-        setTimeout(async () => {
-            const spawnPoint = pickPlayerSpawnPoint()
-            const spawnX = spawnPoint.x
-            const spawnY = spawnPoint.y
-            const player = new Pawn('player_1', 'Player', spawnX, spawnY)
-            world.addEntity(player)
-            world.setActiveChunkWindow?.(player.x, player.y, activeChunkRadius)
-            trackedPlayerPawn = player
-            playerMode.setTrackedPawn(player)
-            renderer.setFollowEntity?.(player)
-            window.player = player
-
-            populateChunksAroundWorldPoint(player.x, player.y, activeChunkRadius)
-            seedAnimalsNearPawn(player, activeChunkRadius)
-            await seedCraftingResourcesNearPawn(player)
-            ensureStarterViability(spawnX, spawnY, waterGen)
-
-            const perception = player.traits?.detection ?? 100
-            renderer.camera.setZoomToShowRadius?.(perception, 0.85)
-            const school = new School('school_1', 'School', spawnX + 60, spawnY + 40)
-            world.addEntity(school)
-
-            overlay.remove()
-            startMainLoop()
-        }, 0)
-        return
+    if (params.get('testMode') === '1') {
+        await spawnPlayerPawnAndStart('Player', {})
+    } else {
+        const result = await createOpeningScreen()
+        await spawnPlayerPawnAndStart(result.name, result.biases)
     }
-
-    function updateProgress() {
-        const pct = Math.floor((processed / totalTicks) * 100)
-        if (pct !== lastPct) {
-            lastPct = pct
-            if (bar) bar.style.width = `${pct}%`
-            const elapsed = (performance.now() - start) / 1000
-            const rate = processed > 0 ? processed / elapsed : 0
-            const remaining = Math.max(0, totalTicks - processed)
-            const eta = rate > 0 ? Math.ceil(remaining / rate) : '—'
-            if (text) text.textContent = `Presim ${pct}% • ${processed}/${totalTicks} ticks • ${rate.toFixed(0)} t/s • ETA ${eta}s`
-            if (pct % 10 === 0) console.log(`[presim] ${pct}% (${processed}/${totalTicks})`)
-        }
-    }
-
-    async function step() {
-        const n = Math.min(batch, totalTicks - processed)
-        if (n > 0) {
-            world.fastForwardTicks(n)
-            processed += n
-            updateProgress()
-        }
-        if (processed < totalTicks) {
-            setTimeout(step, 0) // yield to browser
-        } else {
-            // Align to 06:00 (24h) exactly
-            const daySeconds = world.clock.gameDayHours * world.clock.gameHourSeconds
-            const targetHour24 = 6
-            const targetSeconds = Math.floor((targetHour24 / 24) * daySeconds)
-            const curSeconds = world.clock.getGameSeconds() % daySeconds
-            const secondsPerTick = world.clock.gameSecondsPerTick
-            const deltaSeconds = (targetSeconds - curSeconds + daySeconds) % daySeconds
-            const deltaTicks = Math.round(deltaSeconds / secondsPerTick)
-            if (deltaTicks > 0) world.fastForwardTicks(deltaTicks)
-
-            // Add one player pawn in a high-suitability settlement basin.
-            const spawnPoint = pickPlayerSpawnPoint()
-            const spawnX = spawnPoint.x
-            const spawnY = spawnPoint.y
-            ensureStarterViability(spawnX, spawnY, waterGen)
-            const player = new Pawn('player_1', 'Player', spawnX, spawnY)
-            world.addEntity(player)
-            world.setActiveChunkWindow?.(player.x, player.y, activeChunkRadius)
-            trackedPlayerPawn = player
-            populateChunksAroundWorldPoint(player.x, player.y, activeChunkRadius)
-            seedAnimalsNearPawn(player, activeChunkRadius)
-            await seedCraftingResourcesNearPawn(player)
-            playerMode.setTrackedPawn(player)
-            renderer.setFollowEntity?.(player)
-            try {
-                window.player = player
-            } catch (e) {
-                // Ignore when not in browser
-            }
-            // TEST MODE: inject synthetic materials immediately so crafting can proceed
-            try {
-                const params = new URLSearchParams(location.search)
-                if (params.get('testMode') === '1') {
-                    player.inventory = player.inventory || []
-                    const synthetic = [ { type: 'stick', name: 'synthetic_stick' }, { type: 'fiber', name: 'synthetic_fiber' } ]
-                    for (const item of synthetic) {
-                        try {
-                            let added = false
-                            if (typeof player.addItemToInventory === 'function') {
-                                try { added = !!player.addItemToInventory(item) } catch (e) { added = false }
-                            }
-                            if (!added && player.inventory.length < (player.inventorySlots || 2)) {
-                                player.inventory.push(item)
-                                added = true
-                            }
-                            fetch('/_dev/log', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ tag: 'test-inject-material', message: { pawn: player.name || player.id, item: item.type, added } })
-                            }).catch(() => {})
-                        } catch (e) { /* ignore per-test errors */ }
-                    }
-                }
-            } catch (e) { }
-            // In test mode, unlock a nearby-gatherable recipe for the player
-            try {
-                const params = new URLSearchParams(location.search)
-                if (params.get('testMode') === '1') {
-                    const recipesList = Array.isArray(RECIPES) ? RECIPES : Object.values(RECIPES || {})
-                    const recipe = recipesList[0]
-                    if (recipe) {
-                        if (!player.unlocked) player.unlocked = { recipes: new Set() }
-                        if (!player.unlocked.recipes) player.unlocked.recipes = new Set()
-                        const key = recipe.name || recipe.id || (recipe.output && recipe.output.name) || JSON.stringify(recipe)
-                        player.unlocked.recipes.add(key)
-                        // Inform server for visibility
-                        try { fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'test-unlock', message: `unlocked recipe ${key} for ${player.name}` }) }).catch(()=>{}) } catch(e){}
-                    }
-                }
-                // In test mode, also inject synthetic materials into inventory to enable crafting
-                try {
-                    const params2 = new URLSearchParams(location.search)
-                    if (params2.get('testMode') === '1') {
-                        const synthetic = [{ type: 'stick', name: 'synthetic_stick' }, { type: 'fiber', name: 'synthetic_fiber' }]
-                        for (const s of synthetic) {
-                            try {
-                                let added = false
-                                if (typeof player.addItemToInventory === 'function') {
-                                    added = !!player.addItemToInventory(s)
-                                } else {
-                                    player.inventory = player.inventory || []
-                                    if (player.inventory.length < (player.inventorySlots || 2)) {
-                                        player.inventory.push(s)
-                                        added = true
-                                    }
-                                }
-                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'test-inject-material', message: { pawn: player.name||player.id, item: s.type, added } }) }).catch(()=>{})
-                            } catch (e) {}
-                        }
-                    }
-                } catch (e) {}
-            } catch (e) {}
-            // Zoom to pawn perception distance (use detection as proxy)
-            const perception = player.traits?.detection ?? 100
-            renderer.camera.setZoomToShowRadius?.(perception, 0.85)
-            // Place a school structure nearby for midlevel skill development
-            const school = new School('school_1', 'School', spawnX + 60, spawnY + 40)
-            world.addEntity(school)
-            console.log(`Pre-sim complete in ${(performance.now() - start).toFixed(0)} ms`)
-            overlay.remove()
-            // Notify server that client finished presim and created player
-            try {
-                fetch('/_dev/log', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tag: 'client-ready', message: `player:${player?.name || player?.id || 'unknown'}` })
-                }).catch(() => {})
-
-                // Also send a safe, minimal dump of the player's craft-related state
-                const safeDump = {
-                    pawn: player?.name || player?.id || null,
-                    inventory: (player?.inventory || []).map(i => i?.name || i?.type || null),
-                    inventorySlots: player?.inventorySlots || 0,
-                    hasCraftMethod: typeof player?.craft === 'function',
-                    hasAddItemMethod: typeof player?.addItemToInventory === 'function',
-                    unlockedRecipesCount: player?.unlocked?.recipes ? (player.unlocked.recipes.size || Object.keys(player.unlocked.recipes || {}).length) : 0,
-                    currentGoalType: player?.goals?.currentGoal?.type || player?.currentGoal?.type || null
-                }
-                fetch('/_dev/log', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tag: 'force-dump', message: safeDump })
-                }).catch(() => {})
-            } catch (e) {}
-            // If running in test mode, attempt a deterministic craft shortly after
-            try {
-                const paramsCraft = new URLSearchParams(location.search)
-                if (paramsCraft.get('testMode') === '1') {
-                    setTimeout(() => {
-                        try {
-                            const recipesList = Array.isArray(RECIPES) ? RECIPES : Object.values(RECIPES || {})
-                            const recipe = recipesList[0]
-                            if (!recipe) {
-                                fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-fail', message: 'no-recipe-available' }) }).catch(()=>{})
-                                return
-                            }
-                            let returned
-                            try {
-                                // Try invoking craft with the recipe object (implementations vary)
-                                returned = player.craft(recipe)
-                            } catch (err) {
-                                try { returned = player.craft(recipe.name || recipe.id) } catch (err2) { returned = { error: String(err2 || err) } }
-                            }
-                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-invoked', message: { pawn: player?.name || player?.id, recipe: recipe.name || recipe.id || null, returned } }) }).catch(()=>{})
-                        } catch (e) {
-                            fetch('/_dev/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tag: 'craft-error', message: String(e) }) }).catch(()=>{})
-                        }
-                    }, 2500)
-                }
-            } catch (e) {}
-            startMainLoop()
-        }
-    }
-
-    updateProgress()
-    step()
 }
-preSimulateAndStart()
 
-// Controls are initialized after presim completes
+// No presimulation — world is streamed around the pawn at runtime.
+startWithOpeningScreen()
+
+// Controls are initialized after opening screen completes
 let controls
 let _modeSwitcherUpdate = null
 let _interactionPanel = null
@@ -678,7 +540,10 @@ function simulationLoop(timestamp) {
         
         // Always render to show current state
         renderer.render()
-        
+
+        // Update thought dome display
+        thoughtDome?.update?.(trackedPlayerPawn)
+
         // Continue the animation loop
         requestAnimationFrame(simulationLoop)
     } catch (error) {
@@ -688,4 +553,4 @@ function simulationLoop(timestamp) {
     }
 }
 
-// Loop starts in startMainLoop() after presim
+// Loop starts in startMainLoop() after opening screen

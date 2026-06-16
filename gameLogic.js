@@ -12,6 +12,12 @@ const setupGameLogic = (server) => {
     socket.on('playerAction', async (action) => {
       console.log(`Received action: ${JSON.stringify(action)}`)
 
+      // Skip DB operations if MongoDB is not connected
+      if (mongoose.connection.readyState !== 1) {
+        console.warn('MongoDB not connected — skipping action')
+        return
+      }
+
       if (!mongoose.Types.ObjectId.isValid(action.entityId)) {
         console.log(`Invalid entity ID: ${action.entityId}`)
         return
@@ -40,6 +46,12 @@ const setupGameLogic = (server) => {
 let gameTime = 0 // in seconds, advances by Pawn.TURN_GAME_SECONDS per tick
 
 const simulateWorld = async () => {
+  // Skip simulation if MongoDB is not connected
+  if (mongoose.connection.readyState !== 1) {
+    setTimeout(simulateWorld, 5000)
+    return
+  }
+
   const entities = await Entity.find()
   for (const entity of entities) {
     entity.attributes.energy -= 1

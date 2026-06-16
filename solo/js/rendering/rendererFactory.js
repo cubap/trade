@@ -1,12 +1,12 @@
 import CanvasRenderer from './CanvasRenderer.js'
 import ThreeRenderer from './ThreeRenderer.js'
 
-export const DEFAULT_RENDERER_KEY = 'canvas'
+export const DEFAULT_RENDERER_KEY = 'three'
 
 const RENDERER_ALIASES = {
     default: DEFAULT_RENDERER_KEY,
-    '2d': DEFAULT_RENDERER_KEY,
-    canvas: DEFAULT_RENDERER_KEY,
+    '2d': 'canvas',
+    canvas: 'canvas',
     '3d': 'three',
     three: 'three'
 }
@@ -26,7 +26,7 @@ export function getRendererKeyFromHash(hash = window.location.hash) {
 export function createRenderer(world, canvasId, rendererKey = DEFAULT_RENDERER_KEY) {
     const key = normalizeRendererKey(rendererKey)
 
-    if (key === DEFAULT_RENDERER_KEY) {
+    if (key === 'canvas') {
         return { key, instance: new CanvasRenderer(world, canvasId) }
     }
 
@@ -34,10 +34,10 @@ export function createRenderer(world, canvasId, rendererKey = DEFAULT_RENDERER_K
         try {
             return { key, instance: new ThreeRenderer(world, canvasId) }
         } catch (error) {
-            console.warn(`[renderer] failed to initialize '${key}', falling back to '${DEFAULT_RENDERER_KEY}'`, error)
-            return { key: DEFAULT_RENDERER_KEY, instance: new CanvasRenderer(world, canvasId) }
+            console.warn(`[renderer] failed to initialize '${key}', falling back to 'canvas'`, error)
+            return { key: 'canvas', instance: new CanvasRenderer(world, canvasId) }
         }
     }
 
-    return { key: DEFAULT_RENDERER_KEY, instance: new CanvasRenderer(world, canvasId) }
+    return { key: 'canvas', instance: new CanvasRenderer(world, canvasId) }
 }
