@@ -60,12 +60,12 @@ export function setupCameraTuning(rendererGetter, controlsGetter) {
     panel.appendChild(createDivider('Camera'))
 
     // --- Camera sliders ---
-    // All heights are relative to ground level (pawn is at ground level)
+    // Heights are relative to pawn model top (head level), not ground
     const cameraSliders = [
         { key: 'behindDistance', label: 'Behind', min: 0.5, max: 20, step: 0.1, default: 1.7 },
-        { key: 'cameraHeight', label: 'Cam Height', min: 0.1, max: 30, step: 0.1, default: 3.0 },
+        { key: 'cameraHeight', label: 'Cam Height', min: -5, max: 10, step: 0.1, default: -0.1 },
         { key: 'lookDistance', label: 'Look Dist', min: 1, max: 100, step: 1, default: 9.0 },
-        { key: 'lookHeight', label: 'Look Height', min: 0, max: 20, step: 0.1, default: 4.6 }
+        { key: 'lookHeight', label: 'Look Height', min: -2, max: 10, step: 0.1, default: 1.5 }
     ]
 
     for (const s of cameraSliders) {
@@ -104,16 +104,16 @@ export function setupCameraTuning(rendererGetter, controlsGetter) {
         const r = rendererGetter?.()
         if (!r) return
         r.cameraTuning.behindDistance = 1.7
-        r.cameraTuning.cameraHeight = 3.0
+        r.cameraTuning.cameraHeight = -0.1
         r.cameraTuning.lookDistance = 9.0
-        r.cameraTuning.lookHeight = 4.6
+        r.cameraTuning.lookHeight = 1.5
         r.pawnTuning = r.pawnTuning || {}
         r.pawnTuning.pawnScale = 3.1
         r.pawnTuning.pawnYOffset = -0.1
         panel.querySelectorAll('input[type="range"]').forEach(input => {
             const key = input.dataset.key
             const defaults = {
-                behindDistance: 1.7, cameraHeight: 3.0, lookDistance: 9.0, lookHeight: 4.6,
+                behindDistance: 1.7, cameraHeight: -0.1, lookDistance: 9.0, lookHeight: 1.5,
                 pawnScale: 3.1, pawnYOffset: -0.1
             }
             if (defaults[key] !== undefined) {

@@ -13,6 +13,11 @@ class Pawn extends MobileEntity {
         this.tags.push('pawn')  // Add pawn-specific tag
         this.color = '#3498db'  // Blue color for pawns
         
+        // Walking speed — slower than base mobile entity (20)
+        // Reserve higher speed for running/special maneuvers
+        this.speed = 8
+        this.runSpeed = 20 // For fleeing, charging, etc.
+        
         // Pawn-specific attributes
         this.inventory = [] // Carried items
         this.inventorySlots = 2 // Hands-only: 2 slots at start

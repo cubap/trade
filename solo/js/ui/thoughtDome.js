@@ -1,12 +1,12 @@
-// Thought Dome HUD — thought queue inside the 3D head view
-// The 3D head mesh is rendered by ThreeRenderer._headMesh
-// This module only manages: thought queue, head yaw calculation, camera bob
+// Thought Queue — thought entries rendered over the 3D pawn model
+// The pawn model (GLB head) replaces the old skull outline.
+// This module only manages: thought queue entries, camera bob.
 
 export function setupThoughtDome(pawnGetter, rendererGetter) {
     const container = document.createElement('div')
     container.id = 'thought-dome'
 
-    // Thought queue — stacked thoughts that fade up (rendered inside the 3D head)
+    // Thought queue — stacked thoughts that fade up
     const thoughtQueue = document.createElement('div')
     thoughtQueue.id = 'thought-queue'
 
@@ -15,8 +15,6 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
 
     let camBobPhase = 0
     let lastThoughtIndex = -1 // Track by log length, not tick (multiple thoughts can share a tick)
-    let headYaw = 0 // Current head rotation angle (radians)
-    let targetHeadYaw = 0 // Where the head wants to turn
 
     // Thought queue entries
     const thoughtEntries = [] // { el, text, tick, age, y, opacity }
@@ -28,8 +26,8 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
         const el = document.createElement('p')
         el.className = 'thought-entry'
         el.textContent = text
-        // Start at the bottom (current thought position)
-        el.style.bottom = '60px'
+        // Start at the bottom of the queue area
+        el.style.bottom = '0px'
         el.style.opacity = '0'
         thoughtQueue.appendChild(el)
 
@@ -67,9 +65,9 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
                 entry.el.style.opacity = '1'
             }
 
-            // Move older thoughts up
+            // Move older thoughts up from the bottom
             const ageRatio = Math.min(1, entry.age / 3) // Move up over first 3 seconds
-            entry.el.style.bottom = `${60 + ageRatio * THOUGHT_SPACING}px`
+            entry.el.style.bottom = `${ageRatio * THOUGHT_SPACING}px`
 
             // Remove fully faded entries
             if (entry.age > FADE_DURATION) {
@@ -103,31 +101,8 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
         // --- Update thought queue ---
         updateThoughtEntries(dt)
 
-        // --- Determine head turn target from pawn behavior ---
-        const isMoving = pawn.moving === true
-        const isStudying = pawn.behaviorState === 'studying' || pawn.behaviorState === 'resting'
-
-        if (isMoving) {
-            // When moving, head follows movement direction
-            const prevX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
-            const prevY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
-            const dx = pawn.x - prevX
-            const dy = pawn.y - prevY
-            if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
-                targetHeadYaw = Math.atan2(dy, dx)
-            }
-        } else if (isStudying) {
-            // When studying/resting, head centers (focuses forward)
-            targetHeadYaw = 0
-        }
-        // Otherwise keep current target
-
-        // Smooth head turn toward target
-        const turnSpeed = isStudying ? 0.02 : 0.06 // Slower turn when studying = more deliberate
-        const yawDiff = targetHeadYaw - headYaw
-        headYaw += yawDiff * turnSpeed
-
         // --- Camera bob — slightly out of sync, only when moving ---
+        const isMoving = pawn.moving === true
         const renderer = rendererGetter?.()
         if (isMoving && renderer) {
             camBobPhase += 0.055
@@ -137,10 +112,6 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
             renderer.fpsBobY = 0
         }
 
-        // --- Pass head yaw to renderer for 3D head mesh ---
-        if (renderer) {
-            renderer.headYaw = headYaw
-        }
     }
 
     // Expose API

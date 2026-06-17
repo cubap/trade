@@ -53,12 +53,13 @@ class ThreeRenderer {
         this._smoothedPawnPos = new THREE.Vector3() // Smoothed pawn world position (no tick-boundary bob)
         
         // Camera tuning — adjustable via sliders
-        // Defaults: camera ~3 units above ground, looking at ~1 unit height (pawn level)
+        // All heights relative to pawn model top (head level), not ground
+        // This keeps camera tracking natural on uneven terrain
         this.cameraTuning = {
             behindDistance: 1.7,
-            cameraHeight: 3.0,
+            cameraHeight: -0.1, // Slightly below head top (was 3.0 from ground)
             lookDistance: 9.0,
-            lookHeight: 4.6
+            lookHeight: 1.5 // Above head (was 4.6 from ground)
         }
         
         // Pawn tuning — adjustable via sliders
@@ -66,6 +67,9 @@ class ThreeRenderer {
             pawnScale: 3.1,
             pawnYOffset: -0.1
         }
+        
+        // Pawn model height (set after GLB loads, used for camera-relative-to-head)
+        this._pawnModelHeight = 1.0 // Default: model bounds Y span before scale
         
         // Pause state (set by cameraTuning UI)
         this.paused = false
@@ -1792,6 +1796,10 @@ class ThreeRenderer {
                 console.log('[three] bounds:', bbox.min.x.toFixed(1), bbox.min.y.toFixed(1), bbox.min.z.toFixed(1), '→', bbox.max.x.toFixed(1), bbox.max.y.toFixed(1), bbox.max.z.toFixed(1))
                 console.log('[three] size:', (bbox.max.x - bbox.min.x).toFixed(1), (bbox.max.y - bbox.min.y).toFixed(1), (bbox.max.z - bbox.min.z).toFixed(1))
                 
+                // Store model dimensions for camera/head calculations
+                this._pawnModelHeight = bbox.max.y - bbox.min.y
+                this._pawnModelBottomY = bbox.min.y // Negative value, e.g. -0.5
+                
                 // Try no rotation first — model might already be upright
                 // model.rotation.z = Math.PI // Uncomment if needed
                 
@@ -1890,22 +1898,22 @@ class ThreeRenderer {
         const pawn = this.followedEntity
 
         if (pawn && this.firstPersonLocked) {
-            // Interpolate position for smooth movement
-            const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
-            const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
-            const interpX = pX + (pawn.x - pX) * (progress ?? 0)
-            const interpY = pY + (pawn.y - pY) * (progress ?? 0)
-
-            const eyeGround = this._getGroundHeightAt(interpX, interpY)
+            // Continuous lerp — no progress interpolation to avoid tick-boundary resets
+            const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
             const yOff = this.pawnTuning?.pawnYOffset ?? 0
 
-            // Lerp toward target to eliminate tick-boundary bob
-            const target = new THREE.Vector3(interpX, eyeGround + yOff, interpY)
-            this._smoothedPawnPos.lerp(target, 0.35)
+            // Lift model so bottom sits on ground (model center is at Y=0, bottom is negative)
+            const scale = this.pawnTuning?.pawnScale ?? 2.5
+            const bottomOffset = (this._pawnModelBottomY ?? -0.5) * scale
+
+            // Lerp factor tuned to catch up within ~1 tick (60 frames at 60fps)
+            // 1 - 0.01^(1/60) ≈ 0.094 → reaches 99% in one tick, no overshoot
+            // Increased to 0.15 for more responsive ground tracking
+            const target = new THREE.Vector3(pawn.x, eyeGround - bottomOffset + yOff, pawn.y)
+            this._smoothedPawnPos.lerp(target, 0.15)
             head.position.copy(this._smoothedPawnPos)
 
             // Apply scale from tuning
-            const scale = this.pawnTuning?.pawnScale ?? 2.5
             head.scale.setScalar(scale)
 
             // Smooth Y rotation to face movement direction
@@ -1934,17 +1942,48 @@ class ThreeRenderer {
         this._skyDome.position.set(this.viewX, 0, this.viewY)
 
         if (this.firstPersonLocked && this.followedEntity) {
-            // Interpolate pawn position for smooth camera tracking
-            const pX = Number.isFinite(this.followedEntity.prevX) ? this.followedEntity.prevX : this.followedEntity.x
-            const pY = Number.isFinite(this.followedEntity.prevY) ? this.followedEntity.prevY : this.followedEntity.y
-            const interpX = pX + (this.followedEntity.x - pX) * (progress ?? 0)
-            const interpY = pY + (this.followedEntity.y - pY) * (progress ?? 0)
+            const pawn = this.followedEntity
 
-            const dir = new THREE.Vector3(this.followedEntity.x - pX, 0, this.followedEntity.y - pY)
-            if (dir.lengthSq() < 0.0001) dir.set(1, 0, 0)
-            dir.normalize()
+            // --- Travel direction: where the pawn is moving ---
+            const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
+            const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
+            const travelDir = new THREE.Vector3(pawn.x - pX, 0, pawn.y - pY)
+            const isMoving = travelDir.lengthSq() > 0.0001
+            if (isMoving) travelDir.normalize()
+            else travelDir.set(1, 0, 0)
 
-            const targetYaw = Math.atan2(dir.z, dir.x)
+            // --- Attention vector: where the pawn is looking (from pawn's currentTarget) ---
+            // Debounce: only update attention direction when it meaningfully changes, to avoid camera spin
+            const attnDir = new THREE.Vector3()
+            let hasAttention = false
+            if (pawn.currentTarget) {
+                const dx = pawn.currentTarget.x - pawn.x
+                const dy = pawn.currentTarget.y - pawn.y
+                if (dx * dx + dy * dy > 0.01) {
+                    const rawAttn = new THREE.Vector3(dx, 0, dy).normalize()
+                    // Only adopt new attention direction if it differs significantly from current
+                    if (!this._cachedAttnDir || Math.abs(rawAttn.x - this._cachedAttnDir.x) > 0.15 || Math.abs(rawAttn.z - this._cachedAttnDir.z) > 0.15) {
+                        this._cachedAttnDir = rawAttn.clone()
+                    }
+                    attnDir.copy(this._cachedAttnDir)
+                    hasAttention = true
+                }
+            }
+            // When no explicit target, attention defaults to travel direction
+            if (!hasAttention) {
+                attnDir.copy(travelDir)
+            }
+
+            // --- Blend travel + attention into a single facing direction ---
+            // Weight shifts: moving = more travel, studying/idle = more attention
+            const isStudying = pawn.behaviorState === 'studying' || pawn.behaviorState === 'resting'
+            const attnWeight = isStudying ? 0.85 : (isMoving ? 0.35 : 0.6)
+            const blendDir = new THREE.Vector3()
+                .addScaledVector(travelDir, 1 - attnWeight)
+                .addScaledVector(attnDir, attnWeight)
+                .normalize()
+
+            const targetYaw = Math.atan2(blendDir.z, blendDir.x)
 
             // Camera smoothly catches up when pawn changes direction
             this._firstPersonYaw = this._easeAngle(
@@ -1954,30 +1993,37 @@ class ThreeRenderer {
                 '_firstPersonYawVelocity',
                 { response: 0.18, damping: 0.88, maxSpeed: 0.12, snapThreshold: 0.003, stopVelocity: 0.002 }
             )
-            dir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
+            const dir = new THREE.Vector3(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
 
-            const eyeGround = this._getGroundHeightAt(interpX, interpY)
+            // Continuous lerp — no progress interpolation to avoid tick-boundary resets
+            const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
             const bobOffset = 0 // Disabled for troubleshooting
 
-            // Camera position: behind the pawn, height above ground
-            // Use tunable values from cameraTuning (all relative to ground)
+            // Pawn model top (head level) — same offset as _updateHeadMesh so camera stays aligned
+            const pawnScale = this.pawnTuning?.pawnScale ?? 2.5
+            const bottomOffset = (this._pawnModelBottomY ?? -0.5) * pawnScale
+            const pawnHeadY = eyeGround - bottomOffset + this._pawnModelHeight * pawnScale
+
+            // Camera position: behind the pawn, height relative to pawn head
+            // Use tunable values from cameraTuning (relative to head, not ground)
             const behindDistance = this.cameraTuning.behindDistance
-            const camHeight = eyeGround + this.cameraTuning.cameraHeight
+            const camHeight = pawnHeadY + this.cameraTuning.cameraHeight
 
             const targetEye = new THREE.Vector3(
-                interpX - dir.x * behindDistance,
+                pawn.x - dir.x * behindDistance,
                 camHeight + bobOffset,
-                interpY - dir.z * behindDistance
+                pawn.y - dir.z * behindDistance
             )
-            this._smoothedFirstPersonEye.lerp(targetEye, 0.42)
-            this._smoothedFirstPersonDir.lerp(dir, 0.4).normalize()
+            // Same lerp factor as pawn model for consistent tracking
+            this._smoothedFirstPersonEye.lerp(targetEye, 0.15)
+            this._smoothedFirstPersonDir.lerp(dir, 0.15).normalize()
 
-            // Look target: ahead of the pawn, height above ground
+            // Look target: ahead of the pawn, height relative to pawn head
             const lookDistance = this.cameraTuning.lookDistance
             const lookTarget = new THREE.Vector3(
-                interpX + dir.x * lookDistance,
-                eyeGround + this.cameraTuning.lookHeight,
-                interpY + dir.z * lookDistance
+                pawn.x + dir.x * lookDistance,
+                pawnHeadY + this.cameraTuning.lookHeight,
+                pawn.y + dir.z * lookDistance
             )
 
             this._camera3d.position.copy(this._smoothedFirstPersonEye)

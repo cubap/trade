@@ -7,6 +7,45 @@
  * After all questions are answered, a name milestone flourish appears.
  */
 
+// Name generation parts — whimsical unisex pawn names
+// Combinations: starts × (endings | middle+endings | middle+middle+endings) = 5k+
+const NAME_STARTS = [
+    'Ael', 'Bri', 'Cal', 'Dor', 'Eli', 'Fen', 'Gis', 'Hal', 'Ira', 'Jor',
+    'Kae', 'Lyn', 'Mae', 'Nim', 'Ori', 'Pae', 'Rin', 'Syl', 'Tav', 'Ula',
+    'Ves', 'Wyn', 'Xan', 'Yel', 'Zin'
+]
+
+const NAME_MIDDLES = [
+    'a', 'el', 'is', 'or', 'an', 'en', 'in', 'ar', 'er', 'al',
+    'ith', 'ora', 'un', 'ya', 'os'
+]
+
+const NAME_ENDINGS = [
+    'den', 'lin', 'mar', 'nor', 'ren', 'wen', 'ton', 'vale', 'wyn', 'ford',
+    'brook', 'shaw', 'mere', 'dale', 'thorn', 'bloom', 'crest', 'hollow', 'ridge', 'stone',
+    'leaf', 'mist', 'dew', 'song', 'light', 'shade', 'wind', 'rain', 'star', 'moon',
+    'dusk', 'dawn', 'frost', 'ember', 'tide', 'vein', 'root', 'bark', 'seed', 'wing',
+    'feather', 'shell', 'pearl', 'coral', 'sage', 'thyme', 'fern', 'moss', 'clay', 'ash'
+]
+
+function generateRandomName() {
+    const useMiddle = Math.random()
+    const parts = [NAME_STARTS[Math.floor(Math.random() * NAME_STARTS.length)]]
+
+    if (useMiddle < 0.5) {
+        // One middle
+        parts.push(NAME_MIDDLES[Math.floor(Math.random() * NAME_MIDDLES.length)])
+    } else if (useMiddle < 0.75) {
+        // Two middles
+        parts.push(NAME_MIDDLES[Math.floor(Math.random() * NAME_MIDDLES.length)])
+        parts.push(NAME_MIDDLES[Math.floor(Math.random() * NAME_MIDDLES.length)])
+    }
+    // else: no middle (start + ending only)
+
+    parts.push(NAME_ENDINGS[Math.floor(Math.random() * NAME_ENDINGS.length)])
+    return parts.join('')
+}
+
 const SLOW_START_QUESTIONS = [
     {
         id: 'firstImpulse',
@@ -83,6 +122,7 @@ const CALLout_STYLE = `
 `
 
 const CHOICE_BTN_STYLE = `
+    position: relative;
     display: block;
     width: 100%;
     margin-top: 8px;
@@ -95,18 +135,27 @@ const CHOICE_BTN_STYLE = `
     border: 1px solid rgba(94, 196, 192, 0.3);
     border-radius: 4px;
     text-align: left;
-    transition: background 0.2s ease, border-color 0.2s ease;
+    transition: border-color 0.2s ease;
+    overflow: hidden;
     pointer-events: auto;
 `
 
-const TIMER_BAR_STYLE = `
+const CHOICE_PROGRESS_FILL_STYLE = `
     position: absolute;
-    bottom: 0;
+    top: 0;
     left: 0;
-    height: 3px;
-    background: rgba(94, 196, 192, 0.5);
-    border-radius: 0 0 8px 8px;
+    height: 100%;
+    width: 0%;
+    background: rgba(94, 196, 192, 0.15);
+    border-right: 2px solid rgba(94, 196, 192, 0.5);
     transition: width linear;
+    pointer-events: none;
+    z-index: 0;
+`
+
+const CHOICE_LABEL_STYLE = `
+    position: relative;
+    z-index: 1;
 `
 
 // Name milestone flourish
@@ -213,6 +262,9 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
         currentQuestion = question
         questionIndex = index
 
+        // Pick a random choice to auto-select
+        const randomAutoChoice = Math.floor(Math.random() * question.choices.length)
+
         // Add contextual thought to pawn's thoughtLog so the thought dome picks it up
         const pawn = pawnGetter?.()
         if (pawn && question.thought) {
@@ -234,34 +286,46 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
             const choice = question.choices[i]
             const btn = document.createElement('button')
             btn.style.cssText = CHOICE_BTN_STYLE
-            btn.textContent = choice.label
+
+            // Label text (positioned above progress fill)
+            const label = document.createElement('span')
+            label.style.cssText = CHOICE_LABEL_STYLE
+            label.textContent = choice.label
+            btn.appendChild(label)
+
+            // Progress fill for the auto-selected choice
+            if (i === randomAutoChoice) {
+                const progressFill = document.createElement('div')
+                progressFill.id = 'quiz-progress-fill'
+                progressFill.style.cssText = CHOICE_PROGRESS_FILL_STYLE
+                btn.insertBefore(progressFill, label)
+
+                // Highlight the auto-selected choice border
+                btn.style.borderColor = 'rgba(94, 196, 192, 0.5)'
+            }
+
             btn.onmouseenter = () => {
-                btn.style.background = 'rgba(94, 196, 192, 0.2)'
-                btn.style.borderColor = 'rgba(94, 196, 192, 0.6)'
+                btn.style.borderColor = 'rgba(94, 196, 192, 0.7)'
             }
             btn.onmouseleave = () => {
-                btn.style.background = 'rgba(30, 41, 59, 0.85)'
-                btn.style.borderColor = 'rgba(94, 196, 192, 0.3)'
+                btn.style.borderColor = i === randomAutoChoice ? 'rgba(94, 196, 192, 0.5)' : 'rgba(94, 196, 192, 0.3)'
             }
             btn.onclick = () => selectChoice(i)
             container.appendChild(btn)
         }
 
-        // Timer bar
-        const timerBar = document.createElement('div')
-        timerBar.style.cssText = TIMER_BAR_STYLE
-        timerBar.style.width = '100%'
-        container.appendChild(timerBar)
-
         // Start auto-timer
         autoTimer = setTimeout(() => {
-            selectChoice(question.autoChoice)
+            selectChoice(randomAutoChoice)
         }, question.autoTimeout)
 
-        // Animate timer bar
+        // Animate progress fill on the auto-selected choice
         requestAnimationFrame(() => {
-            timerBar.style.transition = `width ${question.autoTimeout}ms linear`
-            timerBar.style.width = '0%'
+            const progressFill = document.getElementById('quiz-progress-fill')
+            if (progressFill) {
+                progressFill.style.transition = `width ${question.autoTimeout}ms linear`
+                progressFill.style.width = '100%'
+            }
         })
     }
 
@@ -303,9 +367,12 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
             <p style="margin: 0 0 20px 0; font-size: 13px; color: #64748b; font-style: italic;">Call me…</p>
         `
 
+        // Generate an initial random name
+        let suggestedName = generateRandomName()
+
         const nameInput = document.createElement('input')
         nameInput.type = 'text'
-        nameInput.placeholder = 'Your name'
+        nameInput.value = suggestedName
         nameInput.maxLength = 24
         nameInput.autocomplete = 'off'
         nameInput.style.cssText = `
@@ -330,18 +397,51 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
             nameInput.style.borderColor = 'rgba(255, 255, 255, 0.15)'
         }
 
+        // Shuffle button to generate a new name
+        const shuffleBtn = document.createElement('button')
+        shuffleBtn.style.cssText = `
+            display: inline-block;
+            margin-top: 10px;
+            margin-right: 6px;
+            padding: 4px 12px;
+            font-family: Georgia, 'Times New Roman', serif;
+            font-size: 12px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.04);
+            color: #64748b;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            pointer-events: auto;
+            transition: background 0.2s ease, color 0.2s ease;
+        `
+        shuffleBtn.textContent = '⟳ shuffle'
+        shuffleBtn.onmouseenter = () => {
+            shuffleBtn.style.background = 'rgba(255, 255, 255, 0.08)'
+            shuffleBtn.style.color = '#94a3b8'
+        }
+        shuffleBtn.onmouseleave = () => {
+            shuffleBtn.style.background = 'rgba(255, 255, 255, 0.04)'
+            shuffleBtn.style.color = '#64748b'
+        }
+        shuffleBtn.onclick = () => {
+            suggestedName = generateRandomName()
+            nameInput.value = suggestedName
+            confirmBtn.style.display = 'inline-block'
+        }
+
         const confirmBtn = document.createElement('button')
         confirmBtn.style.cssText = `
-            display: none;
-            margin-top: 16px;
-            padding: 8px 24px;
+            display: inline-block;
+            margin-top: 10px;
+            margin-left: 6px;
+            padding: 4px 16px;
             font-family: Georgia, 'Times New Roman', serif;
-            font-size: 14px;
+            font-size: 12px;
             cursor: pointer;
             background: rgba(94, 196, 192, 0.15);
             color: #cbd5e1;
             border: 1px solid rgba(94, 196, 192, 0.3);
-            border-radius: 6px;
+            border-radius: 4px;
             pointer-events: auto;
             transition: background 0.2s ease;
         `
@@ -354,7 +454,7 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
         }
 
         nameInput.addEventListener('input', () => {
-            confirmBtn.style.display = nameInput.value.trim().length > 0 ? 'inline-block' : 'none'
+            confirmBtn.style.display = 'inline-block'
         })
         nameInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && nameInput.value.trim().length > 0) {
@@ -363,7 +463,7 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
         })
 
         const finishName = () => {
-            const name = nameInput.value.trim() || 'Wanderer'
+            const name = nameInput.value.trim() || generateRandomName()
             console.log(`[slow-start] Name chosen: ${name}`)
 
             // Fade out milestone
@@ -376,7 +476,13 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
 
         confirmBtn.onclick = finishName
         milestone.appendChild(nameInput)
-        milestone.appendChild(confirmBtn)
+
+        // Button row for shuffle + begin
+        const btnRow = document.createElement('div')
+        btnRow.style.cssText = 'display: flex; justify-content: center; gap: 0;'
+        btnRow.appendChild(shuffleBtn)
+        btnRow.appendChild(confirmBtn)
+        milestone.appendChild(btnRow)
 
         // Fade in
         requestAnimationFrame(() => {
