@@ -172,7 +172,7 @@
 
 #thought-queue {
     position: absolute;
-    top: 35%;
+    bottom: 12px;
     left: 50%;
     transform: translateX(-50%);
     width: min(420px, 60vw);
@@ -187,12 +187,17 @@
     left: 0;
     width: 100%;
     text-align: center;
-    color: #1a1a2e;
+    color: #0a0a14;
     font-family: Georgia, 'Times New Roman', serif;
-    font-size: 24px;
+    font-size: 18px;
     font-style: italic;
     line-height: 1.4;
-    text-shadow: 0 0 8px rgba(220, 210, 230, 0.9), 0 0 20px rgba(200, 190, 210, 0.6), 0 0 36px rgba(180, 170, 190, 0.3);
+    text-shadow: 
+        0 0 2px rgba(255, 255, 255, 1.0),
+        0 0 6px rgba(255, 255, 255, 0.9),
+        0 0 12px rgba(240, 235, 250, 0.8),
+        0 0 24px rgba(220, 210, 240, 0.6),
+        0 0 40px rgba(200, 190, 220, 0.4);
     letter-spacing: 0.3px;
     opacity: 0;
     padding: 0 20px;

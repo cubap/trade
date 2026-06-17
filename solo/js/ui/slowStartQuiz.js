@@ -228,6 +228,11 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
             if (shouldTrigger) {
                 lastTriggerTick = tick
                 triggeredTriggers.add(q.id)
+                // Add thought BEFORE showing the quiz UI so it appears first
+                const pawn = pawnGetter?.()
+                if (pawn && q.thought) {
+                    pawn.addThought(q.thought, 'quiz', true)
+                }
                 showQuestion(q, i)
                 return
             }
@@ -264,12 +269,6 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
 
         // Pick a random choice to auto-select
         const randomAutoChoice = Math.floor(Math.random() * question.choices.length)
-
-        // Add contextual thought to pawn's thoughtLog so the thought dome picks it up
-        const pawn = pawnGetter?.()
-        if (pawn && question.thought) {
-            pawn.addThought(question.thought, 'quiz')
-        }
 
         container.innerHTML = ''
         container.style.opacity = '1'
@@ -465,6 +464,12 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
         const finishName = () => {
             const name = nameInput.value.trim() || generateRandomName()
             console.log(`[slow-start] Name chosen: ${name}`)
+
+            // Add identity thought so the thought dome picks it up
+            const pawn = pawnGetter?.()
+            if (pawn) {
+                pawn.addThought(`My name is ${name}. This land will know me.`, 'identity', true)
+            }
 
             // Fade out milestone
             milestone.style.opacity = '0'

@@ -18,6 +18,7 @@ import { setupThoughtDome } from './ui/thoughtDome.js'
 import { setupSlowStartQuiz } from './ui/slowStartQuiz.js'
 import { setupCameraTuning } from './ui/cameraTuning.js'
 import { setupJournal } from './ui/journalOverlay.js'
+import { setupInventory } from './ui/inventoryOverlay.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -349,6 +350,9 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
 
     // Setup journal overlay (press J to toggle)
     const journal = setupJournal(() => trackedPlayerPawn)
+
+    // Setup inventory overlay (press I to toggle)
+    const inventory = setupInventory(() => trackedPlayerPawn, () => world)
 
     // Notify server
     try {

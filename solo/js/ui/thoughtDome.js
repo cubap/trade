@@ -14,17 +14,44 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
     document.body.appendChild(container)
 
     let camBobPhase = 0
-    let lastThoughtIndex = -1 // Track by log length, not tick (multiple thoughts can share a tick)
+    let lastThoughtSequence = -1 // Track by thoughtSequence counter, not log length
 
     // Thought queue entries
-    const thoughtEntries = [] // { el, text, tick, age, y, opacity }
+    const thoughtEntries = [] // { el, text, tick, age, y, opacity, priority }
     const FADE_DURATION = 10 // seconds for a thought to fade out
+    const PRIORITY_FADE_DURATION = 18 // seconds for priority thoughts
     const MAX_VISIBLE = 3 // Max thoughts visible at once
     const THOUGHT_SPACING = 32 // px between stacked thoughts
 
-    function addThoughtEntry(text, tick) {
+    function removeEntry(entry) {
+        entry.el.remove()
+        const idx = thoughtEntries.indexOf(entry)
+        if (idx !== -1) thoughtEntries.splice(idx, 1)
+    }
+
+    function addThoughtEntry(text, tick, isPriority) {
+        // If this text is already displayed, don't add a duplicate entry
+        const alreadyShown = thoughtEntries.find(e => e.text === text)
+        if (alreadyShown) {
+            // Refresh its timer so it stays visible
+            alreadyShown.birthTime = performance.now()
+            if (isPriority) alreadyShown.priority = true
+            return
+        }
+
+        // If priority, dismiss any non-priority entries to make room
+        if (isPriority) {
+            for (let i = thoughtEntries.length - 1; i >= 0; i--) {
+                if (!thoughtEntries[i].priority) {
+                    removeEntry(thoughtEntries[i])
+                    break // Remove one non-priority at a time per priority arrival
+                }
+            }
+        }
+
         const el = document.createElement('p')
         el.className = 'thought-entry'
+        if (isPriority) el.classList.add('thought-entry--priority')
         el.textContent = text
         // Start at the bottom of the queue area
         el.style.bottom = '0px'
@@ -36,7 +63,8 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
             text,
             tick,
             age: 0,
-            birthTime: performance.now()
+            birthTime: performance.now(),
+            priority: !!isPriority
         })
 
         // Remove old entries beyond max
@@ -53,24 +81,26 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
             const entry = thoughtEntries[i]
             entry.age = (now - entry.birthTime) / 1000 // seconds
 
+            const duration = entry.priority ? PRIORITY_FADE_DURATION : FADE_DURATION
+
             // Fade in quickly (0.5s), then hold, then fade out over remaining time
             if (entry.age < 0.5) {
                 // Fade in
                 entry.el.style.opacity = String(entry.age / 0.5)
-            } else if (entry.age > FADE_DURATION - 2) {
+            } else if (entry.age > duration - 2) {
                 // Fade out in last 2 seconds
-                entry.el.style.opacity = String(Math.max(0, (FADE_DURATION - entry.age) / 2))
+                entry.el.style.opacity = String(Math.max(0, (duration - entry.age) / 2))
             } else {
                 // Fully visible
                 entry.el.style.opacity = '1'
             }
 
-            // Move older thoughts up from the bottom
-            const ageRatio = Math.min(1, entry.age / 3) // Move up over first 3 seconds
-            entry.el.style.bottom = `${ageRatio * THOUGHT_SPACING}px`
+            // Position: newest at bottom, older entries stacked upward by index
+            const stackIndex = thoughtEntries.length - 1 - i // 0 = newest (bottom)
+            entry.el.style.bottom = `${stackIndex * THOUGHT_SPACING}px`
 
             // Remove fully faded entries
-            if (entry.age > FADE_DURATION) {
+            if (entry.age > duration) {
                 entry.el.remove()
                 thoughtEntries.splice(i, 1)
             }
@@ -85,15 +115,17 @@ export function setupThoughtDome(pawnGetter, rendererGetter) {
         const now = performance.now()
 
         // --- Read latest thought from pawn's thoughtLog ---
-        const log = pawn.thoughtLog ?? []
-        if (log.length > lastThoughtIndex) {
+        const seq = pawn.thoughtSequence ?? 0
+        if (seq > lastThoughtSequence) {
             // New thought(s) arrived — show the most recent one
+            const log = pawn.thoughtLog ?? []
             const latest = log[log.length - 1]
             if (latest) {
                 const thoughtTextContent = typeof latest === 'string' ? latest : latest.text
                 if (thoughtTextContent) {
-                    addThoughtEntry(thoughtTextContent, latest.tick ?? 0)
-                    lastThoughtIndex = log.length - 1
+                    const isPriority = latest.priority ?? false
+                    addThoughtEntry(thoughtTextContent, latest.tick ?? 0, isPriority)
+                    lastThoughtSequence = seq
                 }
             }
         }

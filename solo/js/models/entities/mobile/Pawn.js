@@ -40,6 +40,7 @@ class Pawn extends MobileEntity {
         this.recentActionTick = 0
         this.thoughtLog = []
         this.maxThoughtLog = 16
+        this.thoughtSequence = 0 // Increments on every addThought, even duplicates
         this.challengeContexts = []
         this.maxChallengeContexts = 20
         this.purposeStrainTicks = 0
@@ -1865,13 +1866,31 @@ class Pawn extends MobileEntity {
 
     // === Invention & Pondering ===
 
-    addThought(text, tag = 'general') {
+    addThought(text, tag = 'general', priority = false) {
         if (!text) return
         const tick = this.world?.clock?.currentTick ?? 0
+        const thoughtText = String(text)
+        this.thoughtSequence++
+
+        // If this thought already exists in the log, move it to the top instead of duplicating
+        const existingIndex = this.thoughtLog.findIndex(t => t.text === thoughtText)
+        if (existingIndex !== -1) {
+            const existing = this.thoughtLog[existingIndex]
+            existing.tick = tick
+            if (priority) {
+                existing.priority = true
+            }
+            // Move to end (most recent)
+            this.thoughtLog.splice(existingIndex, 1)
+            this.thoughtLog.push(existing)
+            return
+        }
+
         this.thoughtLog.push({
-            text: String(text),
+            text: thoughtText,
             tag,
-            tick
+            tick,
+            priority
         })
         if (this.thoughtLog.length > this.maxThoughtLog) {
             this.thoughtLog.shift()
