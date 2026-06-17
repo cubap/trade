@@ -76,7 +76,7 @@ export function setupCameraTuning(rendererGetter, controlsGetter) {
 
     // --- Pawn sliders ---
     const pawnSliders = [
-        { key: 'pawnScale', label: 'Scale', min: 0.1, max: 50, step: 0.5, default: 3.1 },
+        { key: 'pawnScale', label: 'Scale', min: 0.1, max: 50, step: 0.1, default: 1.6 },
         { key: 'pawnYOffset', label: 'Y Offset', min: -5, max: 20, step: 0.1, default: -0.1 }
     ]
 
@@ -108,13 +108,13 @@ export function setupCameraTuning(rendererGetter, controlsGetter) {
         r.cameraTuning.lookDistance = 9.0
         r.cameraTuning.lookHeight = 1.5
         r.pawnTuning = r.pawnTuning || {}
-        r.pawnTuning.pawnScale = 3.1
+        r.pawnTuning.pawnScale = 1.6
         r.pawnTuning.pawnYOffset = -0.1
         panel.querySelectorAll('input[type="range"]').forEach(input => {
             const key = input.dataset.key
             const defaults = {
                 behindDistance: 1.7, cameraHeight: -0.1, lookDistance: 9.0, lookHeight: 1.5,
-                pawnScale: 3.1, pawnYOffset: -0.1
+                pawnScale: 1.6, pawnYOffset: -0.1
             }
             if (defaults[key] !== undefined) {
                 input.value = defaults[key]

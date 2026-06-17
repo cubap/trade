@@ -286,7 +286,7 @@ function seedAnimalsNearPawn(pawn, radiusChunks = 2) {
         animal.species = species
         animal.diet = diet
         animal.predator = predator
-        animal.traits.speed = predator ? 28 : 25
+        animal.traits.speed = predator ? 2.5 : 1.5 // Fox ~5m/s, Rabbit ~3m/s
         world.addEntity(animal)
     }
 

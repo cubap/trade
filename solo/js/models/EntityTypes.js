@@ -13,7 +13,7 @@ class MobileEntity extends Entity {
         this.targetY = this.y
         this.nextTargetX = this.x
         this.nextTargetY = this.y
-        this.speed = 20
+        this.speed = 1.0   // ~2.0 m/s (small animal pace)
         this.moveRange = 50
         this.moving = false
         this.distanceThreshold = 1

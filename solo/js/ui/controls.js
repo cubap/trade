@@ -174,20 +174,6 @@ function setupControls(world, renderer, playerMode, options = {}) {
         options.onOverridePhaseChange?.(phaseOverrideSelect.value || null)
     }
 
-    const debugCapabilityText = document.createElement('span')
-    debugCapabilityText.style.marginLeft = '10px'
-    debugCapabilityText.style.fontSize = '12px'
-    debugCapabilityText.style.color = '#ddd'
-    debugCapabilityText.style.display = 'none' // Demoted to logging
-    debugCapabilityText.textContent = 'Phase: auto'
-
-    const debugModuleText = document.createElement('span')
-    debugModuleText.style.marginLeft = '10px'
-    debugModuleText.style.fontSize = '11px'
-    debugModuleText.style.color = '#bcd'
-    debugModuleText.style.display = 'none' // Demoted to logging
-    debugModuleText.textContent = 'Steer:n/a | Input:n/a | Feedback:n/a'
-
     const visualTuningLabel = document.createElement('span')
     visualTuningLabel.textContent = 'Visual FX:'
     visualTuningLabel.style.marginLeft = '10px'
@@ -469,8 +455,6 @@ function setupControls(world, renderer, playerMode, options = {}) {
     devRow.appendChild(phaseOverrideLabel)
     devRow.appendChild(phaseOverrideSelect)
     devRow.appendChild(applyPhaseButton)
-    devRow.appendChild(debugCapabilityText)
-    devRow.appendChild(debugModuleText)
     devRow.appendChild(visualTuningLabel)
     devRow.appendChild(shimmerLabel)
     devRow.appendChild(shimmerSlider)
@@ -561,26 +545,11 @@ function setupControls(world, renderer, playerMode, options = {}) {
     
     const setProgressionDebug = payload => {
         if (!payload) {
-            debugCapabilityText.textContent = 'Phase: auto'
-            debugModuleText.textContent = 'Steer:n/a | Input:n/a | Feedback:n/a'
             syncPerceptionPolicy?.(renderer.perceptionPolicy)
             return
         }
-        const camera = payload.modules?.validCamera ?? 'n/a'
-        const compass = payload.modules?.compass ?? 'n/a'
-        const minimap = payload.modules?.minimap ?? 'n/a'
-        const steering = payload.modules?.steering ?? 'n/a'
-        const interactionControls = Array.isArray(payload.modules?.interactionControls)
-            ? payload.modules.interactionControls.join(', ')
-            : 'n/a'
-        const feedbackChannels = Array.isArray(payload.modules?.feedbackChannels)
-            ? payload.modules.feedbackChannels.join(', ')
-            : 'n/a'
         const policy = payload.modules?.perceptionModePolicy ?? renderer.perceptionPolicy
         syncPerceptionPolicy?.(policy)
-        const suffix = payload.overrideActive ? ' (override)' : ''
-        debugCapabilityText.textContent = `Phase: ${payload.phase}${suffix} | Cam:${camera} | Comp:${compass} | Map:${minimap}`
-        debugModuleText.textContent = `Steer:${steering} | Input:${interactionControls} | Feedback:${feedbackChannels}`
     }
 
     return { isPaused: () => isPaused, setPaused, modeSwitcher, setProgressionDebug }
