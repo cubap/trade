@@ -16,9 +16,7 @@ import { setupInteractionPanel } from './ui/interactionPanel.js'
 import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
 import { setupThoughtDome } from './ui/thoughtDome.js'
 import { setupSlowStartQuiz } from './ui/slowStartQuiz.js'
-import { setupCameraTuning } from './ui/cameraTuning.js'
-import { setupJournal } from './ui/journalOverlay.js'
-import { setupInventory } from './ui/inventoryOverlay.js'
+import { setupTipCallouts } from './ui/tipCallouts.js'
 
 // Initialize goal planner with recipes
 injectRecipes(RECIPES)
@@ -345,15 +343,6 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
     // Setup thought dome — reads from pawn's thoughtLog, gets renderer for FPS camera bob
     thoughtDome = setupThoughtDome(() => trackedPlayerPawn, () => activeRenderer)
 
-    // Setup camera tuning panel (press C to toggle)
-    setupCameraTuning(() => activeRenderer, () => controls)
-
-    // Setup journal overlay (press J to toggle)
-    const journal = setupJournal(() => trackedPlayerPawn)
-
-    // Setup inventory overlay (press I to toggle)
-    const inventory = setupInventory(() => trackedPlayerPawn, () => world)
-
     // Notify server
     try {
         fetch('/_dev/log', {
@@ -377,6 +366,15 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
             }
         )
     }
+
+    // Setup tip callouts — dismissible tutorial tips on the left
+    tipCallouts = setupTipCallouts(
+        () => trackedPlayerPawn,
+        (panelId) => {
+            // Called when a panel is opened; dismiss the related tip
+            tipCallouts?.dismissByPanelId?.(panelId)
+        }
+    )
 
     startMainLoop()
 }
@@ -436,6 +434,7 @@ let _modeSwitcherUpdate = null
 let _interactionPanel = null
 let _feedbackUI = null
 let slowStartQuiz = null
+let tipCallouts = null
 
 function buildRouteTraceSegments() {
     if (!trackedPlayerPawn) return []
@@ -497,6 +496,9 @@ function startMainLoop() {
         onWorldAdvanced: () => {
             syncProgressionState()
             _modeSwitcherUpdate?.()
+        },
+        onPanelOpen: (panelId) => {
+            tipCallouts?.dismissByPanelId?.(panelId)
         }
     })
     _modeSwitcherUpdate = controls?.modeSwitcher?.update ?? null
@@ -544,6 +546,8 @@ function simulationLoop(timestamp) {
             syncProgressionState()
             // Slow-start quiz trigger checks
             slowStartQuiz?.update(trackedPlayerPawn)
+            // Tip callouts — check for new tips to show
+            tipCallouts?.update()
             // Refresh mode-switcher unlock state every 60 ticks (~30 s at 2 ticks/s)
             if (world.clock.currentTick % 60 === 0) _modeSwitcherUpdate?.()
         } else {

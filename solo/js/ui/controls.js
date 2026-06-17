@@ -4,7 +4,7 @@ import { setupFollowControls } from './followControls.js'
 import { setupCanvasInteractions } from './canvasInteractions.js'
 import { createEntitySummary } from './entitySummary.js'
 import { setupKeyboardShortcuts } from './keyboardShortcuts.js'
-import { setupDeveloperOverlays } from './developerOverlays.js'
+import { setupUiPanels } from './uiPanels.js'
 import { setUnlockListener } from '../models/skills/UnlockEvents.js'
 import { setupModeSwitcher } from './modeSwitcher.js'
 
@@ -478,53 +478,21 @@ function setupControls(world, renderer, playerMode, options = {}) {
     // Stats display
     setupStatsDisplay(world, renderer, playerMode)
 
-    const overlays = setupDeveloperOverlays(
+    const panels = setupUiPanels(
         world,
         renderer,
         playerMode,
-        () => playerMode?.trackedPawn ?? null
+        () => playerMode?.trackedPawn ?? null,
+        options.onPanelOpen
     )
 
     // Canvas interactions
     setupCanvasInteractions(world, renderer, createEntitySummary)
     // Keyboard shortcuts
     setupKeyboardShortcuts(world, renderer, followButton, perceptionButton, () => {}, null, {
-        onOverlayKey: key => overlays.toggleByKey(key)
-    })
-    
-    // Create help text
-    const helpText = document.createElement('div')
-    helpText.id = 'camera-help'
-    helpText.style.cssText = `
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        background: rgba(0,0,0,0.7);
-        color: white;
-        padding: 10px;
-        border-radius: 5px;
-        font-size: 12px;
-        font-family: monospace;
-        z-index: 1000;
-        display: none;
-    `
-    helpText.innerHTML = `
-        <strong>Camera Controls:</strong><br>
-        F - Toggle Follow Mode<br>
-        P - Toggle Perception Mode<br>
-        1-5 - Quick Select Entity<br>
-        ESC - Exit Follow Mode<br>
-        ${overlays.labels}<br>
-        Mouse Wheel - Zoom<br>
-        Middle Mouse - Pan (when not following)
-    `
-    document.body.appendChild(helpText)
-    
-    // Toggle help with H key
-    document.addEventListener('keydown', event => {
-        if (event.key.toLowerCase() === 'h') {
-            helpText.style.display = helpText.style.display === 'none' ? 'block' : 'none'
-        }
+        onOverlayKey: key => panels.toggleByKey(key),
+        getIsPaused: () => isPaused,
+        setPaused
     })
 
     // --- Unlock hint — demoted to logging only ---

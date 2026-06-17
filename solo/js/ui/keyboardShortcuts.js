@@ -4,6 +4,15 @@ export function setupKeyboardShortcuts(world, renderer, followButton, perception
         if (tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'TEXTAREA' || event.target?.isContentEditable) return
 
         const key = event.key.toLowerCase()
+
+        // Space: pause toggle (only when not in input)
+        if (key === ' ' && options?.setPaused) {
+            event.preventDefault()
+            const isPaused = options.getIsPaused?.()
+            options.setPaused(!isPaused)
+            return
+        }
+
         if (options.onOverlayKey?.(key, event)) {
             event.preventDefault()
             return
