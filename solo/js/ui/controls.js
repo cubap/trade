@@ -492,7 +492,41 @@ function setupControls(world, renderer, playerMode, options = {}) {
     setupKeyboardShortcuts(world, renderer, followButton, perceptionButton, () => {}, null, {
         onOverlayKey: key => panels.toggleByKey(key),
         getIsPaused: () => isPaused,
-        setPaused
+        setPaused,
+        teleportToRandom: () => {
+            const pawn = playerMode?.trackedPawn
+            if (!pawn) return
+            const cm = world.chunkManager
+            if (!cm) return
+            // Stay well away from edges (15% margin)
+            const margin = world.width * 0.15
+            const range = world.width - margin * 2
+            // Try up to 100 random positions for a passable spot
+            for (let i = 0; i < 100; i++) {
+                const rx = margin + Math.random() * range
+                const ry = margin + Math.random() * range
+                if (cm.isPassable(rx, ry)) {
+                    pawn.x = Math.round(rx)
+                    pawn.y = Math.round(ry)
+                    if (typeof populateChunksAroundWorldPoint === 'function') {
+                        populateChunksAroundWorldPoint(pawn.x, pawn.y, 3)
+                    }
+                    console.log(`[teleport] ${pawn.name} → (${Math.round(rx)}, ${Math.round(ry)})`)
+                    return
+                }
+            }
+            console.warn('[teleport] Could not find a passable location')
+        },
+        returnToSpawn: () => {
+            const pawn = playerMode?.trackedPawn
+            if (!pawn || pawn.spawnX == null) return
+            pawn.x = Math.round(pawn.spawnX)
+            pawn.y = Math.round(pawn.spawnY)
+            if (typeof populateChunksAroundWorldPoint === 'function') {
+                populateChunksAroundWorldPoint(pawn.x, pawn.y, 3)
+            }
+            console.log(`[return] ${pawn.name} → spawn (${pawn.x}, ${pawn.y})`)
+        }
     })
 
     // --- Unlock hint — demoted to logging only ---

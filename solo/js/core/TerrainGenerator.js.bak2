@@ -1,0 +1,503 @@
+// Regional terrain generator — mountain ranges that settle into plains and river valleys.
+// Uses a regional mask to place dramatic terrain (like Rockies) in one area,
+// with a global height envelope that smooths the landscape downhill.
+// Water and rivers are carved after the base terrain is formed.
+
+/**
+ * Simple hash-based noise (no external dependency)
+ */
+function hash(x, y, seed) {
+    let n = Math.sin(x * 127.1 + y * 311.7 + seed * 0.0001) * 43758.5453
+    return n - Math.floor(n)
+}
+
+function smoothNoise(x, y, seed) {
+    const intX = Math.floor(x)
+    const intY = Math.floor(y)
+    const fracX = x - intX
+    const fracY = y - intY
+
+    // Smoothstep
+    const ux = fracX * fracX * (3 - 2 * fracX)
+    const uy = fracY * fracY * (3 - 2 * fracY)
+
+    const n00 = hash(intX, intY, seed)
+    const n10 = hash(intX + 1, intY, seed)
+    const n01 = hash(intX, intY + 1, seed)
+    const n11 = hash(intX + 1, intY + 1, seed)
+
+    const top = n00 + (n10 - n00) * ux
+    const bottom = n01 + (n11 - n01) * ux
+    return top + (bottom - top) * uy
+}
+
+function fbm(x, y, octaves, seed, lacunarity = 2, gain = 0.5) {
+    let total = 0
+    let amplitude = 1
+    let frequency = 1
+    let maxValue = 0
+
+    for (let i = 0; i < octaves; i++) {
+        total += smoothNoise(x * frequency, y * frequency, seed + i * 100) * amplitude
+        maxValue += amplitude
+        amplitude *= gain
+        frequency *= lacunarity
+    }
+
+    return total / maxValue
+}
+
+/**
+ * Ridged noise — creates sharp mountain ridges by inverting and sharpening FBM.
+ */
+function ridgedNoise(x, y, octaves, seed, ridgeSharpness = 2) {
+    let total = 0
+    let amplitude = 1
+    let frequency = 1
+    let maxValue = 0
+
+    for (let i = 0; i < octaves; i++) {
+        const n = smoothNoise(x * frequency, y * frequency, seed + i * 200)
+        const ridge = 1 - Math.abs(n * 2 - 1)
+        const sharpened = Math.pow(ridge, ridgeSharpness)
+        total += sharpened * amplitude
+        maxValue += amplitude
+        amplitude *= 0.5
+        frequency *= 2
+    }
+
+    return total / maxValue
+}
+
+/**
+ * Valley noise — creates deep ravines by finding low points in noise.
+ */
+function valleyNoise(x, y, seed, valleySharpness = 2) {
+    const n = fbm(x, y, 4, seed + 500)
+    return Math.pow(n, 1 / valleySharpness)
+}
+
+/**
+ * Create a regional terrain generator with mountain ranges, plains, and river valleys.
+ *
+ * Design philosophy:
+ * - A "mountain region" mask places dramatic terrain in one area (like the Rockies)
+ * - A global height envelope tapers from mountains to plains
+ * - The dramatic ridged noise only applies within the mountain region
+ * - Plains get gentler rolling hills
+ * - Rivers are carved from mountains downhill
+ * - Water is added after the fact
+ *
+ * @param {Object} options
+ */
+export default function createTerrainGenerator(options = {}) {
+    const {
+        seed = 42,
+        worldWidth = 2000,
+        worldHeight = 2000,
+        maxElevation = 400, // Peak mountain height
+        waterLevel = 0.12, // Water plane elevation (normalized)
+        hillScale = 200,
+
+        // Mountain region — where the dramatic terrain lives
+        mountainRegionX = 0.25, // Center of mountain range (0-1, 0.25 = left quarter)
+        mountainRegionY = 0.3, // Center of mountain range (0-1, 0.3 = upper third)
+        mountainRegionRadius = 0.35, // How far the mountains spread (0-1)
+        mountainRegionSharpness = 3, // How quickly mountains fade to foothills (1-5)
+
+        // Mountain drama
+        ridgeStrength = 0.9,
+        ridgeSharpness = 3.5,
+        valleyStrength = 0.5,
+
+        // Plains
+        plainsRoughness = 0.15, // How rough the plains are (0-1)
+        foothillTransition = 0.3, // How far foothills extend from mountains (0-1)
+
+        // River carving
+        riverCarvingDepth = 15, // How deep rivers cut (meters)
+        riverCount = 5,
+
+        // Global grade for water flow
+        globalGrade = 0.12
+    } = options
+
+    // Pre-computed mountain region parameters
+    const mountainCenterX = worldWidth * mountainRegionX
+    const mountainCenterY = worldHeight * mountainRegionY
+    const mountainRadiusX = worldWidth * mountainRegionRadius
+    const mountainRadiusY = worldHeight * mountainRegionRadius
+
+    // River paths
+    let rivers = []
+
+    /**
+     * Get the mountain region influence at a world position (0-1).
+     * 1 = deep in mountains, 0 = far from mountains.
+     * Uses elliptical distance with smooth falloff.
+     */
+    function getMountainRegion(wx, wy) {
+        // Normalized distance from mountain center
+        const dx = (wx - mountainCenterX) / mountainRadiusX
+        const dy = (wy - mountainCenterY) / mountainRadiusY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+
+        // Smooth falloff using raised cosine
+        const raw = Math.max(0, 1 - dist)
+        return Math.pow(raw, mountainRegionSharpness)
+    }
+
+    /**
+     * Get the global height envelope at a world position.
+     * This creates a smooth gradient from mountains to plains,
+     * like a cloud layer that flattens the landscape downhill.
+     */
+    function getGlobalHeightEnvelope(wx, wy) {
+        // Mountain region contribution
+        const mountainInfluence = getMountainRegion(wx, wy)
+
+        // Global grade — gentle slope away from mountains
+        const nx = wx / worldWidth
+        const ny = wy / worldHeight
+        const distFromMountains = Math.sqrt(
+            ((nx - mountainRegionX) ** 2) +
+            ((ny - mountainRegionY) ** 2)
+        )
+        const maxDist = Math.sqrt(
+            (Math.max(mountainRegionX, 1 - mountainRegionX)) ** 2 +
+            (Math.max(mountainRegionY, 1 - mountainRegionY)) ** 2
+        )
+        const normalizedDist = Math.min(distFromMountains / maxDist, 1)
+
+        // Height envelope: mountains are high, plains are low
+        // The envelope smooths the transition
+        const envelope = mountainInfluence * (1 - normalizedDist * globalGrade)
+
+        return envelope
+    }
+
+    /**
+     * Get elevation at a world position (in meters).
+     */
+    function getElevation(wx, wy) {
+        // 1) Mountain region influence (0-1)
+        const mountainInfluence = getMountainRegion(wx, wy)
+
+        // 2) Global height envelope — smooths the landscape downhill
+        const heightEnvelope = getGlobalHeightEnvelope(wx, wy)
+
+        // 3) Mountain terrain — dramatic ridged noise (only in mountain region)
+        const mountainFreq = 1 / (hillScale * 0.5)
+        const mountainRidge = ridgedNoise(
+            wx * mountainFreq, wy * mountainFreq,
+            6, seed + 1, ridgeSharpness
+        )
+        const mountainValley = valleyNoise(
+            wx * mountainFreq * 1.2, wy * mountainFreq * 1.2,
+            seed + 2, 2
+        )
+
+        // 4) Plains terrain — gentle rolling hills
+        const plainsFreq = 1 / (hillScale * 1.5)
+        const plainsHill = fbm(wx * plainsFreq, wy * plainsFreq, 4, seed + 3)
+
+        // 5) Detail noise — small-scale variation everywhere
+        const detailFreq = 1 / (hillScale * 0.2)
+        const detail = fbm(wx * detailFreq, wy * detailFreq, 3, seed + 4)
+
+        // 6) River carving — deep channels from mountains
+        let riverCarving = 0
+        if (rivers.length > 0) {
+            let minRiverDist = Infinity
+            for (const river of rivers) {
+                for (const point of river) {
+                    const dx = wx - point.x
+                    const dy = wy - point.y
+                    const dist = Math.sqrt(dx * dx + dy * dy)
+                    if (dist < minRiverDist) {
+                        minRiverDist = dist
+                    }
+                }
+            }
+            // Carve deeper near rivers, wider influence
+            if (minRiverDist < 100) {
+                const carveFactor = 1 - (minRiverDist / 100)
+                riverCarving = carveFactor * riverCarvingDepth * mountainInfluence
+            }
+        }
+
+        // Combine: mountains are dramatic, plains are gentle
+        let elevation = 0
+
+        // Mountain contribution (dramatic, only in mountain region)
+        const mountainElevation = mountainRidge * ridgeStrength * maxElevation
+        const mountainValleyEffect = mountainValley * valleyStrength
+        elevation += mountainElevation * mountainInfluence * mountainValleyEffect
+
+        // Plains contribution (gentle, everywhere)
+        const plainsElevation = plainsHill * plainsRoughness * maxElevation
+        elevation += plainsElevation * (1 - mountainInfluence * 0.7)
+
+        // Detail (everywhere, scaled by height envelope)
+        elevation += detail * 0.05 * maxElevation * heightEnvelope
+
+        // Apply global height envelope — smooths the landscape downhill
+        elevation *= (0.5 + heightEnvelope * 0.5)
+
+        // Subtract river carving
+        elevation -= riverCarving
+
+        // Ensure water level has some low areas
+        const waterElevation = waterLevel * maxElevation
+        if (elevation < waterElevation * 0.5) {
+            elevation = waterElevation * 0.3 + elevation * 0.6
+        }
+
+        return elevation
+    }
+
+    // Pre-generate a large-scale continent mask for regional variation
+    const continentScale = Math.max(worldWidth, worldHeight) / 2.5
+    const continentSeed = seed * 3 + 7
+
+    // River paths (generated from high to low points)
+    let rivers = []
+
+    /**
+     * Get the normalized continent mask (0-1) at a world position.
+     * Low values = coastal/water-prone, high values = inland/elevated.
+     */
+    function getContinentMask(wx, wy) {
+        const nx = wx / continentScale
+        const ny = wy / continentScale
+        return fbm(nx, ny, 3, continentSeed)
+    }
+
+    /**
+     * Get the global grade (baseline slope) at a world position.
+     * Creates a gentle slope from one corner to another for river flow.
+     * @param {number} wx - World X position
+     * @param {number} wy - World Y position
+     * @returns {number} Grade value (0-1, higher = more elevation from grade)
+     */
+    function getGlobalGrade(wx, wy) {
+        // Diagonal slope: high in top-left, low in bottom-right
+        const nx = wx / worldWidth
+        const ny = wy / worldHeight
+        const diagonal = (nx + ny) / 2 // 0 at origin, 1 at far corner
+        // Invert so high areas are in one direction
+        return 1 - diagonal
+    }
+
+    /**
+     * Get elevation at a world position (in meters).
+     * Returns negative values for below-water terrain.
+     */
+    function getElevation(wx, wy) {
+        // 1) Global grade — baseline slope for river guidance
+        const grade = getGlobalGrade(wx, wy)
+        const gradeElevation = grade * globalGrade * maxElevation
+
+        // 2) Continent mask (large-scale regional variation)
+        const continent = getContinentMask(wx, wy)
+
+        // 3) Hill noise (medium-scale hills)
+        const hillFreq = 1 / hillScale
+        const hill = fbm(wx * hillFreq, wy * hillFreq, 6, seed + 1)
+
+        // 4) Ridge noise (sharp mountain ridges)
+        const ridgeFreq = 1 / (hillScale * 0.6)
+        const ridge = ridgedNoise(wx * ridgeFreq, wy * ridgeFreq, 5, seed + 2, ridgeSharpness)
+
+        // 5) Valley noise (deep ravines cutting through)
+        const valleyFreq = 1 / (hillScale * 0.8)
+        const valley = valleyNoise(wx * valleyFreq, wy * valleyFreq, seed + 3, 2.5)
+
+        // 6) Detail noise (small-scale variation)
+        const detailFreq = 1 / (hillScale * 0.2)
+        const detail = fbm(wx * detailFreq, wy * detailFreq, 3, seed + 4)
+
+        // Combine layers with global grade as baseline
+        let elevation = gradeElevation // Start with grade
+        elevation += continent * 0.25 * maxElevation
+        elevation += hill * 0.3 * maxElevation
+        elevation += ridge * ridgeStrength * 0.25 * maxElevation
+        elevation += detail * 0.05 * maxElevation
+
+        // Apply valley effect (multiply to create deep cuts)
+        if (valleyStrength > 0) {
+            const valleyFactor = 1 - valleyStrength * (1 - valley)
+            elevation *= valleyFactor
+        }
+
+        // Apply plateau effect (flatten very high peaks slightly)
+        if (plateauStrength > 0 && elevation > maxElevation * 0.7) {
+            const peak = elevation / maxElevation
+            const flatten = 1 - plateauStrength * (peak - 0.7) / 0.3 * 0.3
+            elevation *= flatten
+        }
+
+        // Distance from center bonus (creates a raised central region)
+        const cx = worldWidth / 2
+        const cy = worldHeight / 2
+        const dist = Math.sqrt((wx - cx) ** 2 + (wy - cy) ** 2)
+        const maxDist = Math.sqrt(cx ** 2 + cy ** 2)
+        const centerBonus = (1 - dist / maxDist) * 0.1 * maxElevation
+        elevation += centerBonus
+
+        return elevation
+    }
+
+    /**
+     * Get water depth at a world position.
+     * Returns 0 for land, positive value for water depth.
+     */
+    function getWaterDepth(wx, wy) {
+        const elevation = getElevation(wx, wy)
+        const waterElevation = waterLevel * maxElevation
+
+        if (elevation < waterElevation) {
+            // Below water level — calculate depth
+            const depth = waterElevation - elevation
+            return Math.min(depth / maxElevation, 1) // Normalize to 0-1
+        }
+
+        // Check for lakes (depressions that could hold water)
+        const lakeNoise = fbm(wx / 100, wy / 100, 3, seed + 10)
+        if (lakeNoise > 0.7 && elevation < waterElevation + 5) {
+            // Shallow lake/marsh
+            return 0.1 + (lakeNoise - 0.7) * 0.3
+        }
+
+        return 0
+    }
+
+    /**
+     * Get terrain type at a world position.
+     * Returns: 'deep_water', 'shallow_water', 'beach', 'plains', 'forest', 'hills', 'mountains', 'peak'
+     */
+    function getTerrainType(wx, wy) {
+        const elevation = getElevation(wx, wy)
+        const waterDepth = getWaterDepth(wx, wy)
+        const normalizedElev = elevation / maxElevation
+
+        if (waterDepth > 0.4) return 'deep_water'
+        if (waterDepth > 0.1) return 'shallow_water'
+        if (normalizedElev < 0.15) return 'beach'
+        if (normalizedElev < 0.35) return 'plains'
+        if (normalizedElev < 0.55) return 'forest'
+        if (normalizedElev < 0.75) return 'hills'
+        if (normalizedElev < 0.9) return 'mountains'
+        return 'peak'
+    }
+
+    /**
+     * Generate rivers from high to low elevation points.
+     * Returns array of river paths (arrays of {x, y} points).
+     */
+    function generateRivers(count = 3) {
+        rivers = []
+
+        for (let r = 0; r < count; r++) {
+            // Find a high starting point
+            let bestElev = -Infinity
+            let startX = 0
+            let startY = 0
+
+            // Search for high points
+            const step = 50
+            for (let x = 100; x < worldWidth - 100; x += step) {
+                for (let y = 100; y < worldHeight - 100; y += step) {
+                    const elev = getElevation(x, y)
+                    if (elev > bestElev) {
+                        bestElev = elev
+                        startX = x
+                        startY = y
+                    }
+                }
+            }
+
+            // Follow gradient downhill
+            const path = [{ x: startX, y: startY }]
+            let cx = startX
+            let cy = startY
+            const stepSize = 10
+            const maxSteps = 200
+
+            for (let s = 0; s < maxSteps; s++) {
+                const currentElev = getElevation(cx, cy)
+
+                // Find lowest neighbor
+                let lowestElev = currentElev
+                let lowestX = cx
+                let lowestY = cy
+
+                for (let dx = -stepSize; dx <= stepSize; dx += stepSize) {
+                    for (let dy = -stepSize; dy <= stepSize; dy += stepSize) {
+                        if (dx === 0 && dy === 0) continue
+                        const nx = cx + dx
+                        const ny = cy + dy
+                        const elev = getElevation(nx, ny)
+                        if (elev < lowestElev) {
+                            lowestElev = elev
+                            lowestX = nx
+                            lowestY = ny
+                        }
+                    }
+                }
+
+                if (lowestElev >= currentElev - 0.1) break // No clear downhill path
+                if (lowestElev < waterLevel * maxElevation) break // Reached water level
+
+                cx = lowestX
+                cy = lowestY
+                path.push({ x: cx, y: cy })
+            }
+
+            if (path.length > 10) {
+                rivers.push(path)
+            }
+        }
+
+        return rivers
+    }
+
+    /**
+     * Get the distance to the nearest river (for coloring/effects).
+     */
+    function getRiverDistance(wx, wy) {
+        if (rivers.length === 0) return Infinity
+
+        let minDist = Infinity
+        for (const river of rivers) {
+            for (const point of river) {
+                const dx = wx - point.x
+                const dy = wy - point.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                minDist = Math.min(minDist, dist)
+            }
+        }
+
+        return minDist
+    }
+
+    // Generate rivers on creation
+    generateRivers()
+
+    return {
+        getElevation,
+        getWaterDepth,
+        getTerrainType,
+        getContinentMask,
+        getRiverDistance,
+        rivers,
+        config: {
+            seed,
+            maxElevation,
+            waterLevel,
+            hillScale,
+            ridgeStrength,
+            plateauStrength
+        }
+    }
+}

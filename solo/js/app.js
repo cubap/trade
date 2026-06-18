@@ -30,7 +30,7 @@ try {
 
 // Create a larger world
 const runtimeParams = new URLSearchParams(location.search)
-const worldSize = Math.max(6000, Number(runtimeParams.get('worldSize')) || 12000)
+const worldSize = Math.max(6000, Number(runtimeParams.get('worldSize')) || 25000)
 const chunkSize = Math.max(260, Number(runtimeParams.get('chunkSize')) || 420)
 const mapSeedParam = Number(runtimeParams.get('mapSeed'))
 const mapSeed = Number.isFinite(mapSeedParam) && mapSeedParam > 0 ? mapSeedParam : undefined
@@ -144,6 +144,9 @@ function populateChunk(chunk) {
     if (generatedChunks.has(key)) return
     generatedChunks.add(key)
 
+    // Skip resource/flora placement in deep water
+    if ((chunk.waterDepth ?? 0) > 0.3) return
+
     floraGenerator.generateForChunk(chunk)
     resourceGenerator.generateResourcesForChunk(chunk)
 
@@ -166,6 +169,35 @@ function populateChunk(chunk) {
             replenishRate: 0.55,
             name: 'Spring'
         })
+    }
+}
+
+// Place water entities for rivers and lakes from the chunk manager's generated data
+function placeWaterEntities() {
+    const cm = world.chunkManager
+    if (!cm) return
+
+    // Place rivers
+    if (Array.isArray(cm.rivers)) {
+        for (const river of cm.rivers) {
+            if (!river || river.length < 2) continue
+            // Use WaterGenerator.placeRiver for meandering water nodes
+            waterGen.placeRiver({
+                start: { x: river[0].x, y: river[0].y },
+                end: { x: river[river.length - 1].x, y: river[river.length - 1].y },
+                width: 20,
+                spacing: 25,
+                meander: 0.3,
+                name: 'River'
+            })
+        }
+    }
+
+    // Place lakes
+    if (Array.isArray(cm.lakes)) {
+        for (const lake of cm.lakes) {
+            waterGen.placeLake(lake.x, lake.y, lake.radius, { name: 'Lake' })
+        }
     }
 }
 
@@ -249,16 +281,32 @@ function ensureStarterViability(x, y, waterGen, radius = 170) {
 function pickPlayerSpawnPoint() {
     const basins = world.chunkManager.getSettlementBasins?.(6) ?? []
     if (basins.length === 0) {
+        // Fallback: center of world, well away from edges
+        const margin = world.width * 0.15
         return {
             x: Math.round(world.width * 0.5),
             y: Math.round(world.height * 0.5)
         }
     }
 
-    const basin = basins[Math.floor(Math.random() * Math.min(3, basins.length))]
+    // Prefer basins in plains/highlands transition zones (flat, passable terrain)
+    const isPassableFn = world.chunkManager.isPassable?.bind(world.chunkManager)
+    const goodBasins = basins.filter(b => {
+        if (isPassableFn) return isPassableFn(b.x, b.y)
+        return true
+    })
+
+    const basin = goodBasins.length > 0
+        ? goodBasins[Math.floor(Math.random() * Math.min(3, goodBasins.length))]
+        : basins[Math.floor(Math.random() * Math.min(3, basins.length))]
+
+    // Safety: clamp spawn well away from world edges
+    const margin = world.width * 0.1
+    const clampedX = Math.max(margin, Math.min(world.width - margin, basin.x))
+    const clampedY = Math.max(margin, Math.min(world.height - margin, basin.y))
     return {
-        x: Math.round(basin.x),
-        y: Math.round(basin.y)
+        x: Math.round(clampedX),
+        y: Math.round(clampedY)
     }
 }
 
@@ -334,6 +382,9 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
     populateChunksAroundWorldPoint(player.x, player.y, activeChunkRadius)
     seedAnimalsNearPawn(player, activeChunkRadius)
     await seedCraftingResourcesNearPawn(player)
+
+    // Place water entities for rivers and lakes from the chunk manager
+    placeWaterEntities()
 
     const perception = player.traits?.detection ?? 100
     renderer.camera.setZoomToShowRadius?.(perception, 0.85)

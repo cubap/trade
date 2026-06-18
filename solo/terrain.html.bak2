@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terrain Generator</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            z-index: 100;
+        }
+        #controls label {
+            display: block;
+            margin: 5px 0;
+        }
+        #controls input[type="range"] {
+            width: 150px;
+            margin-left: 10px;
+        }
+        #info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h3>Terrain Controls</h3>
+        <label>
+            Max Elevation: <input type="range" id="maxElev" min="50" max="500" value="300">
+            <span id="maxElevVal">300</span>m
+        </label>
+        <label>
+            Water Level: <input type="range" id="waterLevel" min="0.05" max="0.4" step="0.01" value="0.15">
+            <span id="waterLevelVal">0.15</span>
+        </label>
+        <label>
+            Hill Scale: <input type="range" id="hillScale" min="50" max="500" value="200">
+            <span id="hillScaleVal">200</span>
+        </label>
+        <label>
+            Ridge Strength: <input type="range" id="ridgeStrength" min="0" max="1" step="0.1" value="0.8">
+            <span id="ridgeStrengthVal">0.8</span>
+        </label>
+        <label>
+            Ridge Sharpness: <input type="range" id="ridgeSharpness" min="1" max="5" step="0.5" value="3">
+            <span id="ridgeSharpnessVal">3</span>
+        </label>
+        <label>
+            Valley Strength: <input type="range" id="valleyStrength" min="0" max="1" step="0.1" value="0.6">
+            <span id="valleyStrengthVal">0.6</span>
+        </label>
+        <label>
+            Global Grade: <input type="range" id="globalGrade" min="0" max="0.3" step="0.01" value="0.15">
+            <span id="globalGradeVal">0.15</span>
+        </label>
+        <label>
+            Plateau: <input type="range" id="plateauStrength" min="0" max="1" step="0.1" value="0.2">
+            <span id="plateauStrengthVal">0.2</span>
+        </label>
+        <label>
+            Seed: <input type="range" id="seed" min="1" max="1000" value="42">
+            <span id="seedVal">42</span>
+        </label>
+        <button onclick="regenerate()">Regenerate</button>
+    </div>
+    <div id="info">
+        Drag to rotate | Scroll to zoom | Right-click to pan
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/node_modules/three/build/three.module.js",
+            "three/addons/": "/node_modules/three/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three'
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+
+        // Simple noise functions
+        function hash(x, y, seed) {
+            let n = Math.sin(x * 127.1 + y * 311.7 + seed * 0.0001) * 43758.5453
+            return n - Math.floor(n)
+        }
+
+        function smoothNoise(x, y, seed) {
+            const intX = Math.floor(x)
+            const intY = Math.floor(y)
+            const fracX = x - intX
+            const fracY = y - intY
+            const ux = fracX * fracX * (3 - 2 * fracX)
+            const uy = fracY * fracY * (3 - 2 * fracY)
+            const n00 = hash(intX, intY, seed)
+            const n10 = hash(intX + 1, intY, seed)
+            const n01 = hash(intX, intY + 1, seed)
+            const n11 = hash(intX + 1, intY + 1, seed)
+            const top = n00 + (n10 - n00) * ux
+            const bottom = n01 + (n11 - n01) * ux
+            return top + (bottom - top) * uy
+        }
+
+        function fbm(x, y, octaves, seed, lacunarity = 2, gain = 0.5) {
+            let total = 0
+            let amplitude = 1
+            let frequency = 1
+            let maxValue = 0
+            for (let i = 0; i < octaves; i++) {
+                total += smoothNoise(x * frequency, y * frequency, seed + i * 100) * amplitude
+                maxValue += amplitude
+                amplitude *= gain
+                frequency *= lacunarity
+            }
+            return total / maxValue
+        }
+
+        function ridgedNoise(x, y, octaves, seed, ridgeSharpness = 2) {
+            let total = 0
+            let amplitude = 1
+            let frequency = 1
+            let maxValue = 0
+            for (let i = 0; i < octaves; i++) {
+                const n = smoothNoise(x * frequency, y * frequency, seed + i * 200)
+                const ridge = 1 - Math.abs(n * 2 - 1)
+                const sharpened = Math.pow(ridge, ridgeSharpness)
+                total += sharpened * amplitude
+                maxValue += amplitude
+                amplitude *= 0.5
+                frequency *= 2
+            }
+            return total / maxValue
+        }
+
+        function valleyNoise(x, y, seed, valleySharpness = 2) {
+            const n = fbm(x, y, 4, seed + 500)
+            return Math.pow(n, 1 / valleySharpness)
+        }
+
+        // Terrain generator
+        function createTerrainGenerator(options) {
+            const {
+                seed = 42,
+                worldWidth = 2000,
+                worldHeight = 2000,
+                maxElevation = 300,
+                waterLevel = 0.15,
+                hillScale = 200,
+                ridgeStrength = 0.8,
+                ridgeSharpness = 3,
+                valleyStrength = 0.6,
+                globalGrade = 0.15,
+                plateauStrength = 0.2
+            } = options
+
+            const continentScale = Math.max(worldWidth, worldHeight) / 2.5
+            const continentSeed = seed * 3 + 7
+
+            function getContinentMask(wx, wy) {
+                const nx = wx / continentScale
+                const ny = wy / continentScale
+                return fbm(nx, ny, 3, continentSeed)
+            }
+
+            function getGlobalGrade(wx, wy) {
+                const nx = wx / worldWidth
+                const ny = wy / worldHeight
+                const diagonal = (nx + ny) / 2
+                return 1 - diagonal
+            }
+
+            function getElevation(wx, wy) {
+                const grade = getGlobalGrade(wx, wy)
+                const gradeElevation = grade * globalGrade * maxElevation
+                const continent = getContinentMask(wx, wy)
+                const hillFreq = 1 / hillScale
+                const hill = fbm(wx * hillFreq, wy * hillFreq, 6, seed + 1)
+                const ridgeFreq = 1 / (hillScale * 0.6)
+                const ridge = ridgedNoise(wx * ridgeFreq, wy * ridgeFreq, 5, seed + 2, ridgeSharpness)
+                const valleyFreq = 1 / (hillScale * 0.8)
+                const valley = valleyNoise(wx * valleyFreq, wy * valleyFreq, seed + 3, 2.5)
+                const detailFreq = 1 / (hillScale * 0.2)
+                const detail = fbm(wx * detailFreq, wy * detailFreq, 3, seed + 4)
+
+                let elevation = gradeElevation
+                elevation += continent * 0.25 * maxElevation
+                elevation += hill * 0.3 * maxElevation
+                elevation += ridge * ridgeStrength * 0.25 * maxElevation
+                elevation += detail * 0.05 * maxElevation
+
+                if (valleyStrength > 0) {
+                    const valleyFactor = 1 - valleyStrength * (1 - valley)
+                    elevation *= valleyFactor
+                }
+
+                if (plateauStrength > 0 && elevation > maxElevation * 0.7) {
+                    const peak = elevation / maxElevation
+                    const flatten = 1 - plateauStrength * (peak - 0.7) / 0.3 * 0.3
+                    elevation *= flatten
+                }
+
+                const cx = worldWidth / 2
+                const cy = worldHeight / 2
+                const dist = Math.sqrt((wx - cx) ** 2 + (wy - cy) ** 2)
+                const maxDist = Math.sqrt(cx ** 2 + cy ** 2)
+                const centerBonus = (1 - dist / maxDist) * 0.1 * maxElevation
+                elevation += centerBonus
+
+                return elevation
+            }
+
+            function getWaterDepth(wx, wy) {
+                const elevation = getElevation(wx, wy)
+                const waterElevation = waterLevel * maxElevation
+                if (elevation < waterElevation) {
+                    const depth = waterElevation - elevation
+                    return Math.min(depth / maxElevation, 1)
+                }
+                const lakeNoise = fbm(wx / 100, wy / 100, 3, seed + 10)
+                if (lakeNoise > 0.7 && elevation < waterElevation + 5) {
+                    return 0.1 + (lakeNoise - 0.7) * 0.3
+                }
+                return 0
+            }
+
+            function getTerrainType(wx, wy) {
+                const elevation = getElevation(wx, wy)
+                const waterDepth = getWaterDepth(wx, wy)
+                const normalizedElev = elevation / maxElevation
+
+                if (waterDepth > 0.4) return 'deep_water'
+                if (waterDepth > 0.1) return 'shallow_water'
+                if (normalizedElev < 0.15) return 'beach'
+                if (normalizedElev < 0.35) return 'plains'
+                if (normalizedElev < 0.55) return 'forest'
+                if (normalizedElev < 0.75) return 'hills'
+                if (normalizedElev < 0.9) return 'mountains'
+                return 'peak'
+            }
+
+            return { getElevation, getWaterDepth, getTerrainType }
+        }
+
+        // Three.js setup
+        const scene = new THREE.Scene()
+        scene.background = new THREE.Color(0x87CEEB)
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 10000)
+        camera.position.set(1000, 600, 1000) // Higher camera for dramatic terrain
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true })
+        renderer.setSize(window.innerWidth, window.innerHeight)
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+        document.body.appendChild(renderer.domElement)
+
+        const controls = new OrbitControls(camera, renderer.domElement)
+        controls.enableDamping = true
+        controls.dampingFactor = 0.05
+        controls.target.set(1000, 50, 1000)
+
+        // Lighting
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6)
+        scene.add(ambient)
+
+        const sun = new THREE.DirectionalLight(0xffffff, 1.5)
+        sun.position.set(500, 800, 300)
+        scene.add(sun)
+
+        const hemisphere = new THREE.HemisphereLight(0x87CEEB, 0x355f2f, 0.4)
+        scene.add(hemisphere)
+
+        // Terrain
+        let terrainMesh = null
+        let currentGenerator = null
+
+        function buildTerrain() {
+            const options = {
+                seed: parseInt(document.getElementById('seed').value),
+                worldWidth: 2000,
+                worldHeight: 2000,
+                maxElevation: parseInt(document.getElementById('maxElev').value),
+                waterLevel: parseFloat(document.getElementById('waterLevel').value),
+                hillScale: parseInt(document.getElementById('hillScale').value),
+                ridgeStrength: parseFloat(document.getElementById('ridgeStrength').value),
+                ridgeSharpness: parseFloat(document.getElementById('ridgeSharpness').value),
+                valleyStrength: parseFloat(document.getElementById('valleyStrength').value),
+                globalGrade: parseFloat(document.getElementById('globalGrade').value),
+                plateauStrength: parseFloat(document.getElementById('plateauStrength').value)
+            }
+
+            currentGenerator = createTerrainGenerator(options)
+
+            if (terrainMesh) {
+                terrainMesh.geometry.dispose()
+                terrainMesh.material.dispose()
+                scene.remove(terrainMesh)
+            }
+
+            const segments = 200
+            const size = 2000
+            const geometry = new THREE.PlaneGeometry(size, size, segments, segments)
+            geometry.rotateX(-Math.PI / 2)
+
+            const positions = geometry.attributes.position.array
+            const colors = new Float32Array(positions.length)
+
+            for (let i = 0; i < positions.length; i += 3) {
+                const x = positions[i]
+                const z = positions[i + 2]
+                const height = currentGenerator.getElevation(x + 1000, z + 1000)
+                positions[i + 1] = height
+
+                const terrainType = currentGenerator.getTerrainType(x + 1000, z + 1000)
+                const color = new THREE.Color()
+
+                switch (terrainType) {
+                    case 'deep_water':
+                        color.set('#1A4A5E')
+                        break
+                    case 'shallow_water':
+                        color.set('#2E738A')
+                        break
+                    case 'beach':
+                        color.set('#C2B280')
+                        break
+                    case 'plains':
+                        color.set('#5A7A3E')
+                        break
+                    case 'forest':
+                        color.set('#3A5F0B')
+                        break
+                    case 'hills':
+                        color.set('#4A6B2E')
+                        break
+                    case 'mountains':
+                        color.set('#6B6B5E')
+                        break
+                    case 'peak':
+                        color.set('#8B8B7E')
+                        if (height > options.maxElevation * 0.85) {
+                            color.lerp(new THREE.Color('#E8E8E8'), (height / options.maxElevation - 0.85) / 0.15)
+                        }
+                        break
+                }
+
+                colors[i] = color.r
+                colors[i + 1] = color.g
+                colors[i + 2] = color.b
+            }
+
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+            geometry.computeVertexNormals()
+
+            terrainMesh = new THREE.Mesh(
+                geometry,
+                new THREE.MeshStandardMaterial({
+                    vertexColors: true,
+                    roughness: 0.9,
+                    metalness: 0.1,
+                    flatShading: false
+                })
+            )
+
+            scene.add(terrainMesh)
+        }
+
+        // Water plane
+        let waterMesh = null
+
+        function buildWater() {
+            if (waterMesh) {
+                waterMesh.geometry.dispose()
+                waterMesh.material.dispose()
+                scene.remove(waterMesh)
+            }
+
+            const waterLevel = parseFloat(document.getElementById('waterLevel').value)
+            const maxElev = parseInt(document.getElementById('maxElev').value)
+            const waterHeight = waterLevel * maxElev
+
+            const geometry = new THREE.PlaneGeometry(2000, 2000)
+            geometry.rotateX(-Math.PI / 2)
+            const material = new THREE.MeshStandardMaterial({
+                color: 0x2E738A,
+                transparent: true,
+                opacity: 0.7,
+                roughness: 0.1,
+                metalness: 0.3
+            })
+
+            waterMesh = new THREE.Mesh(geometry, material)
+            waterMesh.position.y = waterHeight
+            scene.add(waterMesh)
+        }
+
+        // Initial build
+        buildTerrain()
+        buildWater()
+
+        // Controls
+        window.regenerate = function() {
+            buildTerrain()
+            buildWater()
+        }
+
+        document.querySelectorAll('input[type="range"]').forEach(input => {
+            input.addEventListener('input', () => {
+                const valSpan = document.getElementById(input.id + 'Val')
+                if (valSpan) valSpan.textContent = input.value
+            })
+        })
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate)
+            controls.update()
+            renderer.render(scene, camera)
+        }
+        animate()
+
+        // Resize handler
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight
+            camera.updateProjectionMatrix()
+            renderer.setSize(window.innerWidth, window.innerHeight)
+        })
+    </script>
+</body>
+</html>

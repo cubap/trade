@@ -1,0 +1,466 @@
+// Terrain generator with blur-based regional smoothing.
+// Generates natural FBM terrain, then applies a wide blur to compute
+// local average heights that logarithmically control noise amplitude.
+// High regions keep their drama, low regions get smoothed out.
+
+/**
+ * Simple hash-based noise (no external dependency)
+ */
+function hash(x, y, seed) {
+    let n = Math.sin(x * 127.1 + y * 311.7 + seed * 0.0001) * 43758.5453
+    return n - Math.floor(n)
+}
+
+function smoothNoise(x, y, seed) {
+    const intX = Math.floor(x)
+    const intY = Math.floor(y)
+    const fracX = x - intX
+    const fracY = y - intY
+
+    // Smoothstep
+    const ux = fracX * fracX * (3 - 2 * fracX)
+    const uy = fracY * fracY * (3 - 2 * fracY)
+
+    const n00 = hash(intX, intY, seed)
+    const n10 = hash(intX + 1, intY, seed)
+    const n01 = hash(intX, intY + 1, seed)
+    const n11 = hash(intX + 1, intY + 1, seed)
+
+    const top = n00 + (n10 - n00) * ux
+    const bottom = n01 + (n11 - n01) * ux
+    return top + (bottom - top) * uy
+}
+
+function fbm(x, y, octaves, seed, lacunarity = 2, gain = 0.5) {
+    let total = 0
+    let amplitude = 1
+    let frequency = 1
+    let maxValue = 0
+
+    for (let i = 0; i < octaves; i++) {
+        total += smoothNoise(x * frequency, y * frequency, seed + i * 100) * amplitude
+        maxValue += amplitude
+        amplitude *= gain
+        frequency *= lacunarity
+    }
+
+    return total / maxValue
+}
+
+/**
+ * Ridged noise — creates sharp mountain ridges by inverting and sharpening FBM.
+ */
+function ridgedNoise(x, y, octaves, seed, ridgeSharpness = 2) {
+    let total = 0
+    let amplitude = 1
+    let frequency = 1
+    let maxValue = 0
+
+    for (let i = 0; i < octaves; i++) {
+        const n = smoothNoise(x * frequency, y * frequency, seed + i * 200)
+        const ridge = 1 - Math.abs(n * 2 - 1)
+        const sharpened = Math.pow(ridge, ridgeSharpness)
+        total += sharpened * amplitude
+        maxValue += amplitude
+        amplitude *= 0.5
+        frequency *= 2
+    }
+
+    return total / maxValue
+}
+
+/**
+ * Create a terrain generator with blur-based regional smoothing.
+ *
+ * Design philosophy:
+ * - Generate natural FBM terrain first
+ * - Apply a wide blur to compute local average height
+ * - Use the average to logarithmically tune noise amplitude
+ * - High regions keep dramatic variation, low regions get smoothed
+ * - Rivers are carved from peaks downhill
+ * - Water is added after the fact
+ *
+ * @param {Object} options
+ */
+export default function createTerrainGenerator(options = {}) {
+    const {
+        seed = 42,
+        worldWidth = 2000,
+        worldHeight = 2000,
+        maxElevation = 400,
+        waterLevel = 0.12,
+        hillScale = 200,
+
+        // Blur parameters
+        blurRadius = 150, // How wide the blur is (meters) - smaller preserves more detail
+        blurSharpness = 2, // How quickly the blur tapers (1-5)
+
+        // Logarithmic tuning
+        logBase = 1.5, // Base of the logarithm for tuning (lower = more variation preserved)
+        minAmplitude = 0.3, // Minimum noise amplitude in low regions
+        maxAmplitude = 1.5, // Maximum noise amplitude in high regions (>1 exaggerates peaks)
+
+        // Terrain features
+        ridgeStrength = 0.9,
+        ridgeSharpness = 3.5,
+        valleyStrength = 0.5,
+        plainsRoughness = 0.15,
+
+        // River carving
+        riverCarvingDepth = 15,
+
+        // Global grade for water flow
+        globalGrade = 0.12
+    } = options
+
+    // Height map cache for blur computation
+    let heightMap = null
+    let heightMapDirty = true
+    const GRID_SIZE = 100 // Grid resolution for blur
+
+    // River paths
+    let rivers = []
+
+    /**
+     * Compute the raw elevation at a world position (before blur smoothing).
+     */
+    function getRawElevation(wx, wy) {
+        // Mountain terrain — dramatic ridged noise
+        const mountainFreq = 1 / (hillScale * 0.5)
+        const mountainRidge = ridgedNoise(
+            wx * mountainFreq, wy * mountainFreq,
+            6, seed + 1, ridgeSharpness
+        )
+
+        // Plains terrain — gentle rolling hills
+        const plainsFreq = 1 / (hillScale * 1.5)
+        const plainsHill = fbm(wx * plainsFreq, wy * plainsFreq, 4, seed + 3)
+
+        // Detail noise — small-scale variation
+        const detailFreq = 1 / (hillScale * 0.2)
+        const detail = fbm(wx * detailFreq, wy * detailFreq, 3, seed + 4)
+
+        // Combine terrain layers
+        let elevation = 0
+        elevation += (isFinite(mountainRidge) ? mountainRidge : 0) * ridgeStrength * maxElevation
+        elevation += (isFinite(plainsHill) ? plainsHill : 0) * plainsRoughness * maxElevation
+        elevation += (isFinite(detail) ? detail : 0) * 0.05 * maxElevation
+
+        return isFinite(elevation) ? elevation : 0
+    }
+
+    /**
+     * Compute the blur height map.
+     * This creates a grid of average heights using a wide blur.
+     */
+    function computeHeightMap() {
+        const cellSize = worldWidth / GRID_SIZE
+        heightMap = new Float32Array(GRID_SIZE * GRID_SIZE)
+
+        // First pass: compute raw heights
+        for (let gy = 0; gy < GRID_SIZE; gy++) {
+            for (let gx = 0; gx < GRID_SIZE; gx++) {
+                const wx = gx * cellSize + cellSize / 2
+                const wy = gy * cellSize + cellSize / 2
+                const idx = gy * GRID_SIZE + gx
+                const elev = getRawElevation(wx, wy)
+                heightMap[idx] = isFinite(elev) ? elev : 0
+            }
+        }
+
+        // Second pass: apply blur
+        const blurred = new Float32Array(GRID_SIZE * GRID_SIZE)
+        const radius = Math.max(1, Math.floor(blurRadius / cellSize))
+
+        for (let gy = 0; gy < GRID_SIZE; gy++) {
+            for (let gx = 0; gx < GRID_SIZE; gx++) {
+                let sum = 0
+                let count = 0
+
+                for (let dy = -radius; dy <= radius; dy++) {
+                    for (let dx = -radius; dx <= radius; dx++) {
+                        const nx = gx + dx
+                        const ny = gy + dy
+
+                        if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue
+
+                        const dist = Math.sqrt(dx * dx + dy * dy)
+                        if (dist > radius) continue
+
+                        // Gaussian-like falloff
+                        const weight = Math.pow(1 - dist / radius, blurSharpness)
+                        const idx = ny * GRID_SIZE + nx
+                        sum += heightMap[idx] * weight
+                        count += weight
+                    }
+                }
+
+                blurred[gy * GRID_SIZE + gx] = count > 0 ? sum / count : 0
+            }
+        }
+
+        heightMap = blurred
+        heightMapDirty = false
+    }
+
+    /**
+     * Get the blurred average height at a world position.
+     */
+    function getBlurredHeight(wx, wy) {
+        if (heightMapDirty) {
+            computeHeightMap()
+        }
+
+        const cellSize = worldWidth / GRID_SIZE
+        const gx = wx / cellSize
+        const gy = wy / cellSize
+
+        // Clamp to valid range
+        const gx0 = Math.max(0, Math.min(Math.floor(gx), GRID_SIZE - 1))
+        const gy0 = Math.max(0, Math.min(Math.floor(gy), GRID_SIZE - 1))
+        const gx1 = Math.max(0, Math.min(gx0 + 1, GRID_SIZE - 1))
+        const gy1 = Math.max(0, Math.min(gy0 + 1, GRID_SIZE - 1))
+        const fx = gx - gx0
+        const fy = gy - gy0
+
+        const v00 = heightMap[gy0 * GRID_SIZE + gx0] || 0
+        const v10 = heightMap[gy0 * GRID_SIZE + gx1] || 0
+        const v01 = heightMap[gy1 * GRID_SIZE + gx0] || 0
+        const v11 = heightMap[gy1 * GRID_SIZE + gx1] || 0
+
+        const top = v00 + (v10 - v00) * fx
+        const bottom = v01 + (v11 - v01) * fx
+        const result = top + (bottom - top) * fy
+        return isFinite(result) ? result : 0
+    }
+
+    /**
+     * Get the noise amplitude multiplier based on local average height.
+     * Uses logarithmic tuning to preserve drama in high regions
+     * and smooth out low regions.
+     */
+    function getAmplitudeMultiplier(wx, wy) {
+        const avgHeight = getBlurredHeight(wx, wy)
+        const normalizedAvg = Math.max(0, avgHeight / maxElevation)
+
+        // Logarithmic tuning: higher averages keep more amplitude
+        // Ensure we never take log of a negative or zero value
+        const logValue = Math.log(normalizedAvg * logBase + 1) / Math.log(logBase + 1)
+        const amplitude = minAmplitude + (maxAmplitude - minAmplitude) * logValue
+        return isFinite(amplitude) ? amplitude : minAmplitude
+    }
+
+    /**
+     * Get elevation at a world position (in meters).
+     */
+    function getElevation(wx, wy) {
+        // Get raw elevation
+        let elevation = getRawElevation(wx, wy)
+
+        // Get amplitude multiplier based on local average
+        const amplitude = getAmplitudeMultiplier(wx, wy)
+
+        // Apply amplitude to the elevation
+        // This preserves the shape but reduces variation in low regions
+        const avgHeight = getBlurredHeight(wx, wy)
+        const deviation = elevation - avgHeight
+        elevation = avgHeight + deviation * amplitude
+
+        // Apply global grade for water flow
+        const nx = wx / worldWidth
+        const ny = wy / worldHeight
+        const distFromCenter = Math.sqrt(
+            (nx - 0.5) * (nx - 0.5) + (ny - 0.5) * (ny - 0.5)
+        )
+        elevation *= (1 - distFromCenter * globalGrade)
+
+        // River carving
+        if (rivers.length > 0) {
+            let minRiverDist = Infinity
+            for (const river of rivers) {
+                for (const point of river) {
+                    const dx = wx - point.x
+                    const dy = wy - point.y
+                    const dist = Math.sqrt(dx * dx + dy * dy)
+                    if (dist < minRiverDist) {
+                        minRiverDist = dist
+                    }
+                }
+            }
+            if (minRiverDist < 100) {
+                const carveFactor = 1 - (minRiverDist / 100)
+                elevation -= carveFactor * riverCarvingDepth
+            }
+        }
+
+        // Ensure water level has some low areas
+        const waterElevation = waterLevel * maxElevation
+        if (elevation < waterElevation * 0.5) {
+            elevation = waterElevation * 0.3 + elevation * 0.6
+        }
+
+        return isFinite(elevation) ? elevation : 0
+    }
+
+    /**
+     * Get water depth at a world position.
+     */
+    function getWaterDepth(wx, wy) {
+        const elevation = getElevation(wx, wy)
+        const waterElevation = waterLevel * maxElevation
+
+        if (elevation < waterElevation) {
+            const depth = waterElevation - elevation
+            return Math.min(depth / maxElevation, 1)
+        }
+
+        // Check for lakes (depressions that could hold water)
+        const lakeNoise = fbm(wx / 100, wy / 100, 3, seed + 10)
+        if (lakeNoise > 0.7 && elevation < waterElevation + 5) {
+            return 0.1 + (lakeNoise - 0.7) * 0.3
+        }
+
+        return 0
+    }
+
+    /**
+     * Get terrain type at a world position.
+     */
+    function getTerrainType(wx, wy) {
+        const elevation = getElevation(wx, wy)
+        const waterDepth = getWaterDepth(wx, wy)
+        const normalizedElev = elevation / maxElevation
+
+        if (waterDepth > 0.4) return 'deep_water'
+        if (waterDepth > 0.1) return 'shallow_water'
+        if (normalizedElev < 0.15) return 'beach'
+        if (normalizedElev > 0.7) return 'peak'
+        if (normalizedElev > 0.5) return 'mountains'
+        if (normalizedElev > 0.35) return 'hills'
+        if (normalizedElev < 0.3) return 'plains'
+        if (normalizedElev < 0.45) return 'forest'
+        return 'foothills'
+    }
+
+    /**
+     * Generate rivers from peaks downhill to water level.
+     */
+    function generateRivers(count = 5) {
+        rivers = []
+
+        // Find high points
+        const peaks = []
+        const step = 50
+        for (let x = 0; x < worldWidth; x += step) {
+            for (let y = 0; y < worldHeight; y += step) {
+                const elev = getRawElevation(x, y)
+                if (elev > maxElevation * 0.6) {
+                    peaks.push({ x, y, elev })
+                }
+            }
+        }
+
+        // Sort by elevation descending
+        peaks.sort((a, b) => b.elev - a.elev)
+
+        for (let r = 0; r < count && r < peaks.length; r++) {
+            const peak = peaks[r]
+            const path = [{ x: peak.x, y: peak.y }]
+            let cx = peak.x
+            let cy = peak.y
+            const stepSize = 15
+            const maxSteps = 300
+
+            for (let s = 0; s < maxSteps; s++) {
+                const currentElev = getElevation(cx, cy)
+
+                // Find lowest neighbor
+                let lowestElev = currentElev
+                let lowestX = cx
+                let lowestY = cy
+
+                for (let dx = -stepSize; dx <= stepSize; dx += stepSize) {
+                    for (let dy = -stepSize; dy <= stepSize; dy += stepSize) {
+                        if (dx === 0 && dy === 0) continue
+                        const nx = cx + dx
+                        const ny = cy + dy
+                        if (nx < 0 || nx > worldWidth || ny < 0 || ny > worldHeight) continue
+                        const elev = getElevation(nx, ny)
+                        if (elev < lowestElev) {
+                            lowestElev = elev
+                            lowestX = nx
+                            lowestY = ny
+                        }
+                    }
+                }
+
+                if (lowestElev >= currentElev - 0.1) break
+                if (lowestElev < waterLevel * maxElevation) break
+
+                cx = lowestX
+                cy = lowestY
+                path.push({ x: cx, y: cy })
+            }
+
+            if (path.length > 10) {
+                rivers.push(path)
+            }
+        }
+
+        return rivers
+    }
+
+    /**
+     * Get the distance to the nearest river.
+     */
+    function getRiverDistance(wx, wy) {
+        if (rivers.length === 0) return Infinity
+
+        let minDist = Infinity
+        for (const river of rivers) {
+            for (const point of river) {
+                const dx = wx - point.x
+                const dy = wy - point.y
+                const dist = Math.sqrt(dx * dx + dy * dy)
+                if (dist < minDist) {
+                    minDist = dist
+                }
+            }
+        }
+        return minDist
+    }
+
+    // Compute height map immediately on creation
+    computeHeightMap()
+
+    // Generate rivers on creation (after height map is ready)
+    generateRivers(5)
+
+    return {
+        getElevation,
+        getRawElevation,
+        getBlurredHeight,
+        getAmplitudeMultiplier,
+        getWaterDepth,
+        getTerrainType,
+        getRiverDistance,
+        generateRivers,
+        rivers,
+        config: {
+            maxElevation,
+            waterLevel,
+            hillScale,
+            blurRadius,
+            blurSharpness,
+            logBase,
+            minAmplitude,
+            maxAmplitude,
+            ridgeStrength,
+            ridgeSharpness,
+            valleyStrength,
+            plainsRoughness,
+            riverCarvingDepth,
+            globalGrade
+        }
+    }
+}

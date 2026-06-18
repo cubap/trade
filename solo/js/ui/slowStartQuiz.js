@@ -186,7 +186,6 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
 
     const answers = {}
     let currentQuestion = null
-    let questionIndex = 0
     let autoTimer = null
     let triggeredTriggers = new Set()
     let quizCompleted = false
@@ -201,7 +200,7 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
         // Minimum 25 ticks (~12.5s) between question triggers
         if (tick - lastTriggerTick < 25) return
 
-        for (let i = questionIndex; i < SLOW_START_QUESTIONS.length; i++) {
+        for (let i = 0; i < SLOW_START_QUESTIONS.length; i++) {
             const q = SLOW_START_QUESTIONS[i]
             if (triggeredTriggers.has(q.id)) continue
 
@@ -241,9 +240,8 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
 
     function checkResourceNearby(pawn) {
         // Simple heuristic: pawn has moved at least 30 units from spawn
-        const startX = pawn?.spawnX ?? pawn?.x ?? 0
-        const startY = pawn?.spawnY ?? pawn?.y ?? 0
-        const distance = Math.hypot(pawn.x - startX, pawn.y - startY)
+        const origin = pawn?.memoryOrigin ?? { x: pawn?.x ?? 0, y: pawn?.y ?? 0 }
+        const distance = Math.hypot(pawn.x - origin.x, pawn.y - origin.y)
         return distance > 30
     }
 
@@ -265,7 +263,6 @@ function setupSlowStartQuiz(pawnGetter, onQuizComplete) {
 
     function showQuestion(question, index) {
         currentQuestion = question
-        questionIndex = index
 
         // Pick a random choice to auto-select
         const randomAutoChoice = Math.floor(Math.random() * question.choices.length)

@@ -53,6 +53,20 @@ export function setupKeyboardShortcuts(world, renderer, followButton, perception
                     if (followSelect) followSelect.style.display = 'none'
                 }
                 break
+            case 'g':
+                // Teleport to a random passable location somewhere in the world
+                if (options?.teleportToRandom) {
+                    event.preventDefault()
+                    options.teleportToRandom()
+                }
+                break
+            case 'r':
+                // Return to spawn point
+                if (options?.returnToSpawn) {
+                    event.preventDefault()
+                    options.returnToSpawn()
+                }
+                break
         }
     })
 }

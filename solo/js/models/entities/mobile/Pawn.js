@@ -1870,9 +1870,8 @@ class Pawn extends MobileEntity {
         if (!text) return
         const tick = this.world?.clock?.currentTick ?? 0
         const thoughtText = String(text)
-        this.thoughtSequence++
 
-        // If this thought already exists in the log, move it to the top instead of duplicating
+        // If this thought already exists in the log, just refresh it — don't bump sequence
         const existingIndex = this.thoughtLog.findIndex(t => t.text === thoughtText)
         if (existingIndex !== -1) {
             const existing = this.thoughtLog[existingIndex]
@@ -1885,6 +1884,9 @@ class Pawn extends MobileEntity {
             this.thoughtLog.push(existing)
             return
         }
+
+        // New thought — bump sequence so the dome picks it up
+        this.thoughtSequence++
 
         this.thoughtLog.push({
             text: thoughtText,

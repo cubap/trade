@@ -17,7 +17,11 @@ class ChunkManager {
         // 2D array of chunks
         this.chunks = []
         this.initializeChunks()
+        this.generateContinentalMask()
         this.generateBiomes()
+        this.generateWaterDepth()
+        this.generateRivers()
+        this.generateLakes()
         this.generateSettlementBasins()
     }
     
@@ -86,7 +90,32 @@ class ChunkManager {
         }
     }
 
+    // Generate broad continental-scale regions (Kansas prairie → Ozark highlands → Appalachian mountains)
+    // Very low-frequency FBM creates contiguous regions, not checkerboard noise
+    generateContinentalMask() {
+        for (let x = 0; x < this.chunksX; x++) {
+            for (let y = 0; y < this.chunksY; y++) {
+                const chunk = this.chunks[x][y]
+
+                // Normalize to 0-1 across the chunk grid
+                const nx = x / Math.max(1, this.chunksX)
+                const ny = y / Math.max(1, this.chunksY)
+
+                // Very low-frequency FBM for broad regional zones
+                // 1-2 octaves, large scale → creates smooth contiguous regions
+                const continental = this.fbm(nx * 1.8, ny * 1.8, 2)
+
+                // Secondary low-frequency layer for regional variation
+                const regional = this.fbm((nx + 7.3) * 2.4, (ny + 3.1) * 2.4, 2)
+
+                // Combine: continental dominates, regional adds character
+                chunk.continentalMask = continental * 0.75 + regional * 0.25
+            }
+        }
+    }
+
     // Generate broad, livable biomes: plains / forest / hills
+    // Biomes derived from continental mask + elevation for geographic realism
     generateBiomes() {
         for (let x = 0; x < this.chunksX; x++) {
             for (let y = 0; y < this.chunksY; y++) {
@@ -95,11 +124,17 @@ class ChunkManager {
                 const nx = x / Math.max(1, this.chunksX)
                 const ny = y / Math.max(1, this.chunksY)
 
+                // Continental mask defines broad region
+                const mask = chunk.continentalMask ?? 0.5
+
+                // Local elevation detail within the region
                 const elevation = this.fbm(nx * 4.2, ny * 4.2, 4)
                 const moisture = this.fbm((nx + 17.3) * 3.6, (ny + 9.7) * 3.6, 4)
                 const openness = this.fbm((nx + 31.1) * 2.4, (ny + 6.4) * 2.4, 3)
 
-                if (elevation > 0.64) {
+                // Regional biome assignment with transition blending
+                if (mask > 0.62) {
+                    // Mountains (Appalachian zone) — high elevation, steep, rugged
                     chunk.biome = 'hills'
                     chunk.foodDensity = 0.9
                     chunk.waterDensity = 0.85
@@ -109,17 +144,33 @@ class ChunkManager {
                     chunk.fertility = 48 + Math.round(moisture * 18)
                     chunk.temperature = 17
                     chunk.elevation = 0.62 + elevation * 0.55
-                } else if (moisture > 0.55 && openness < 0.62) {
-                    chunk.biome = 'forest'
-                    chunk.foodDensity = 1.22
-                    chunk.waterDensity = 1.08
-                    chunk.shelterDensity = 1.35
-                    chunk.coverDensity = 60
-                    chunk.humidity = 62 + Math.round(moisture * 14)
-                    chunk.fertility = 66 + Math.round(moisture * 16)
-                    chunk.temperature = 20
-                    chunk.elevation = 0.36 + elevation * 0.34
+                } else if (mask > 0.35) {
+                    // Highlands/Ozarks — mid elevation, rolling, forested
+                    // Moisture and openness determine forest vs transitional plains
+                    if (moisture > 0.48 && openness < 0.65) {
+                        chunk.biome = 'forest'
+                        chunk.foodDensity = 1.22
+                        chunk.waterDensity = 1.08
+                        chunk.shelterDensity = 1.35
+                        chunk.coverDensity = 60
+                        chunk.humidity = 62 + Math.round(moisture * 14)
+                        chunk.fertility = 66 + Math.round(moisture * 16)
+                        chunk.temperature = 20
+                        chunk.elevation = 0.36 + elevation * 0.34
+                    } else {
+                        // Transition zone — dry uplands or river valley corridor
+                        chunk.biome = 'plains'
+                        chunk.foodDensity = 1.06
+                        chunk.waterDensity = 0.96
+                        chunk.shelterDensity = 0.9
+                        chunk.coverDensity = 24
+                        chunk.humidity = 44 + Math.round(moisture * 14)
+                        chunk.fertility = 60 + Math.round(moisture * 12)
+                        chunk.temperature = 21
+                        chunk.elevation = 0.22 + elevation * 0.24
+                    }
                 } else {
+                    // Prairie (Kansas zone) — low elevation, flat, open
                     chunk.biome = 'plains'
                     chunk.foodDensity = 1.06
                     chunk.waterDensity = 0.96
@@ -183,18 +234,240 @@ class ChunkManager {
         const top = e00 * (1 - tx) + e10 * tx
         const bottom = e01 * (1 - tx) + e11 * tx
         const normalized = top * (1 - ty) + bottom * ty
-        const ridge = Math.abs(this.fbm(clampedX / 180, clampedY / 180, 4) - 0.5)
-        const swell = this.fbm(clampedX / 900 + 12.4, clampedY / 900 + 3.7, 3) - 0.5
-        const detail = ridge * 0.22 + swell * 0.18
 
-        // World-space vertical meters for visible terrain relief.
-        return -1 + (normalized + detail) * 18
+        // Multi-scale detail noise for visible hills, ridges, and local relief
+        const ridge = Math.abs(this.fbm(clampedX / 80, clampedY / 80, 4) - 0.5)
+        const hill = this.fbm(clampedX / 200 + 5.3, clampedY / 200 + 2.1, 3)
+        const swell = this.fbm(clampedX / 600 + 12.4, clampedY / 600 + 3.7, 3) - 0.5
+        const detail = ridge * 0.4 + hill * 0.35 + swell * 0.25
+
+        // World-space vertical meters — large range with strong local detail
+        // Base: -5 to 45 from chunk elevation, detail adds ±20m of local relief
+        return -5 + normalized * 40 + detail * 40
+    }
+
+    // Generate water depth map — 0 = land, >0 = water depth
+    // Uses continental mask + elevation: very low areas = deep water, medium-low + moist = marsh
+    generateWaterDepth() {
+        for (let x = 0; x < this.chunksX; x++) {
+            for (let y = 0; y < this.chunksY; y++) {
+                const chunk = this.chunks[x][y]
+                const nx = x / Math.max(1, this.chunksX)
+                const ny = y / Math.max(1, this.chunksY)
+
+                // Moisture layer influences where water collects
+                const moisture = this.fbm((nx + 17.3) * 3.6, (ny + 9.7) * 3.6, 4)
+                const elev = chunk.elevation ?? 0.3
+
+                // Very low elevation + high moisture = deep water
+                if (elev < 0.25 && moisture > 0.5) {
+                    chunk.waterDepth = 0.5 + (0.25 - elev) * 2 + moisture * 0.3
+                } else if (elev < 0.32 && moisture > 0.4) {
+                    // Shallow water / marsh
+                    chunk.waterDepth = 0.1 + (0.32 - elev) * 0.5
+                } else {
+                    chunk.waterDepth = 0
+                }
+
+                // World edges at low elevation become marsh/deep water
+                const edgeDistX = Math.min(x, this.chunksX - 1 - x) / this.chunksX
+                const edgeDistY = Math.min(y, this.chunksY - 1 - y) / this.chunksY
+                const edgeDist = Math.min(edgeDistX, edgeDistY)
+                if (edgeDist < 0.06 && elev < 0.35) {
+                    chunk.waterDepth = Math.max(chunk.waterDepth, 0.3 + (0.06 - edgeDist) * 5)
+                }
+            }
+        }
+    }
+
+    // Get interpolated water depth at world position
+    getWaterDepthAt(worldX, worldY) {
+        const clampedX = Math.max(0, Math.min(this.worldWidth - 1, worldX))
+        const clampedY = Math.max(0, Math.min(this.worldHeight - 1, worldY))
+
+        const fx = clampedX / this.chunkSize
+        const fy = clampedY / this.chunkSize
+        const x0 = Math.floor(fx)
+        const y0 = Math.floor(fy)
+        const x1 = Math.min(this.chunksX - 1, x0 + 1)
+        const y1 = Math.min(this.chunksY - 1, y0 + 1)
+        const tx = fx - x0
+        const ty = fy - y0
+
+        const c00 = this.getChunk(x0, y0)
+        const c10 = this.getChunk(x1, y0)
+        const c01 = this.getChunk(x0, y1)
+        const c11 = this.getChunk(x1, y1)
+
+        const d00 = c00?.waterDepth ?? 0
+        const d10 = c10?.waterDepth ?? d00
+        const d01 = c01?.waterDepth ?? d00
+        const d11 = c11?.waterDepth ?? d10
+
+        const top = d00 * (1 - tx) + d10 * tx
+        const bottom = d01 * (1 - tx) + d11 * ty
+        return top * (1 - ty) + bottom * ty
+    }
+
+    // Generate rivers — steepest descent from highlands/mountains to lowlands
+    generateRivers() {
+        this.rivers = []
+        // Find seed points in mountain/highland zones
+        const seeds = []
+        for (let x = 0; x < this.chunksX; x++) {
+            for (let y = 0; y < this.chunksY; y++) {
+                const chunk = this.chunks[x][y]
+                if (!chunk) continue
+                const elev = chunk.elevation ?? 0.3
+                // Seeds in high elevation areas, but not on edges
+                if (elev > 0.5 && x > 2 && x < this.chunksX - 3 && y > 2 && y < this.chunksY - 3) {
+                    seeds.push({ x, y, elev })
+                }
+            }
+        }
+
+        // Sort by elevation descending, pick top candidates spread out
+        seeds.sort((a, b) => b.elev - a.elev)
+        const selected = []
+        const minDist = 8 // Minimum chunk distance between river sources
+        for (const s of seeds) {
+            if (selected.length >= 6) break // Cap at 6 rivers
+            const tooClose = selected.some(sel => Math.hypot(sel.x - s.x, sel.y - s.y) < minDist)
+            if (!tooClose) selected.push(s)
+        }
+
+        // Trace each river downhill
+        for (const seed of selected) {
+            const path = []
+            let cx = seed.x
+            let cy = seed.y
+            let steps = 0
+            const maxSteps = 80
+
+            while (steps < maxSteps) {
+                const chunk = this.getChunk(cx, cy)
+                const wx = cx * this.chunkSize + this.chunkSize / 2
+                const wy = cy * this.chunkSize + this.chunkSize / 2
+                path.push({ x: wx, y: wy, chunkX: cx, chunkY: cy })
+
+                // Mark chunk as river-adjacent (boost moisture)
+                if (chunk) {
+                    chunk.riverAdjacent = true
+                    chunk.fertility = Math.min(95, (chunk.fertility ?? 50) + 8)
+                }
+
+                // Find steepest descent neighbor
+                let bestDir = null
+                let bestDrop = -Infinity
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        if (dx === 0 && dy === 0) continue
+                        const nx = cx + dx
+                        const ny = cy + dy
+                        const nChunk = this.getChunk(nx, ny)
+                        if (!nChunk) continue
+                        const nElev = nChunk.elevation ?? 0.3
+                        const drop = ((chunk?.elevation ?? 0.3) - nElev)
+                        // Prefer downhill, but allow slight uphill for natural flow
+                        if (drop > bestDrop) {
+                            bestDrop = drop
+                            bestDir = { dx, dy }
+                        }
+                    }
+                }
+
+                if (!bestDir) break
+                cx += bestDir.dx
+                cy += bestDir.dy
+
+                // Stop if we reach water or edge
+                const finalChunk = this.getChunk(cx, cy)
+                if (finalChunk?.waterDepth > 0.3 || cx < 0 || cx >= this.chunksX || cy < 0 || cy >= this.chunksY) break
+                steps++
+            }
+
+            if (path.length > 5) {
+                this.rivers.push(path)
+            }
+        }
+    }
+
+    // Generate lakes in elevation basins (local minima) in highland/mountain zones
+    generateLakes() {
+        this.lakes = []
+        for (let x = 2; x < this.chunksX - 2; x++) {
+            for (let y = 2; y < this.chunksY - 2; y++) {
+                const chunk = this.chunks[x][y]
+                if (!chunk) continue
+
+                // Check if this is a local minimum (basin)
+                let isBasin = true
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        if (dx === 0 && dy === 0) continue
+                        const nChunk = this.getChunk(x + dx, y + dy)
+                        if (nChunk && (nChunk.elevation ?? 0.3) < (chunk.elevation ?? 0.3)) {
+                            isBasin = false
+                            break
+                        }
+                    }
+                    if (!isBasin) break
+                }
+
+                if (!isBasin) continue
+
+                // Basin in highland/mountain zone with some moisture = lake candidate
+                const nx = x / Math.max(1, this.chunksX)
+                const ny = y / Math.max(1, this.chunksY)
+                const moisture = this.fbm((nx + 17.3) * 3.6, (ny + 9.7) * 3.6, 4)
+
+                if (moisture > 0.45 && (chunk.elevation ?? 0.3) > 0.28) {
+                    const wx = x * this.chunkSize + this.chunkSize / 2
+                    const wy = y * this.chunkSize + this.chunkSize / 2
+                    const radius = this.chunkSize * (0.6 + moisture * 0.4)
+                    this.lakes.push({ x: wx, y: wy, radius })
+
+                    // Mark surrounding chunks as lake-adjacent
+                    for (let dx = -2; dx <= 2; dx++) {
+                        for (let dy = -2; dy <= 2; dy++) {
+                            const adj = this.getChunk(x + dx, y + dy)
+                            if (adj) adj.lakeAdjacent = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if a world position is passable (not cliff, steep gradient, or deep water)
+    isPassable(worldX, worldY) {
+        const elevation = this.getElevationAt(worldX, worldY)
+        // Normalize elevation to 0-1 range (new scale: -5 to 80)
+        const normElev = (elevation + 5) / 80
+
+        // High elevation = cliff face, impassable
+        if (normElev > 0.75) return false
+
+        // Deep water is impassable
+        const waterDepth = this.getWaterDepthAt(worldX, worldY)
+        if (waterDepth > 0.4) return false
+
+        // Check gradient — if adjacent cells differ too much, it's a cliff edge
+        const dx = [1, -1, 0, 0]
+        const dy = [0, 0, 1, -1]
+        for (let i = 0; i < 4; i++) {
+            const adjElev = this.getElevationAt(worldX + dx[i], worldY + dy[i])
+            const gradient = Math.abs(elevation - adjElev)
+            if (gradient > 8) return false // Steep cliff face
+        }
+
+        return true
     }
 
     generateSettlementBasins(targetCount = 10, minDistanceChunks = 5) {
         const allChunks = []
-        for (let x = 0; x < this.chunksX; x++) {
-            for (let y = 0; y < this.chunksY; y++) {
+        for (let x = 3; x < this.chunksX - 3; x++) {
+            for (let y = 3; y < this.chunksY - 3; y++) {
                 const chunk = this.chunks[x][y]
                 if (!chunk) continue
                 if ((chunk.settlementSuitability ?? 0) < 0.58) continue

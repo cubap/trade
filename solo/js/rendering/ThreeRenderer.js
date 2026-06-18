@@ -1,13 +1,47 @@
 import * as THREE from 'three'
-import { OBJLoader } from '/node_modules/three/examples/jsm/loaders/OBJLoader.js'
-import { FBXLoader } from '/node_modules/three/examples/jsm/loaders/FBXLoader.js'
-import { GLTFLoader } from '/node_modules/three/examples/jsm/loaders/GLTFLoader.js'
 import PerceptionRenderer from './PerceptionRenderer.js'
+import createTerrainMesh from './TerrainMesh.js'
+import createModelLoaders from './ModelLoader.js'
+import createMaterialFactory from './MaterialFactory.js'
+import createModelBuilders from './ModelBuilders.js'
+import createCameraController from './CameraController3D.js'
+import createEntityPose from './EntityPose.js'
+import createTerrainGenerator from '../core/TerrainGenerator.js'
 
 class ThreeRenderer {
     constructor(world, canvasId) {
         this.world = world
         this.canvas = document.getElementById(canvasId)
+
+        // Regional terrain generator — mountains in one region, plains downhill
+        this._terrainGenerator = createTerrainGenerator({
+            seed: world.chunkManager?.seed || 42,
+            worldWidth: world.width,
+            worldHeight: world.height,
+            maxElevation: 400, // Peak mountain height
+            waterLevel: 0.12, // Water plane
+            hillScale: 200,
+
+            // Mountain region placement (Rockies-style)
+            mountainRegionX: 0.25, // Left quarter of world
+            mountainRegionY: 0.3, // Upper third
+            mountainRegionRadius: 0.35, // Mountain spread
+            mountainRegionSharpness: 3, // Foothill falloff
+
+            // Mountain drama
+            ridgeStrength: 0.9,
+            ridgeSharpness: 3.5,
+            valleyStrength: 0.5,
+
+            // Plains
+            plainsRoughness: 0.15,
+
+            // Rivers
+            riverCarvingDepth: 15,
+
+            // Global grade
+            globalGrade: 0.12
+        })
 
         if (!this.canvas) {
             this.canvas = document.createElement('canvas')
@@ -15,6 +49,7 @@ class ThreeRenderer {
             document.body.appendChild(this.canvas)
         }
 
+        // Camera/view state
         this.supportsTrueFirstPerson = true
         this.followMode = false
         this.followedEntity = null
@@ -26,7 +61,7 @@ class ThreeRenderer {
         this.minZoom = 0.1
         this.maxZoom = 5
         this.cameraDistance = 220
-        this.firstPersonHeight = 1.5 // Eye level for 1.6m tall pawn
+        this.firstPersonHeight = 1.5
         this.turnResponse = 0.22
         this.turnDamping = 0.84
         this.maxTurnSpeed = 0.16
@@ -39,20 +74,27 @@ class ThreeRenderer {
         this.perceptionPolicy = 'phase_aware'
         this.highlightedEntity = null
         this.highlightEndTime = 0
+        this.paused = false
 
+        // Perception
         this.perception = new PerceptionRenderer(world)
+
+        // Entity tracking
         this._meshById = new Map()
         this._entityById = new Map()
+
+        // Smoothed camera/pose vectors
+        const spawnHeight = this._terrainGenerator?.getElevation?.(world.width / 2, world.height / 2) ?? 0
         this._tmpTargetPosition = new THREE.Vector3()
-        this._smoothedFirstPersonEye = new THREE.Vector3(this.viewX, this.firstPersonHeight, this.viewY)
+        this._smoothedFirstPersonEye = new THREE.Vector3(this.viewX, spawnHeight + this.firstPersonHeight, this.viewY)
         this._smoothedFirstPersonDir = new THREE.Vector3(1, 0, 0)
-        this._smoothedCameraTarget = new THREE.Vector3(this.viewX, 0, this.viewY)
+        this._smoothedCameraTarget = new THREE.Vector3(this.viewX, spawnHeight, this.viewY)
         this._firstPersonYaw = 0
         this._firstPersonYawVelocity = 0
-        this._smoothedPawnRotY = 0 // Smooth Y rotation for the pawn model
-        this._smoothedPawnPos = new THREE.Vector3() // Smoothed pawn world position (no tick-boundary bob)
-        
-        // Pooled temporaries for per-frame camera/head updates (avoid GC pressure)
+        this._smoothedPawnRotY = 0
+        this._smoothedPawnPos = new THREE.Vector3()
+
+        // Pooled temporaries (avoid GC)
         this._tmpHeadTarget = new THREE.Vector3()
         this._tmpTravelDir = new THREE.Vector3()
         this._tmpAttnDir = new THREE.Vector3()
@@ -63,30 +105,21 @@ class ThreeRenderer {
         this._tmpLookTarget = new THREE.Vector3()
         this._tmpOverseerTarget = new THREE.Vector3()
         this._tmpOverseerElevated = new THREE.Vector3()
-        
-        // Camera tuning — adjustable via sliders
-        // All heights relative to pawn model top (head level), not ground
-        // This keeps camera tracking natural on uneven terrain
+
+        // Tuning
         this.cameraTuning = {
-            behindDistance: 1.7,
-            cameraHeight: -0.1, // Slightly below head top (was 3.0 from ground)
+            behindDistance: 0.8,
+            cameraHeight: -0.15,
             lookDistance: 9.0,
-            lookHeight: 1.5 // Above head (was 4.6 from ground)
+            lookHeight: 1.5
         }
-        
-        // Pawn tuning — adjustable via sliders
-        // Model is ~1.0m tall (GLB Y span), scale to 1.6m real height
         this.pawnTuning = {
             pawnScale: 1.6,
             pawnYOffset: -0.1
         }
-        
-        // Pawn model height (set after GLB loads, used for camera-relative-to-head)
-        this._pawnModelHeight = 1.0 // Default: model bounds Y span before scale
-        
-        // Pause state (set by cameraTuning UI)
-        this.paused = false
-        
+        this._pawnModelHeight = 1.0
+
+        // Shader uniforms
         this._timeUniform = { value: 0 }
         this._waterShimmerUniform = { value: 1.8 }
         this._waterSpeedUniform = { value: 1.2 }
@@ -98,6 +131,8 @@ class ThreeRenderer {
         }
         this._waterMaterials = new Set()
         this._foliageMaterials = new Set()
+
+        // Model roots
         this._treeModelRoot = null
         this._treeModelFailed = false
         this._rockModelRoot = null
@@ -127,6 +162,7 @@ class ThreeRenderer {
         this.showAnimalLabels = false
         this._animalLabelLayer = null
 
+        // Three.js scene
         this.scene = new THREE.Scene()
         this.scene.background = new THREE.Color('#2c5f2d')
 
@@ -137,34 +173,38 @@ class ThreeRenderer {
         this.webglRenderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true })
         this.webglRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
 
-        // 3D head mesh — child of the camera for first-person view
+        // Compose modules before using their methods
+        Object.assign(this, createTerrainMesh(this))
+        Object.assign(this, createModelLoaders(this))
+        Object.assign(this, createMaterialFactory(this))
+        Object.assign(this, createModelBuilders(this))
+        Object.assign(this, createCameraController(this))
+        Object.assign(this, createEntityPose(this))
+
+        // Head mesh (first-person) — needs _centerModelToOrigin from ModelBuilders
         this._headMesh = this._createHeadMesh()
 
-        this._ambient = new THREE.AmbientLight(0xffffff, 0.7)
-        this._sun = new THREE.DirectionalLight(0xffffff, 0.7)
-        this._sun.position.set(220, 400, 160)
+        // Lighting — bright enough to see dramatic terrain
+        this._ambient = new THREE.AmbientLight(0xffffff, 0.6)
+        this._sun = new THREE.DirectionalLight(0xffffff, 1.5)
+        this._sun.position.set(300, 500, 200)
+        this._hemisphere = new THREE.HemisphereLight(0x87CEEB, 0x355f2f, 0.4)
         this.scene.add(this._ambient)
         this.scene.add(this._sun)
+        this.scene.add(this._hemisphere)
 
-        const terrainSegmentsX = Math.max(50, Math.min(180, Math.floor(this.world.width / 120)))
-        const terrainSegmentsY = Math.max(50, Math.min(180, Math.floor(this.world.height / 120)))
-        const terrainGeometry = new THREE.PlaneGeometry(this.world.width, this.world.height, terrainSegmentsX, terrainSegmentsY)
-        this._applyGroundRelief(terrainGeometry)
+        // Terrain
+        this._terrainSegmentsX = Math.max(100, Math.min(500, Math.floor(this.world.width / 50)))
+        this._terrainSegmentsY = Math.max(100, Math.min(500, Math.floor(this.world.height / 50)))
+        this._buildTerrainMesh()
 
-        this._ground = new THREE.Mesh(
-            terrainGeometry,
-            new THREE.MeshStandardMaterial({ color: '#355f2f', roughness: 1, metalness: 0, vertexColors: true })
-        )
-        this._ground.rotation.x = -Math.PI / 2
-        this._ground.position.set(this.world.width / 2, 0, this.world.height / 2)
-        this.scene.add(this._ground)
-
+        // Grid
         this._gridHelper = new THREE.GridHelper(Math.max(this.world.width, this.world.height), 40, 0x999999, 0x555555)
         this._gridHelper.position.set(this.world.width / 2, 0, this.world.height / 2)
         this._gridHelper.visible = false
         this.scene.add(this._gridHelper)
 
-        // `PlayerMode` expects a `.camera` object with these fields.
+        // PlayerMode camera proxy
         this.camera = {
             get viewX() { return this._owner.viewX },
             set viewX(v) { this._owner.viewX = v },
@@ -176,14 +216,18 @@ class ThreeRenderer {
         }
         this.camera._owner = this
 
+        // Raycasting
         this._raycaster = new THREE.Raycaster()
         this._pointer = new THREE.Vector2()
         this._groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
 
+        // Init
         this._onResize = () => this.resizeCanvas()
         window.addEventListener('resize', this._onResize)
         this.resizeCanvas()
         this._ensureAnimalLabelLayer()
+
+        // Load models
         this._loadTreeModel()
         this._loadRockModel()
         this._loadGrassModel()
@@ -193,396 +237,7 @@ class ThreeRenderer {
         this._loadPawnModel()
     }
 
-    _getGroundHeightAt(worldX, worldY) {
-        const chunkManager = this.world?.chunkManager
-        if (!chunkManager?.getElevationAt) return this._ground?.position?.y ?? 0
-        return chunkManager.getElevationAt(worldX, worldY)
-    }
-
-    _applyGroundRelief(geometry) {
-        const positions = geometry.getAttribute('position')
-        if (!positions) return
-
-        for (let i = 0; i < positions.count; i++) {
-            const localX = positions.getX(i)
-            const localY = positions.getY(i)
-            const worldX = localX + this.world.width / 2
-            const worldY = localY + this.world.height / 2
-            const height = this._getGroundHeightAt(worldX, worldY)
-            positions.setZ(i, height)
-        }
-
-        positions.needsUpdate = true
-        geometry.computeVertexNormals()
-
-        const colors = new Float32Array(positions.count * 3)
-        for (let i = 0; i < positions.count; i++) {
-            const localX = positions.getX(i)
-            const localY = positions.getY(i)
-            const worldX = localX + this.world.width / 2
-            const worldY = localY + this.world.height / 2
-            const height = positions.getZ(i)
-            const color = this._getTerrainColor(worldX, worldY, height)
-            const index = i * 3
-            colors[index] = color.r
-            colors[index + 1] = color.g
-            colors[index + 2] = color.b
-        }
-
-        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
-    }
-
-    _getTerrainColor(worldX, worldY, height) {
-        const chunk = this.world?.chunkManager?.getChunkAtPosition?.(worldX, worldY)
-        const biome = chunk?.biome ?? 'plains'
-        const tint = new THREE.Color()
-        const elevationBoost = Math.max(0, Math.min(1, (height + 1) / 8))
-        const detail = this._hashUnit(`${Math.floor(worldX / 12)}:${Math.floor(worldY / 12)}`, 'terrain-detail')
-
-        switch (biome) {
-            case 'forest':
-                tint.set('#355f2b')
-                tint.lerp(new THREE.Color('#24441f'), 0.28 + detail * 0.22)
-                break
-            case 'hills':
-                tint.set('#7a7649')
-                tint.lerp(new THREE.Color('#9a8f66'), 0.24 + detail * 0.26)
-                break
-            default:
-                tint.set('#6e9a4a')
-                tint.lerp(new THREE.Color('#8fbf67'), 0.24 + detail * 0.2)
-                break
-        }
-
-        const slopeShade = 0.78 + elevationBoost * 0.38
-        tint.multiplyScalar(slopeShade)
-        return tint
-    }
-
-    _ensureAnimalLabelLayer() {
-        if (this._animalLabelLayer) return
-        const layer = document.createElement('div')
-        layer.id = 'animal-label-layer'
-        Object.assign(layer.style, {
-            position: 'fixed',
-            inset: '0',
-            pointerEvents: 'none',
-            zIndex: '35'
-        })
-        document.body.appendChild(layer)
-        this._animalLabelLayer = layer
-    }
-
-    _clearAnimalLabels() {
-        if (!this._animalLabelLayer) return
-        this._animalLabelLayer.replaceChildren()
-    }
-
-    _loadTreeModel() {
-        const loader = new OBJLoader()
-        loader.load(
-            '/solo/assets/models/tree_obj.obj',
-            object => {
-                this._treeModelRoot = object
-                this._refreshTreeMeshes()
-            },
-            undefined,
-            error => {
-                this._treeModelFailed = true
-                console.warn('[three] failed to load tree model, using procedural trees', error)
-            }
-        )
-    }
-
-    _loadRockModel() {
-        const loader = new OBJLoader()
-        loader.load(
-            '/solo/assets/models/AssortedRocks.obj',
-            object => {
-                this._rockModelRoot = object
-                this._rockModelVariants = object.children.filter(node => node.isMesh || node.type === 'Group')
-                this._refreshRockMeshes()
-            },
-            undefined,
-            error => {
-                this._rockModelFailed = true
-                console.warn('[three] failed to load assorted rock model, using procedural rocks', error)
-            }
-        )
-    }
-
-    _loadGrassModel() {
-        const loader = new FBXLoader()
-        loader.load(
-            '/solo/assets/models/grassDarkGreen.fbx',
-            object => {
-                this._grassModelRoot = object
-                this._grassModelMeta = this._getNodeBoundsMeta(object)
-                this._refreshGrassMeshes()
-            },
-            undefined,
-            error => {
-                this._grassModelFailed = true
-                console.warn('[three] failed to load grass model, using procedural grass', error)
-            }
-        )
-    }
-
-    _loadPartsForSaleModel() {
-        const loader = new OBJLoader()
-        loader.load(
-            '/solo/assets/models/bush/PartsForSale.obj',
-            object => {
-                this._partsForSaleRoot = object
-                this._classifyPartsForSaleVariants()
-                this._refreshTreeMeshes()
-                this._refreshBushMeshes()
-            },
-            undefined,
-            () => {
-                this._partsForSaleFailed = true
-            }
-        )
-    }
-
-    _classifyPartsForSaleVariants() {
-        const children = this._partsForSaleRoot?.children?.filter(node => node.isMesh || node.type === 'Group') ?? []
-        if (!children.length) {
-            this._partsForSaleBushVariants = []
-            this._partsForSaleSmallTreeVariants = []
-            return
-        }
-
-        const withMeta = children.map(node => {
-            const centerX = this._getNodeCenterX(node)
-            const meta = this._getNodeBoundsMeta(node)
-            return {
-                node,
-                centerX,
-                height: meta.height,
-                width: meta.width,
-                depth: meta.depth
-            }
-        }).sort((a, b) => a.centerX - b.centerX)
-
-        const heights = withMeta.map(item => item.height).filter(Number.isFinite).sort((a, b) => a - b)
-        if (!heights.length) {
-            this._partsForSaleBushVariants = []
-            this._partsForSaleSmallTreeVariants = withMeta.map(item => item.node)
-            return
-        }
-
-        const median = heights[Math.floor(heights.length * 0.5)]
-        const endSliceCount = Math.max(2, Math.floor(withMeta.length * 0.3))
-        const leftEnd = withMeta.slice(0, endSliceCount)
-        const rightEnd = withMeta.slice(-endSliceCount)
-
-        const averageHeight = items => items.reduce((sum, item) => sum + item.height, 0) / Math.max(1, items.length)
-        const leftAvg = averageHeight(leftEnd)
-        const rightAvg = averageHeight(rightEnd)
-        const rowEnd = rightAvg <= leftAvg ? rightEnd : leftEnd
-
-        const endHeights = rowEnd.map(item => item.height).sort((a, b) => a - b)
-        const endMedianHeight = endHeights[Math.floor(endHeights.length * 0.5)] ?? median
-        const endFootprints = rowEnd.map(item => Math.max(item.width, item.depth)).sort((a, b) => a - b)
-        const endMedianFootprint = endFootprints[Math.floor(endFootprints.length * 0.5)] ?? 1
-
-        const bushCandidates = rowEnd.filter(item => {
-            const footprint = Math.max(item.width, item.depth)
-            const heightRatio = item.height / Math.max(0.001, footprint)
-            const compactEnough = heightRatio <= 2.2
-            const withinHeightBand = item.height <= endMedianHeight * 1.5
-            const notDebris = footprint >= endMedianFootprint * 0.25
-            return compactEnough && withinHeightBand && notDebris
-        })
-
-        this._partsForSaleBushVariants = bushCandidates.map(item => item.node)
-
-        const bushSet = new Set(this._partsForSaleBushVariants)
-        this._partsForSaleSmallTreeVariants = withMeta
-            .filter(item => !bushSet.has(item.node) && item.height >= median * 0.75)
-            .map(item => item.node)
-
-        if (!this._partsForSaleBushVariants.length) {
-            this._partsForSaleBushVariants = rowEnd
-                .filter(item => item.height <= endMedianHeight * 1.2)
-                .map(item => item.node)
-        }
-
-        if (!this._partsForSaleSmallTreeVariants.length) {
-            this._partsForSaleSmallTreeVariants = withMeta
-                .filter(item => !this._partsForSaleBushVariants.includes(item.node))
-                .map(item => item.node)
-        }
-    }
-
-    _loadAnimalModel() {
-        const loader = new OBJLoader()
-        loader.load(
-            '/solo/assets/models/animal_pack/animal%20pack/obj.obj',
-            object => {
-                this._animalModelRoot = object
-                this._animalModelVariants = object.children
-                    .filter(node => node.isMesh || node.type === 'Group')
-                    .sort((a, b) => this._getNodeCenterX(a) - this._getNodeCenterX(b))
-                this._animalVariantMeta = this._animalModelVariants.map(node => this._getNodeBoundsMeta(node))
-                this._normalizeAnimalVariantScales()
-                this._refreshAnimalMeshes()
-            },
-            undefined,
-            error => {
-                this._animalModelFailed = true
-                console.warn('[three] failed to load animal model pack, using procedural animals', error)
-            }
-        )
-    }
-
-    _loadOpenGameArtSkybox() {
-        const faces = [
-            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_rt.png',
-            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_lf.png',
-            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_up.png',
-            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_dn.png',
-            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_ft.png',
-            '/solo/assets/models/opengameart/skybox_kurt/kurt/space_bk.png'
-        ]
-
-        const loader = new THREE.CubeTextureLoader()
-        loader.load(
-            faces,
-            texture => {
-                if (texture && 'colorSpace' in texture && THREE.SRGBColorSpace) {
-                    texture.colorSpace = THREE.SRGBColorSpace
-                }
-
-                this._skyboxTexture = texture
-                this.scene.background = texture
-                if (this._skyDome) this._skyDome.visible = false
-            },
-            undefined,
-            error => {
-                console.warn('[three] failed to load OpenGameArt skybox, using procedural sky dome', error)
-                if (this._skyDome) this._skyDome.visible = true
-            }
-        )
-    }
-
-    _loadPawnModel() {
-        const textureLoader = new THREE.TextureLoader()
-        textureLoader.load(
-            '/solo/assets/models/opengameart/pawn_rpg_kit/textures/boy_Albedo.png',
-            texture => {
-                if (texture && 'colorSpace' in texture && THREE.SRGBColorSpace) {
-                    texture.colorSpace = THREE.SRGBColorSpace
-                }
-                this._pawnTexture = texture
-                this._refreshPawnMeshes()
-            },
-            undefined,
-            () => {
-                this._pawnTextureFailed = true
-            }
-        )
-
-        const loader = new GLTFLoader()
-        loader.load(
-            '/solo/assets/models/pawn.glb',
-            (gltf) => {
-                this._pawnModelRoot = gltf.scene
-                this._refreshPawnMeshes()
-            },
-            undefined,
-            (error) => {
-                this._pawnModelFailed = true
-                console.warn('[three] failed to load pawn.glb, using procedural pawn', error)
-            }
-        )
-    }
-
-    _refreshTreeMeshes() {
-        if (!this._treeModelRoot && !this._partsForSaleSmallTreeVariants.length) return
-
-        const treeIds = []
-        for (const [id, entity] of this._entityById.entries()) {
-            if (entity?.type !== 'tree') continue
-            treeIds.push(id)
-        }
-
-        for (const id of treeIds) {
-            this._disposeMesh(id)
-        }
-    }
-
-    _refreshRockMeshes() {
-        if (!this._rockModelRoot) return
-
-        const rockIds = []
-        for (const [id, entity] of this._entityById.entries()) {
-            if (entity?.subtype !== 'rock' && !this._hasTag(entity, 'rock')) continue
-            rockIds.push(id)
-        }
-
-        for (const id of rockIds) {
-            this._disposeMesh(id)
-        }
-    }
-
-    _refreshGrassMeshes() {
-        if (!this._grassModelRoot) return
-
-        const grassIds = []
-        for (const [id, entity] of this._entityById.entries()) {
-            if (entity?.type !== 'grass') continue
-            grassIds.push(id)
-        }
-
-        for (const id of grassIds) {
-            this._disposeMesh(id)
-        }
-    }
-
-    _refreshAnimalMeshes() {
-        if (!this._animalModelRoot) return
-
-        const animalIds = []
-        for (const [id, entity] of this._entityById.entries()) {
-            if (entity?.subtype !== 'animal') continue
-            animalIds.push(id)
-        }
-
-        for (const id of animalIds) {
-            this._disposeMesh(id)
-        }
-    }
-
-    _refreshPawnMeshes() {
-        if (!this._pawnModelRoot) return
-
-        const pawnIds = []
-        for (const [id, entity] of this._entityById.entries()) {
-            if (entity?.subtype !== 'pawn') continue
-            pawnIds.push(id)
-        }
-
-        for (const id of pawnIds) {
-            this._disposeMesh(id)
-        }
-    }
-
-    _refreshBushMeshes() {
-        if (!this._bushModelRoot && !this._bushLeafTexture && !this._partsForSaleBushVariants.length) return
-
-        const bushIds = []
-        for (const [id, entity] of this._entityById.entries()) {
-            if (entity?.type !== 'bush' && entity?.subtype !== 'plant') continue
-            bushIds.push(id)
-        }
-
-        for (const id of bushIds) {
-            this._disposeMesh(id)
-        }
-    }
-
+    // --- Sky dome ---
     _createSkyDome() {
         const geometry = new THREE.SphereGeometry(7000, 24, 16)
         const material = new THREE.ShaderMaterial({
@@ -615,25 +270,24 @@ class ThreeRenderer {
                 }
             `
         })
-
         return new THREE.Mesh(geometry, material)
     }
 
+    // --- Resize ---
     resizeCanvas() {
         this.canvas.width = window.innerWidth
         this.canvas.height = window.innerHeight
         this.canvas.style.position = 'absolute'
         this.canvas.style.top = '0'
         this.canvas.style.left = '0'
-
         this._camera3d.aspect = Math.max(1, this.canvas.width) / Math.max(1, this.canvas.height)
         this._camera3d.updateProjectionMatrix()
         this.webglRenderer.setSize(this.canvas.width, this.canvas.height, false)
     }
 
+    // --- Follow / first-person ---
     setFollowEntity(entity) {
         if (this.firstPersonLocked && entity === null) return false
-
         this.followedEntity = entity
         this.followMode = entity !== null
         if (entity) {
@@ -654,7 +308,6 @@ class ThreeRenderer {
         if (entity) this.setFollowEntity(entity)
         this.firstPersonLocked = true
 
-        // Snap camera state to pawn position to avoid slow lerp from distant start
         const pawn = this.followedEntity
         if (pawn) {
             const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
@@ -662,7 +315,6 @@ class ThreeRenderer {
             const bottomOffset = (this._pawnModelBottomY ?? -0.5) * pawnScale
             const pawnHeadY = eyeGround - bottomOffset + this._pawnModelHeight * pawnScale
 
-            // Initialize yaw from pawn's travel direction
             const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
             const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
             const dx = pawn.x - pX
@@ -676,7 +328,6 @@ class ThreeRenderer {
             }
             this._firstPersonYawVelocity = 0
 
-            // Compute initial camera eye position (behind pawn)
             const yawDir = new THREE.Vector3(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
             const behindDistance = this.cameraTuning.behindDistance
             const camHeight = pawnHeadY + this.cameraTuning.cameraHeight
@@ -685,12 +336,9 @@ class ThreeRenderer {
                 camHeight,
                 pawn.y - yawDir.z * behindDistance
             )
-
-            // Snap pawn smooth position too
             this._smoothedPawnPos.set(pawn.x, pawnHeadY + (this.pawnTuning?.pawnYOffset ?? 0), pawn.y)
             this._smoothedPawnRotY = this._firstPersonYaw
         }
-
         return !!this.followedEntity
     }
 
@@ -706,6 +354,7 @@ class ThreeRenderer {
         this.zoomLevel = Math.max(this.minZoom, Math.min(this.maxZoom, normalized))
     }
 
+    // --- Perception ---
     get perceptionMode() {
         return this.perception.perceptionMode
     }
@@ -715,6 +364,7 @@ class ThreeRenderer {
         this.perception.togglePerceptionMode()
     }
 
+    // --- Capabilities ---
     setCapabilities(payload) {
         this.capabilities = payload || null
         this.perceptionPolicy = this.capabilities?.modules?.perceptionModePolicy ?? 'phase_aware'
@@ -732,6 +382,7 @@ class ThreeRenderer {
         this._routeTraceProvider = provider
     }
 
+    // --- Visual tuning ---
     getVisualTuning() {
         return { ...this._visualTuning }
     }
@@ -741,18 +392,17 @@ class ThreeRenderer {
             this._visualTuning.waterShimmer = Math.max(0, Math.min(4, tuning.waterShimmer))
             this._waterShimmerUniform.value = this._visualTuning.waterShimmer
         }
-
         if (Number.isFinite(tuning.waterSpeed)) {
             this._visualTuning.waterSpeed = Math.max(0, Math.min(4, tuning.waterSpeed))
             this._waterSpeedUniform.value = this._visualTuning.waterSpeed
         }
-
         if (Number.isFinite(tuning.foliageSway)) {
             this._visualTuning.foliageSway = Math.max(0, Math.min(3, tuning.foliageSway))
             this._foliageSwayUniform.value = this._visualTuning.foliageSway
         }
     }
 
+    // --- Animal labels ---
     getAnimalLabelsVisible() {
         return !!this.showAnimalLabels
     }
@@ -761,11 +411,32 @@ class ThreeRenderer {
         this.showAnimalLabels = !!visible
     }
 
+    _ensureAnimalLabelLayer() {
+        if (this._animalLabelLayer) return
+        const layer = document.createElement('div')
+        layer.id = 'animal-label-layer'
+        Object.assign(layer.style, {
+            position: 'fixed',
+            inset: '0',
+            pointerEvents: 'none',
+            zIndex: '35'
+        })
+        document.body.appendChild(layer)
+        this._animalLabelLayer = layer
+    }
+
+    _clearAnimalLabels() {
+        if (!this._animalLabelLayer) return
+        this._animalLabelLayer.replaceChildren()
+    }
+
+    // --- Highlight ---
     highlightEntity(entity, duration = 2000) {
         this.highlightedEntity = entity
         this.highlightEndTime = Date.now() + duration
     }
 
+    // --- Coordinate transforms ---
     screenToWorld(screenX, screenY) {
         this._pointer.x = (screenX / this.canvas.width) * 2 - 1
         this._pointer.y = -(screenY / this.canvas.height) * 2 + 1
@@ -806,7 +477,6 @@ class ThreeRenderer {
                 node = node.parent
             }
         }
-
         return null
     }
 
@@ -814,7 +484,7 @@ class ThreeRenderer {
         if (!root || !entityId) return
         root.userData = root.userData || {}
         root.userData.entityId = entityId
-        root.traverse?.(node => {
+        root.traverse?.((node) => {
             node.userData = node.userData || {}
             node.userData.entityId = entityId
         })
@@ -823,13 +493,13 @@ class ThreeRenderer {
     worldToScreen(worldX, worldY) {
         const point = new THREE.Vector3(worldX, 0, worldY)
         point.project(this._camera3d)
-
         return {
             x: (point.x + 1) * 0.5 * this.canvas.width,
             y: (1 - point.y) * 0.5 * this.canvas.height
         }
     }
 
+    // --- Utilities ---
     _hasTag(entity, tag) {
         if (!entity || !tag) return false
         if (Array.isArray(entity.tags)) return entity.tags.includes(tag)
@@ -847,1287 +517,10 @@ class ThreeRenderer {
         return ((hash >>> 0) % 10000) / 10000
     }
 
-    _getEntityRenderProfile(entity) {
-        const unitA = this._hashUnit(entity?.id, 'a')
-        const unitB = this._hashUnit(entity?.id, 'b')
-        const size = Math.max(0.5, Number(entity?.size) || 1)
-
-        const isWater = entity?.subtype === 'water' || this._hasTag(entity, 'water')
-        if (isWater) {
-            const radius = Math.max(3, size * (1.2 + unitA * 0.8))
-            return {
-                geometry: new THREE.CircleGeometry(radius, 18),
-                materialColor: entity?.color || '#4da6ff',
-                shaderType: 'water',
-                baseY: 0.03,
-                rotation: { x: -Math.PI / 2, y: 0, z: 0 },
-                lerp: 0.28
-            }
-        }
-
-        const isStick = entity?.subtype === 'stick' || this._hasTag(entity, 'stick')
-        if (isStick) {
-            const length = Math.max(2.5, size * (1.2 + unitA * 1.8))
-            const thickness = 0.18 + unitB * 0.18
-            return {
-                geometry: new THREE.BoxGeometry(length, thickness, thickness * 1.2),
-                materialColor: entity?.color || '#8b5a2b',
-                baseY: 0.06 + thickness * 0.5,
-                rotation: {
-                    x: (unitA - 0.5) * 0.16,
-                    y: unitB * Math.PI * 2,
-                    z: (unitB - 0.5) * 0.12
-                },
-                lerp: 0.26
-            }
-        }
-
-        const isRock = entity?.subtype === 'rock' || this._hasTag(entity, 'rock')
-        if (isRock) {
-            const radius = Math.max(1.2, size * (0.75 + unitA * 0.55))
-            return {
-                geometry: new THREE.DodecahedronGeometry(radius, 0),
-                materialColor: entity?.color || '#8b7355',
-                useRockModel: !!this._rockModelRoot,
-                modelScale: 0.06 + unitA * 0.05,
-                baseY: radius * 0.68,
-                rotation: {
-                    x: (unitA - 0.5) * 0.28,
-                    y: unitB * Math.PI * 2,
-                    z: (unitB - 0.5) * 0.24
-                },
-                lerp: 0.22
-            }
-        }
-
-        const isFiberPlant = entity?.subtype === 'fiber_plant' || this._hasTag(entity, 'fiber')
-        if (isFiberPlant) {
-            const height = Math.max(1.5, 2.2 + unitA * 2.6)
-            const radius = Math.max(0.24, 0.18 + unitB * 0.32)
-            return {
-                geometry: new THREE.ConeGeometry(radius * 2.2, height, 5),
-                materialColor: entity?.color || '#9acd32',
-                shaderType: 'foliage',
-                swayStrength: 0.4 + unitA * 0.22,
-                baseY: height * 0.5,
-                rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
-                lerp: 0.26
-            }
-        }
-
-        if (entity?.type === 'grass') {
-            const height = Math.max(0.9, 1.1 + unitA * 1.5)
-            return {
-                geometry: new THREE.ConeGeometry(0.45 + unitB * 0.35, height, 4),
-                materialColor: entity?.color || '#74b94a',
-                shaderType: 'foliage',
-                swayStrength: 0.32 + unitB * 0.14,
-                baseY: height * 0.5,
-                useGrassModel: !!this._grassModelRoot,
-                grassTargetHeight: height,
-                rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
-                lerp: 0.2
-            }
-        }
-
-        if (entity?.subtype === 'food' || this._hasTag(entity, 'food')) {
-            const radius = Math.max(1.2, size * (0.35 + unitA * 0.2))
-            return {
-                geometry: new THREE.OctahedronGeometry(radius, 0),
-                materialColor: entity?.color || '#7cfc00',
-                baseY: radius,
-                rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
-                lerp: 0.22
-            }
-        }
-
-        if (entity?.type === 'tree') {
-            const isSapling = entity?.stage === 'sapling'
-            const isSmallTreeStage = isSapling
-            // Adult trees: 4-8m tall, saplings: 0.5-2m, seedlings: 0.05-0.3m
-            const stageScale = entity?.stage === 'adult' ? 1 : isSapling ? 0.25 : 0.05
-            const baseHeight = Math.max(4, (5 + unitA * 4) * stageScale) // 5-9m adult, ~1.25-2.25m sapling
-            const height = isSapling ? baseHeight * 2 : baseHeight
-            const radius = Math.max(0.6, baseHeight * 0.08)
-            const leafColor = entity?.color || '#5e8f3f'
-            return {
-                geometry: new THREE.CylinderGeometry(radius * 0.75, radius, height, 8),
-                materialColor: leafColor,
-                leafColor,
-                trunkColor: '#6b4f2a',
-                shaderType: 'foliage',
-                swayStrength: 0.18 + unitA * 0.08,
-                baseY: height * 0.5,
-                modelScale: (0.6 + unitA * 0.2) * 3, // ~1.8-2.4m base scale for adult
-                modelScaleY: isSapling ? 0.6 : 1,
-                useTreeModel: !!this._treeModelRoot,
-                useSmallTreeVariantModel: false,
-                smallTreeModelScale: 0.5 + unitA * 0.15, // ~0.5-0.65m for sapling model
-                rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
-                lerp: 0.24
-            }
-        }
-
-        if (entity?.type === 'bush' || entity?.subtype === 'plant') {
-            const height = Math.max(2, 2.4 + unitA * 4.2)
-            const radius = Math.max(1.2, 1.3 + unitB * 2.2)
-            return {
-                geometry: new THREE.SphereGeometry(radius * 0.8, 10, 8),
-                materialColor: entity?.color || '#6c9a4d',
-                shaderType: 'foliage',
-                swayStrength: 0.28 + unitB * 0.14,
-                baseY: radius * 0.88,
-                bushHeight: height,
-                bushRadius: radius,
-                useBushVariantModel: false,
-                useBushModel: !!this._bushModelRoot,
-                useBushLeafTexture: !!this._bushLeafTexture,
-                modelScale: 0.16 + unitA * 0.07,
-                rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
-                lerp: 0.24
-            }
-        }
-
-        if (entity?.subtype === 'pawn') {
-            return {
-                geometry: new THREE.CylinderGeometry(1.8, 2.3, 7.5, 6),
-                materialColor: entity?.color || '#3498db',
-                usePawnModel: !!this._pawnModelRoot,
-                modelScale: 2.5 + unitA * 0.5, // GLB scale (adjust based on model units)
-                baseY: 3.75,
-                rotation: { x: 0, y: 0, z: 0 },
-                lerp: 0.38
-            }
-        }
-
-        if (entity?.subtype === 'animal' || entity?.type === 'mobile') {
-            const isAnimal = entity?.subtype === 'animal'
-            return {
-                geometry: isAnimal
-                    ? new THREE.ConeGeometry(2.8, 8.2, 6)
-                    : new THREE.OctahedronGeometry(2.5, 0),
-                materialColor: entity?.color || '#c79b5f',
-                useAnimalModel: isAnimal && !!this._animalModelRoot,
-                modelScale: 0.22 + unitA * 0.1,
-                baseY: 4.1,
-                rotation: { x: 0, y: 0, z: 0 },
-                lerp: 0.34
-            }
-        }
-
-        return {
-            geometry: new THREE.BoxGeometry(5, 5, 5),
-            materialColor: entity?.color || '#888888',
-            baseY: 2.5,
-            rotation: { x: 0, y: 0, z: 0 },
-            lerp: 0.3
-        }
-    }
-
-    _createWaterMaterial(baseColor) {
-        const waterA = new THREE.Color(baseColor)
-        const waterB = waterA.clone().offsetHSL(0.03, 0.08, 0.07)
-
-        const material = new THREE.ShaderMaterial({
-            transparent: true,
-            depthWrite: false,
-            uniforms: {
-                uTime: this._timeUniform,
-                uShimmer: this._waterShimmerUniform,
-                uSpeed: this._waterSpeedUniform,
-                uColorA: { value: waterA },
-                uColorB: { value: waterB }
-            },
-            vertexShader: `
-                varying vec2 vUv;
-                varying vec3 vWorld;
-                void main() {
-                    vUv = uv;
-                    vec4 worldPos = modelMatrix * vec4(position, 1.0);
-                    vWorld = worldPos.xyz;
-                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-                }
-            `,
-            fragmentShader: `
-                uniform float uTime;
-                uniform float uShimmer;
-                uniform float uSpeed;
-                uniform vec3 uColorA;
-                uniform vec3 uColorB;
-                varying vec2 vUv;
-                varying vec3 vWorld;
-                void main() {
-                    float t = uTime * uSpeed;
-                    float ripple = sin((vWorld.x * 0.12) + t * 1.45) * 0.5
-                                 + cos((vWorld.z * 0.14) - t * 1.25) * 0.5;
-                    float stripe = sin((vUv.x + vUv.y) * 11.0 + t * 2.8) * 0.11;
-                    float pulse = sin((vWorld.x - vWorld.z) * 0.08 + t * 1.8) * 0.12;
-                    float wave = clamp(0.5 + (ripple * 0.3 + stripe + pulse) * uShimmer, 0.0, 1.0);
-                    vec3 color = mix(uColorA, uColorB, wave);
-                    float alpha = clamp(0.66 + (ripple * 0.09 + stripe * 0.7) * uShimmer, 0.4, 0.92);
-                    gl_FragColor = vec4(color, alpha);
-                }
-            `
-        })
-
-        this._waterMaterials.add(material)
-        return material
-    }
-
-    _createFoliageMaterial(baseColor, swayStrength = 0.25) {
-        const material = new THREE.MeshStandardMaterial({
-            color: baseColor,
-            roughness: 0.92,
-            metalness: 0.01
-        })
-
-        material.onBeforeCompile = shader => {
-            shader.uniforms.uTime = this._timeUniform
-            shader.uniforms.uSwayStrength = { value: swayStrength }
-            shader.uniforms.uGlobalSway = this._foliageSwayUniform
-
-            shader.vertexShader = `
-                uniform float uTime;
-                uniform float uSwayStrength;
-                uniform float uGlobalSway;
-            ` + shader.vertexShader
-
-            shader.vertexShader = shader.vertexShader.replace(
-                '#include <begin_vertex>',
-                `
-                #include <begin_vertex>
-                float swayMask = clamp((position.y + 0.5) / 12.0, 0.0, 1.0);
-                float sway = sin(uTime * 0.9 + position.x * 0.35 + position.z * 0.27)
-                    * uSwayStrength * uGlobalSway * swayMask;
-                transformed.x += sway;
-                transformed.z += sway * 0.32;
-                `
-            )
-        }
-
-        material.customProgramCacheKey = () => `foliage-sway-${swayStrength.toFixed(3)}`
-        this._foliageMaterials.add(material)
-        return material
-    }
-
-    _createTreeTrunkMaterial(baseColor) {
-        const trunkColor = new THREE.Color(baseColor || '#6b4f2a')
-        trunkColor.offsetHSL(0.01, -0.05, -0.06)
-        return new THREE.MeshStandardMaterial({
-            color: trunkColor,
-            roughness: 0.95,
-            metalness: 0.0
-        })
-    }
-
-    _createTreeGradientMaterial() {
-        return new THREE.MeshStandardMaterial({
-            vertexColors: true,
-            roughness: 0.92,
-            metalness: 0.0
-        })
-    }
-
-    _applyTreeGradientColors(geometry, trunkColor, leafColor) {
-        const position = geometry.getAttribute('position')
-        if (!position) return
-
-        geometry.computeBoundingBox()
-        const bounds = geometry.boundingBox
-        if (!bounds) return
-
-        const minY = bounds.min.y
-        const maxY = bounds.max.y
-        const height = Math.max(0.001, maxY - minY)
-        const colorArray = new Float32Array(position.count * 3)
-        const trunk = new THREE.Color(trunkColor || '#6b4f2a')
-        const leaf = new THREE.Color(leafColor || '#5e8f3f')
-        const mixed = new THREE.Color()
-
-        for (let i = 0; i < position.count; i++) {
-            const y = position.getY(i)
-            const t = (y - minY) / height
-            const ramp = Math.min(1, Math.max(0, (t - 0.28) / 0.42))
-            mixed.copy(trunk).lerp(leaf, ramp)
-            const index = i * 3
-            colorArray[index] = mixed.r
-            colorArray[index + 1] = mixed.g
-            colorArray[index + 2] = mixed.b
-        }
-
-        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorArray, 3))
-    }
-
-    _createRockMaterial(baseColor, variation = 0) {
-        const color = new THREE.Color(baseColor)
-        color.offsetHSL(0, -0.05 + variation * 0.08, -0.08 + variation * 0.12)
-        return new THREE.MeshStandardMaterial({
-            color,
-            roughness: 0.98,
-            metalness: 0.0
-        })
-    }
-
-    _splitTreeMaterialsByHeight(model, profile) {
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-
-            this._applyTreeGradientColors(node.geometry, profile.trunkColor, profile.leafColor ?? profile.materialColor)
-            node.material = this._createTreeGradientMaterial()
-        })
-    }
-
-    _captureGroundOffset(model) {
-        model.updateMatrixWorld(true)
-        const bounds = new THREE.Box3().setFromObject(model)
-        if (!Number.isFinite(bounds.min.y)) return 0
-        return -bounds.min.y
-    }
-
-    _getNodeCenterX(node) {
-        const box = new THREE.Box3().setFromObject(node)
-        if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return 0
-        return (box.min.x + box.max.x) * 0.5
-    }
-
-    _getNodeBoundsMeta(node) {
-        const box = new THREE.Box3().setFromObject(node)
-        const width = Number.isFinite(box.max.x - box.min.x) ? Math.max(0.001, box.max.x - box.min.x) : 1
-        const height = Number.isFinite(box.max.y - box.min.y) ? Math.max(0.001, box.max.y - box.min.y) : 1
-        const depth = Number.isFinite(box.max.z - box.min.z) ? Math.max(0.001, box.max.z - box.min.z) : 1
-        return {
-            width,
-            height,
-            depth,
-            baseScale: 1
-        }
-    }
-
-    _normalizeAnimalVariantScales() {
-        if (!this._animalVariantMeta.length) return
-        const heights = this._animalVariantMeta.map(meta => meta.height).filter(Number.isFinite)
-        if (!heights.length) return
-
-        const sorted = [...heights].sort((a, b) => a - b)
-        const median = sorted[Math.floor(sorted.length / 2)]
-        const targetHeight = Math.max(0.001, median)
-
-        for (const meta of this._animalVariantMeta) {
-            const safeHeight = Math.max(0.001, meta.height)
-            // Clamp keeps outliers from exploding or shrinking too aggressively.
-            meta.baseScale = Math.max(0.25, Math.min(4, targetHeight / safeHeight))
-        }
-    }
-
-    _normalizeSpeciesName(entity) {
-        const raw = `${entity?.species ?? entity?.name ?? ''}`.trim().toLowerCase()
-        if (!raw) return ''
-
-        if (raw.includes('rabbit')) return 'deer'
-        if (raw.includes('fox')) return 'lion'
-        return raw
-    }
-
-    _getAnimalVariantIndex(entity) {
-        const species = this._normalizeSpeciesName(entity)
-        const knownIndex = this._animalPackOrder.indexOf(species)
-        if (knownIndex >= 0) return knownIndex
-
-        const count = this._animalModelVariants.length
-        if (!count) return -1
-        const hashed = Math.floor(this._hashUnit(entity?.id ?? entity?.name, 'animal-variant') * count)
-        return Math.max(0, Math.min(count - 1, hashed))
-    }
-
-    _centerModelToOrigin(model) {
-        model.updateMatrixWorld(true)
-        const bounds = new THREE.Box3().setFromObject(model)
-        if (!Number.isFinite(bounds.min.x) || !Number.isFinite(bounds.max.x)) return
-
-        const centerX = (bounds.min.x + bounds.max.x) * 0.5
-        const centerZ = (bounds.min.z + bounds.max.z) * 0.5
-        model.position.x -= centerX
-        model.position.y -= bounds.min.y
-        model.position.z -= centerZ
-    }
-
-    _buildTreeModelInstance(profile) {
-        const model = this._treeModelRoot.clone(true)
-        const scale = profile.modelScale ?? 0.2
-        const scaleY = scale * (profile.modelScaleY ?? 1)
-        model.scale.set(scale, scaleY, scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._splitTreeMaterialsByHeight(model, profile)
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _buildRockModelInstance(entity, profile) {
-        const variantIndex = this._getRockVariantIndex(entity)
-        const source = this._rockModelVariants[variantIndex] ?? this._rockModelRoot
-        const model = source.clone(true)
-        const scale = profile.modelScale ?? 0.08
-        model.scale.setScalar(scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._centerModelToOrigin(model)
-
-        const variation = this._hashUnit(entity?.id, 'rockmat')
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-            node.material = this._createRockMaterial(profile.materialColor, variation)
-        })
-
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _buildGrassModelInstance(entity, profile) {
-        const model = this._grassModelRoot.clone(true)
-        const sourceHeight = Math.max(0.001, this._grassModelMeta?.height ?? 1)
-        const targetHeight = Math.max(0.7, profile.grassTargetHeight ?? 1.3)
-        const normalizedScale = Math.max(0.02, Math.min(6, targetHeight / sourceHeight))
-        const randomScale = 0.9 + this._hashUnit(entity?.id, 'grass-scale') * 0.35
-        const scale = normalizedScale * randomScale
-
-        model.scale.setScalar(scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._centerModelToOrigin(model)
-
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-            node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-        })
-
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _buildBushModelInstance(profile) {
-        const model = this._bushModelRoot.clone(true)
-        const scale = profile.modelScale ?? 0.18
-        model.scale.setScalar(scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._centerModelToOrigin(model)
-
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-            node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-        })
-
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _getPartsVariantIndex(entity, salt, count) {
-        if (!count) return -1
-        const hashed = Math.floor(this._hashUnit(entity?.id ?? entity?.name, salt) * count)
-        return Math.max(0, Math.min(count - 1, hashed))
-    }
-
-    _buildSmallTreeVariantInstance(entity, profile) {
-        const index = this._getPartsVariantIndex(entity, 'parts-small-tree', this._partsForSaleSmallTreeVariants.length)
-        if (index < 0) return null
-
-        const source = this._partsForSaleSmallTreeVariants[index]
-        if (!source) return null
-
-        const model = source.clone(true)
-        const scale = profile.smallTreeModelScale ?? profile.modelScale ?? 0.2
-        const scaleY = scale * (profile.modelScaleY ?? 1)
-        model.scale.set(scale, scaleY, scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._centerModelToOrigin(model)
-        this._splitTreeMaterialsByHeight(model, profile)
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _buildBushVariantModelInstance(entity, profile) {
-        const index = this._getPartsVariantIndex(entity, 'parts-bush', this._partsForSaleBushVariants.length)
-        if (index < 0) return null
-
-        const source = this._partsForSaleBushVariants[index]
-        if (!source) return null
-
-        const model = source.clone(true)
-        const scale = profile.modelScale ?? 0.18
-        model.scale.setScalar(scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._centerModelToOrigin(model)
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-            node.material = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-        })
-
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _buildBushLeafBillboardInstance(entity, profile) {
-        const group = new THREE.Group()
-        const leafHeight = 7.5
-        const leafWidth = 3.1
-        const material = new THREE.MeshStandardMaterial({
-            map: this._bushLeafTexture,
-            color: profile.materialColor,
-            transparent: true,
-            alphaTest: 0.35,
-            side: THREE.DoubleSide,
-            roughness: 0.92,
-            metalness: 0.0
-        })
-
-        const plane = new THREE.PlaneGeometry(leafWidth, leafHeight)
-        const crosses = 3
-        for (let i = 0; i < crosses; i++) {
-            const mesh = new THREE.Mesh(plane, material.clone())
-            const angleJitter = (this._hashUnit(entity?.id, `bush-leaf-angle-${i}`) - 0.5) * 0.22
-            mesh.rotation.y = (i / crosses) * Math.PI + angleJitter
-            mesh.position.y = leafHeight * 0.5
-            mesh.castShadow = false
-            mesh.receiveShadow = false
-            group.add(mesh)
-        }
-
-        group.userData.profile = profile
-        group.userData.motionInitialized = false
-        group.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-        group.userData.groundOffset = 0
-        return group
-    }
-
-    _buildProceduralBushInstance(entity, profile) {
-        const group = new THREE.Group()
-        const radius = Math.max(1, profile.bushRadius ?? 1.8)
-        const canopyMaterial = this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-
-        const canopyDefs = [
-            { x: 0, y: radius * 0.95, z: 0, scale: 1 },
-            { x: -radius * 0.48, y: radius * 0.82, z: radius * 0.24, scale: 0.68 },
-            { x: radius * 0.44, y: radius * 0.8, z: radius * 0.28, scale: 0.62 },
-            { x: 0, y: radius * 0.72, z: -radius * 0.46, scale: 0.7 }
-        ]
-
-        for (let i = 0; i < canopyDefs.length; i++) {
-            const def = canopyDefs[i]
-            const jitter = this._hashUnit(entity?.id, `bush-canopy-${i}`)
-            const sphere = new THREE.Mesh(
-                new THREE.SphereGeometry(radius * def.scale, 9, 7),
-                canopyMaterial
-            )
-            sphere.position.set(
-                def.x + (jitter - 0.5) * radius * 0.16,
-                def.y,
-                def.z + (0.5 - jitter) * radius * 0.16
-            )
-            sphere.castShadow = false
-            sphere.receiveShadow = false
-            group.add(sphere)
-        }
-
-        const trunk = new THREE.Mesh(
-            new THREE.CylinderGeometry(radius * 0.16, radius * 0.2, Math.max(0.8, radius * 0.85), 6),
-            this._createTreeTrunkMaterial('#6b4f2a')
-        )
-        trunk.position.y = Math.max(0.4, radius * 0.42)
-        trunk.castShadow = false
-        trunk.receiveShadow = false
-        group.add(trunk)
-
-        group.userData.profile = profile
-        group.userData.motionInitialized = false
-        group.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-        group.userData.groundOffset = this._captureGroundOffset(group)
-        return group
-    }
-
-    _getRockVariantIndex(entity) {
-        const count = this._rockModelVariants.length
-        if (!count) return -1
-        const hashed = Math.floor(this._hashUnit(entity?.id ?? entity?.name, 'rock-variant') * count)
-        return Math.max(0, Math.min(count - 1, hashed))
-    }
-
-    _buildAnimalModelInstance(entity, profile) {
-        const variantIndex = this._getAnimalVariantIndex(entity)
-        if (variantIndex < 0) return null
-
-        const source = this._animalModelVariants[variantIndex]
-        if (!source) return null
-
-        const model = source.clone(true)
-        const variantMeta = this._animalVariantMeta[variantIndex]
-        const normalizedScale = variantMeta?.baseScale ?? 1
-        const baseScale = (profile.modelScale ?? 0.25) * normalizedScale
-        const mappedName = this._animalPackOrder[variantIndex] ?? `variant_${variantIndex + 1}`
-        const speciesName = this._normalizeSpeciesName(entity) || 'unknown'
-        const deerTargetHeight = 6.8
-        const unscaledHeight = Math.max(0.001, variantMeta?.height ?? 1)
-        const deerScaleMultiplier = speciesName === 'deer'
-            ? Math.max(0.5, Math.min(8, deerTargetHeight / (unscaledHeight * baseScale)))
-            : 1
-        const scale = baseScale * deerScaleMultiplier
-        model.scale.setScalar(scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.userData.animalLabel = `${speciesName} -> ${mappedName} (#${variantIndex + 1})`
-
-        this._centerModelToOrigin(model)
-
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-
-            node.material = new THREE.MeshStandardMaterial({
-                color: profile.materialColor,
-                roughness: 0.86,
-                metalness: 0.02
-            })
-        })
-
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _buildPawnModelInstance(entity, profile) {
-        const model = this._pawnModelRoot.clone(true)
-        const scale = profile.modelScale ?? 8 // Scale to match game world units (firstPersonHeight ~8)
-        model.scale.setScalar(scale)
-        model.userData.profile = profile
-        model.userData.motionInitialized = false
-        model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-
-        this._centerModelToOrigin(model)
-
-        model.traverse(node => {
-            if (!node.isMesh || !node.geometry) return
-            node.geometry = node.geometry.clone()
-            node.castShadow = false
-            node.receiveShadow = false
-
-            node.material = new THREE.MeshStandardMaterial({
-                color: this._pawnTexture ? '#ffffff' : profile.materialColor,
-                map: this._pawnTexture ?? null,
-                roughness: 0.84,
-                metalness: 0.03
-            })
-        })
-
-        model.userData.groundOffset = this._captureGroundOffset(model)
-        return model
-    }
-
-    _createMaterialForProfile(profile) {
-        if (profile.shaderType === 'water') {
-            return this._createWaterMaterial(profile.materialColor)
-        }
-
-        if (profile.shaderType === 'foliage') {
-            return this._createFoliageMaterial(profile.materialColor, profile.swayStrength)
-        }
-
-        return new THREE.MeshStandardMaterial({
-            color: profile.materialColor,
-            roughness: 0.9,
-            metalness: 0.05
-        })
-    }
-
-    _createMeshForEntity(entity) {
-        const profile = this._getEntityRenderProfile(entity)
-
-        if (profile.useGrassModel && this._grassModelRoot) {
-            const model = this._buildGrassModelInstance(entity, profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (profile.useSmallTreeVariantModel && this._partsForSaleSmallTreeVariants.length) {
-            const model = this._buildSmallTreeVariantInstance(entity, profile)
-            if (model) {
-                this.scene.add(model)
-                return model
-            }
-        }
-
-        if (profile.useTreeModel && this._treeModelRoot) {
-            const model = this._buildTreeModelInstance(profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (profile.useRockModel && this._rockModelRoot) {
-            const model = this._buildRockModelInstance(entity, profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (profile.useBushVariantModel && this._partsForSaleBushVariants.length) {
-            const model = this._buildBushVariantModelInstance(entity, profile)
-            if (model) {
-                this.scene.add(model)
-                return model
-            }
-        }
-
-        if (profile.useBushModel && this._bushModelRoot) {
-            const model = this._buildBushModelInstance(profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (profile.useBushLeafTexture && this._bushLeafTexture) {
-            const model = this._buildBushLeafBillboardInstance(entity, profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (profile.usePawnModel && this._pawnModelRoot) {
-            const model = this._buildPawnModelInstance(entity, profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (entity?.type === 'bush' || entity?.subtype === 'plant') {
-            const model = this._buildProceduralBushInstance(entity, profile)
-            this.scene.add(model)
-            return model
-        }
-
-        if (profile.useAnimalModel && this._animalModelRoot) {
-            const model = this._buildAnimalModelInstance(entity, profile)
-            if (!model) {
-                const material = this._createMaterialForProfile(profile)
-                const mesh = new THREE.Mesh(profile.geometry, material)
-                mesh.castShadow = false
-                mesh.receiveShadow = false
-                mesh.userData.profile = profile
-                mesh.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-                this.scene.add(mesh)
-                return mesh
-            }
-            this.scene.add(model)
-            return model
-        }
-
-        const material = this._createMaterialForProfile(profile)
-        const mesh = new THREE.Mesh(profile.geometry, material)
-        mesh.castShadow = false
-        mesh.receiveShadow = false
-        mesh.userData.profile = profile
-        mesh.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
-        this.scene.add(mesh)
-        return mesh
-    }
-
-    _updateMeshPose(entity, mesh, progress) {
-        const profile = mesh.userData.profile ?? this._getEntityRenderProfile(entity)
-        const prevX = Number.isFinite(entity.prevX) ? entity.prevX : entity.x
-        const prevY = Number.isFinite(entity.prevY) ? entity.prevY : entity.y
-        const x = prevX + (entity.x - prevX) * progress
-        const y = prevY + (entity.y - prevY) * progress
-
-        const followLift = entity === this.followedEntity && entity?.type === 'mobile' ? 1 : 0
-        const hasModelGroundOffset = Number.isFinite(mesh.userData.groundOffset)
-        const groundedOffset = hasModelGroundOffset
-            ? mesh.userData.groundOffset
-            : (profile.baseY ?? 2.5)
-        const modelGroundBias = hasModelGroundOffset
-            ? (this._ground?.position?.y ?? 0) + 0.02
-            : 0
-        const terrainHeight = this._getGroundHeightAt(x, y)
-        const baseHeight = terrainHeight + groundedOffset + modelGroundBias + followLift
-        this._tmpTargetPosition.set(x, baseHeight, y)
-        if (!mesh.userData.motionInitialized) {
-            mesh.position.copy(this._tmpTargetPosition)
-            mesh.userData.motionInitialized = true
-        } else {
-            const followBoost = entity === this.followedEntity ? 0.52 : (profile.lerp ?? 0.32)
-            mesh.position.lerp(this._tmpTargetPosition, followBoost)
-        }
-
-        if (entity.subtype === 'animal') {
-            const angle = Math.atan2(entity.y - prevY, entity.x - prevX)
-            const targetYaw = -angle + Math.PI / 2
-            mesh.rotation.y = this._easeAngle(mesh.rotation.y, targetYaw, mesh.userData, 'turnVelocity')
-        }
-
-        if (entity.subtype === 'pawn') {
-            const interactionYaw = this._getPawnInteractionYaw(entity)
-            const movementDx = (entity.x ?? 0) - prevX
-            const movementDy = (entity.y ?? 0) - prevY
-            const hasMovement = Math.hypot(movementDx, movementDy) > 0.06
-
-            let targetYaw = null
-            if (Number.isFinite(interactionYaw)) {
-                targetYaw = interactionYaw
-            } else if (hasMovement) {
-                targetYaw = -Math.atan2(movementDy, movementDx) + Math.PI / 2
-            }
-
-            if (Number.isFinite(targetYaw)) {
-                mesh.rotation.y = this._easeAngle(
-                    mesh.rotation.y,
-                    targetYaw,
-                    mesh.userData,
-                    'turnVelocityPawn',
-                    {
-                        response: Number.isFinite(interactionYaw) ? 0.32 : 0.22,
-                        damping: Number.isFinite(interactionYaw) ? 0.82 : 0.84,
-                        maxSpeed: Number.isFinite(interactionYaw) ? 0.24 : 0.16,
-                        snapThreshold: 0.0025,
-                        stopVelocity: 0.0018
-                    }
-                )
-            }
-        }
-
-        const isHighlighted = entity === this.highlightedEntity && Date.now() < this.highlightEndTime
-        if (!mesh.userData.baseScale) {
-            mesh.userData.baseScale = mesh.scale.clone()
-        }
-        const highlightScale = isHighlighted ? 1.35 : 1
-        const baseScale = mesh.userData.baseScale
-        mesh.scale.set(
-            baseScale.x * highlightScale,
-            baseScale.y * highlightScale,
-            baseScale.z * highlightScale
-        )
-    }
-
-    _getPawnInteractionYaw(pawn) {
-        const goal = pawn?.goals?.currentGoal
-        if (!goal) return null
-
-        const interactionTypes = new Set([
-            'socialize',
-            'negotiate_group',
-            'collaborative_craft',
-            'teach_skill',
-            'train_skill',
-            'apprentice_skill'
-        ])
-
-        if (!interactionTypes.has(goal.type)) return null
-
-        const target = this._resolveGoalEntityTarget(goal)
-        if (target?.id && target.id !== pawn.id && Number.isFinite(target.x) && Number.isFinite(target.y)) {
-            const dx = target.x - pawn.x
-            const dy = target.y - pawn.y
-            if (Math.hypot(dx, dy) > 0.01) {
-                return -Math.atan2(dy, dx) + Math.PI / 2
-            }
-        }
-
-        if (goal.type === 'negotiate_group') {
-            const members = Array.isArray(goal.negotiationMembers)
-                ? goal.negotiationMembers.filter(member => member?.id && member.id !== pawn.id)
-                : []
-
-            if (members.length) {
-                const centerX = members.reduce((sum, member) => sum + (member.x ?? pawn.x), 0) / members.length
-                const centerY = members.reduce((sum, member) => sum + (member.y ?? pawn.y), 0) / members.length
-                const dx = centerX - pawn.x
-                const dy = centerY - pawn.y
-                if (Math.hypot(dx, dy) > 0.01) {
-                    return -Math.atan2(dy, dx) + Math.PI / 2
-                }
-            }
-        }
-
-        if (goal.partner?.id && goal.partner.id !== pawn.id) {
-            const dx = (goal.partner.x ?? pawn.x) - pawn.x
-            const dy = (goal.partner.y ?? pawn.y) - pawn.y
-            if (Math.hypot(dx, dy) > 0.01) {
-                return -Math.atan2(dy, dx) + Math.PI / 2
-            }
-        }
-
-        return null
-    }
-
-    _resolveGoalEntityTarget(goal) {
-        if (goal?.target && Number.isFinite(goal.target.x) && Number.isFinite(goal.target.y)) {
-            return goal.target
-        }
-
-        if (!goal?.targetId || !this.world?.entitiesMap) return null
-        return this.world.entitiesMap.get(goal.targetId) ?? null
-    }
-
-    _disposeMesh(id) {
-        const mesh = this._meshById.get(id)
-        if (!mesh) return
-        this.scene.remove(mesh)
-
-        if (mesh.isMesh) {
-            mesh.geometry?.dispose?.()
-            mesh.material?.dispose?.()
-        } else {
-            mesh.traverse(node => {
-                if (!node.isMesh) return
-                node.geometry?.dispose?.()
-                node.material?.dispose?.()
-            })
-        }
-
-        this._meshById.delete(id)
-        this._entityById.delete(id)
-    }
-
-    _createHeadMesh() {
-        // Create a 3D head group — uses the pawn.glb model instead of procedural dome
-        const headGroup = new THREE.Group()
-
-        // Load the pawn model for the head mesh
-        const loader = new GLTFLoader()
-        loader.load(
-            '/solo/assets/models/pawn.glb',
-            (gltf) => {
-                // Remove any placeholder (we'll add a simple sphere as fallback until model loads)
-                while (headGroup.children.length) {
-                    const child = headGroup.children[0]
-                    headGroup.remove(child)
-                    if (child.geometry) child.geometry.dispose()
-                    if (child.material) {
-                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose())
-                        else child.material.dispose()
-                    }
-                }
-
-                const model = gltf.scene
-                let meshCount = 0
-                model.traverse((node) => {
-                    if (node.isMesh) {
-                        meshCount++
-                    }
-                })
-
-                // Compute bounding box
-                const bbox = new THREE.Box3().setFromObject(model)
-                
-                // Store model dimensions for camera/head calculations
-                this._pawnModelHeight = bbox.max.y - bbox.min.y
-                this._pawnModelBottomY = bbox.min.y // Negative value, e.g. -0.5
-                
-                // Try no rotation first — model might already be upright
-                // model.rotation.z = Math.PI // Uncomment if needed
-                
-                // Apply solid material
-                model.traverse(node => {
-                    if (node.isMesh) {
-                        node.material = new THREE.MeshStandardMaterial({
-                            color: 0x5ec4c0,
-                            roughness: 0.3,
-                            metalness: 0.05,
-                            transparent: false,
-                            side: THREE.DoubleSide,
-                            depthWrite: true
-                        })
-                    }
-                })
-
-                // Center the model
-                this._centerModelToOrigin(model)
-                headGroup.add(model)
-                this._headMeshLoaded = true
-            },
-            undefined,
-            (error) => {
-                console.warn('[three] failed to load pawn.glb for head mesh, using procedural dome', error)
-                this._headMeshFailed = true
-            }
-        )
-
-        // Position at world origin (will be updated in _updateHeadMesh)
-        headGroup.position.set(0, 0, 0)
-        headGroup.scale.setScalar(2.5)
-
-        // Add to scene
-        this.scene.add(headGroup)
-        headGroup.visible = true
-
-        this._headMesh = headGroup
-        return headGroup
-    }
-
-    _mergeGeometries(geometries) {
-        // Manual geometry merge (avoids importing BufferGeometryUtils)
-        let totalVerts = 0
-        let totalIdx = 0
-        for (const geo of geometries) {
-            totalVerts += geo.attributes.position.count
-            const idx = geo.index
-            totalIdx += idx ? idx.count : geo.attributes.position.count
-        }
-
-        const positions = new Float32Array(totalVerts * 3)
-        const normals = new Float32Array(totalVerts * 3)
-        const indices = new Uint32Array(totalIdx)
-
-        let vertOffset = 0
-        let idxOffset = 0
-        let indexOffset = 0
-
-        for (const geo of geometries) {
-            const pos = geo.attributes.position.array
-            const nor = geo.attributes.normal.array
-            positions.set(pos, vertOffset * 3)
-            normals.set(nor, vertOffset * 3)
-
-            const idx = geo.index
-            if (idx) {
-                const arr = idx.array
-                for (let i = 0; i < arr.length; i++) {
-                    indices[idxOffset + i] = arr[i] + vertOffset
-                }
-                idxOffset += arr.length
-            } else {
-                const count = geo.attributes.position.count
-                for (let i = 0; i < count; i++) {
-                    indices[idxOffset + i] = vertOffset + i
-                }
-                idxOffset += count
-            }
-
-            vertOffset += geo.attributes.position.count
-        }
-
-        const merged = new THREE.BufferGeometry()
-        merged.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-        merged.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
-        merged.setIndex(new THREE.BufferAttribute(indices, 1))
-
-        return merged
-    }
-
-    _updateHeadMesh(progress) {
-        if (!this._headMesh) return
-
-        const head = this._headMesh
-        const pawn = this.followedEntity
-
-        if (pawn && this.firstPersonLocked) {
-            // Continuous lerp — no progress interpolation to avoid tick-boundary resets
-            const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
-            const yOff = this.pawnTuning?.pawnYOffset ?? 0
-
-            // Lift model so bottom sits on ground (model center is at Y=0, bottom is negative)
-            const scale = this.pawnTuning?.pawnScale ?? 2.5
-            const bottomOffset = (this._pawnModelBottomY ?? -0.5) * scale
-
-            // Lerp factor tuned to catch up within ~1 tick (60 frames at 60fps)
-            // 1 - 0.01^(1/60) ≈ 0.094 → reaches 99% in one tick, no overshoot
-            // Increased to 0.15 for more responsive ground tracking
-            this._tmpHeadTarget.set(pawn.x, eyeGround - bottomOffset + yOff, pawn.y)
-            this._smoothedPawnPos.lerp(this._tmpHeadTarget, 0.15)
-            head.position.copy(this._smoothedPawnPos)
-
-            // Apply scale from tuning with subtle breathing effect
-            const breathPhase = this._timeUniform.value * 1.5
-            const breathScale = 1.0 + Math.sin(breathPhase) * 0.012
-            head.scale.setScalar(scale * breathScale)
-
-            // Smooth Y rotation to face movement direction
-            const dir = this._smoothedFirstPersonDir
-            const targetRotY = Math.atan2(dir.z, dir.x)
-            this._smoothedPawnRotY += (targetRotY - this._smoothedPawnRotY) * 0.15
-            head.rotation.y = this._smoothedPawnRotY
-
-            // Subtle head bob when pawn is walking
-            const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
-            const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
-            const isWalking = ((pawn.x - pX) ** 2 + (pawn.y - pY) ** 2) > 0.0001
-            const bobAmount = isWalking ? Math.sin(this._timeUniform.value * 6) * 0.03 * scale : 0
-            head.position.y += bobAmount
-
-            // Hide head mesh in god mode or when perception is disabled
-            // In phase_aware mode, the head is always visible in first-person
-            const hideHead = this.perceptionPolicy === 'disabled' || this.perceptionPolicy === 'god_noop'
-            head.visible = !hideHead
-        } else {
-            head.visible = false
-            return
-        }
-    }
-
-    _getProceduralAnimationOffset(pawn) {
-        return 0
-    }
-
-    _updateCamera(progress) {
-        if (this.followMode && this.followedEntity) {
-            this.viewX = this.followedEntity.x
-            this.viewY = this.followedEntity.y
-        }
-
-        this._skyDome.position.set(this.viewX, 0, this.viewY)
-
-        if (this.firstPersonLocked && this.followedEntity) {
-            const pawn = this.followedEntity
-
-            // --- Travel direction: where the pawn is moving ---
-            const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
-            const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
-            this._tmpTravelDir.set(pawn.x - pX, 0, pawn.y - pY)
-            const isMoving = this._tmpTravelDir.lengthSq() > 0.0001
-            if (isMoving) this._tmpTravelDir.normalize()
-            else this._tmpTravelDir.set(1, 0, 0)
-
-            // --- Attention vector: where the pawn is looking (from pawn's currentTarget) ---
-            // Debounce: only update attention direction when it meaningfully changes, to avoid camera spin
-            this._tmpAttnDir.set(0, 0, 0)
-            let hasAttention = false
-            if (pawn.currentTarget) {
-                const dx = pawn.currentTarget.x - pawn.x
-                const dy = pawn.currentTarget.y - pawn.y
-                if (dx * dx + dy * dy > 0.01) {
-                    this._tmpRawAttn.set(dx, 0, dy).normalize()
-                    // Only adopt new attention direction if it differs significantly from current
-                    if (!this._cachedAttnDir || Math.abs(this._tmpRawAttn.x - this._cachedAttnDir.x) > 0.15 || Math.abs(this._tmpRawAttn.z - this._cachedAttnDir.z) > 0.15) {
-                        this._cachedAttnDir = this._tmpRawAttn.clone()
-                    }
-                    this._tmpAttnDir.copy(this._cachedAttnDir)
-                    hasAttention = true
-                }
-            }
-            // When no explicit target, attention defaults to travel direction
-            if (!hasAttention) {
-                this._tmpAttnDir.copy(this._tmpTravelDir)
-            }
-
-            // --- Blend travel + attention into a single facing direction ---
-            // Weight shifts: moving = more travel, studying/idle = more attention
-            const isStudying = pawn.behaviorState === 'studying' || pawn.behaviorState === 'resting'
-            const attnWeight = isStudying ? 0.85 : (isMoving ? 0.35 : 0.6)
-            this._tmpBlendDir
-                .addScaledVector(this._tmpTravelDir, 1 - attnWeight)
-                .addScaledVector(this._tmpAttnDir, attnWeight)
-                .normalize()
-
-            const targetYaw = Math.atan2(this._tmpBlendDir.z, this._tmpBlendDir.x)
-
-            // Camera smoothly catches up when pawn changes direction
-            // Faster response for snappier feel
-            this._firstPersonYaw = this._easeAngle(
-                this._firstPersonYaw,
-                targetYaw,
-                this,
-                '_firstPersonYawVelocity',
-                { response: 0.3, damping: 0.82, maxSpeed: 0.25, snapThreshold: 0.003, stopVelocity: 0.002 }
-            )
-            this._tmpYawDir.set(Math.cos(this._firstPersonYaw), 0, Math.sin(this._firstPersonYaw))
-
-            // Continuous lerp — no progress interpolation to avoid tick-boundary resets
-            const eyeGround = this._getGroundHeightAt(pawn.x, pawn.y)
-            const bobOffset = 0 // Disabled for troubleshooting
-
-            // Pawn model top (head level) — same offset as _updateHeadMesh so camera stays aligned
-            const pawnScale = this.pawnTuning?.pawnScale ?? 2.5
-            const bottomOffset = (this._pawnModelBottomY ?? -0.5) * pawnScale
-            const pawnHeadY = eyeGround - bottomOffset + this._pawnModelHeight * pawnScale
-
-            // Camera position: behind the pawn, height relative to pawn head
-            // Use tunable values from cameraTuning (relative to head, not ground)
-            const behindDistance = this.cameraTuning.behindDistance
-            const camHeight = pawnHeadY + this.cameraTuning.cameraHeight
-
-            this._tmpTargetEye.set(
-                pawn.x - this._tmpYawDir.x * behindDistance,
-                camHeight + bobOffset,
-                pawn.y - this._tmpYawDir.z * behindDistance
-            )
-            // Same lerp factor as pawn model for consistent tracking
-            this._smoothedFirstPersonEye.lerp(this._tmpTargetEye, 0.15)
-            this._smoothedFirstPersonDir.lerp(this._tmpYawDir, 0.15).normalize()
-
-            // Look target: ahead of the pawn, height relative to pawn head
-            const lookDistance = this.cameraTuning.lookDistance
-            this._tmpLookTarget.set(
-                pawn.x + this._tmpYawDir.x * lookDistance,
-                pawnHeadY + this.cameraTuning.lookHeight,
-                pawn.y + this._tmpYawDir.z * lookDistance
-            )
-
-            this._camera3d.position.copy(this._smoothedFirstPersonEye)
-            this._camera3d.lookAt(this._tmpLookTarget)
-            return
-        }
-
-        const viewGround = this._getGroundHeightAt(this.viewX, this.viewY)
-        this._tmpOverseerTarget.set(this.viewX, viewGround, this.viewY)
-        this._tmpOverseerElevated.set(this.viewX, viewGround + this.cameraDistance * 0.45, this.viewY + this.cameraDistance)
-        this._camera3d.position.lerp(this._tmpOverseerElevated, 0.15)
-        this._smoothedCameraTarget.lerp(this._tmpOverseerTarget, 0.22)
-        this._camera3d.lookAt(this._smoothedCameraTarget)
-    }
-
-    _easeAngle(current, target, store, velocityKey, options = {}) {
-        const response = options.response ?? this.turnResponse
-        const damping = options.damping ?? this.turnDamping
-        const maxSpeed = options.maxSpeed ?? this.maxTurnSpeed
-        const snapThreshold = options.snapThreshold ?? this.turnSnapThreshold
-        const stopVelocity = options.stopVelocity ?? this.turnStopVelocity
-
-        const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current))
-        let velocity = Number(store?.[velocityKey]) || 0
-
-        const desiredSpeed = Math.sign(delta) * Math.min(maxSpeed, Math.abs(delta) * response)
-        velocity += (desiredSpeed - velocity) * response
-        velocity *= damping
-
-        let next = current + velocity
-        const remaining = Math.atan2(Math.sin(target - next), Math.cos(target - next))
-
-        if (Math.abs(remaining) < snapThreshold && Math.abs(velocity) < stopVelocity) {
-            next = target
-            velocity = 0
-        }
-
-        if (store) store[velocityKey] = velocity
-        return next
-    }
-
+    // --- Main render loop ---
     render() {
         const { progress } = this.world.clock.getProgress()
 
-        // Pause check — skip updates but still render the scene
         if (!this.paused) {
             this._timeUniform.value = performance.now() * 0.001
             this._updateCamera(progress)
@@ -2141,10 +534,9 @@ class ThreeRenderer {
 
         for (const entity of entitiesToRender) {
             if (!entity?.id) continue
-            // Skip rendering the player pawn as a regular entity when in first-person mode
-            // (it's already rendered by _headMesh)
             if (this.firstPersonLocked && entity === this.followedEntity) continue
             visibleIds.add(entity.id)
+
             let mesh = this._meshById.get(entity.id)
             if (!mesh) {
                 mesh = this._createMeshForEntity(entity)
@@ -2161,7 +553,7 @@ class ThreeRenderer {
                     mesh.material.opacity = alpha
                 }
             } else {
-                mesh.traverse(node => {
+                mesh.traverse((node) => {
                     if (!node.isMesh || !node.material) return
                     node.material.transparent = alpha < 0.999
                     node.material.opacity = alpha
@@ -2175,7 +567,6 @@ class ThreeRenderer {
         }
 
         this.webglRenderer.render(this.scene, this._camera3d)
-
         this._renderAnimalLabels(entitiesToRender)
 
         if (Date.now() >= this.highlightEndTime) {
@@ -2199,7 +590,6 @@ class ThreeRenderer {
 
             const mesh = this._meshById.get(entity.id)
             if (!mesh) continue
-
             const labelText = mesh.userData?.animalLabel
             if (!labelText) continue
 
@@ -2228,7 +618,6 @@ class ThreeRenderer {
                 padding: '2px 5px',
                 whiteSpace: 'nowrap'
             })
-
             fragment.appendChild(label)
             count += 1
         }
@@ -2236,6 +625,7 @@ class ThreeRenderer {
         this._animalLabelLayer.replaceChildren(fragment)
     }
 
+    // --- Destroy ---
     destroy() {
         if (this._onResize) window.removeEventListener('resize', this._onResize)
         this._clearAnimalLabels()
