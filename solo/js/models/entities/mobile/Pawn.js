@@ -5,6 +5,10 @@ import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
 import INVENTION_CONFIG from './InventionConfig.js'
 import ResourceCache from '../immobile/ResourceCache.js'
+import * as PawnCivic from './PawnCivic.js'
+import * as PawnSocial from './PawnSocial.js'
+import * as PawnTactical from './PawnTactical.js'
+import * as PawnSecurity from './PawnSecurity.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -152,6 +156,18 @@ class Pawn extends MobileEntity {
 
         // Phase 1: Security contracts between groups
         this.securityContracts = {} // { contractId: { withGroup, type: 'patrol'|'defense', terms, active, createdAt } }
+
+        // Phase 2: Civic/Government (Town Focus)
+        // Proto-settlement: social group, not physical footprint
+        this.encampmentLandmark = null // { x, y, tick, groupMembers: Set, resourceRichness, canonized }
+        this.civicScore = 0 // Aggregated settlement score (structure count, governance, stability)
+        this.civicReputation = {} // { pawnId: score } — contribution-based standing
+        this.civicLedger = [] // { type: 'build'|'supply'|'defend'|'tax', pawnId, amount, tick }
+        this.governanceModel = null // 'none' | 'consensus' | 'appointed' | 'elective' | 'weighted'
+        this.governanceTokens = { curfew: null, storageShare: 0, taxRate: 0 } // Law tokens
+        this.jobBoard = [] // { taskId, type, assignedTo, deadline, reward, completed }
+        this.curriculum = [] // { lessonId, skill, prerequisite, xp, scheduledAt, completed }
+        this.isSettlementDiscoverable = false // True when communal storage canonizes encampment
 
         // Branch inclination vectors (tribal, civic, mercantile)
         // Range 0-1, sum ~1.0. Bias goal selection toward matching triad behavior.
@@ -2149,103 +2165,67 @@ class Pawn extends MobileEntity {
         }
     }
 
+    // Social methods (delegated to PawnSocial module)
     registerProximityTrustGain(nearbyPawns = []) {
-        // When pawns sleep together, they gain mutual trust
-        if (!nearbyPawns.length) return
-
-        for (const otherPawn of nearbyPawns) {
-            if (!otherPawn?.id || otherPawn.id === this.id) continue
-
-            // Gain modest trust from proximity + shared sleep
-            const baseTrust = 0.08
-            const currentTrust = this.getGroupTrustIn(otherPawn) ?? 0
-            const newTrust = Math.min(1, currentTrust + baseTrust)
-
-            this.setGroupTrustIn(otherPawn, newTrust)
-
-            // Log thought about the shared experience
-            if (newTrust >= 0.2) {
-                this.addThought(`Spending a safe night near ${otherPawn.name} builds familiarity.`, 'social')
-            }
-        }
-    }
-
-    checkCivicGroupFormationTrigger() {
-        // Detect when 2+ pawns with sufficient mutual trust + home overlap
-        // should consider forming a civic group (typically 3+ total for stability)
-        if (!this.world?.entitiesMap) return null
-
-        const otherPawns = Array.from(this.world.entitiesMap.values()).filter(e =>
-            e?.subtype === 'pawn' && e.id !== this.id
-        )
-
-        if (otherPawns.length < 1) return null  // Need at least 1 other (2 total minimum)
-
-        // Find pawns with trust >= 0.2 and home location within 50 units
-        const potentialMembers = otherPawns.filter(p => {
-            const trust = this.getGroupTrustIn(p) ?? 0
-            if (trust < 0.2) return false
-
-            const otherHome = p.homeLandmark
-            const thisHome = this.homeLandmark
-
-            if (!otherHome || !thisHome) return false
-
-            const dist = Math.sqrt(
-                Math.pow(otherHome.x - thisHome.x, 2) +
-                Math.pow(otherHome.y - thisHome.y, 2)
-            )
-
-            return dist <= 50
-        })
-
-        if (potentialMembers.length < 1) return null  // Need at least 1 other
-
-        return {
-            type: 'civic',
-            initiatorId: this.id,
-            members: [this, ...potentialMembers],
-            homeLocation: this.homeLandmark,
-            baseTrust: Math.min(...potentialMembers.map(p => this.getGroupTrustIn(p) ?? 0))
-        }
+        return PawnSocial.registerProximityTrustGain(this, nearbyPawns)
     }
 
     registerHuntSuccess(huntingPartners = []) {
-        // When pawn successfully hunts (kills animal), gain trust with hunting partners
-        // Represents shared danger, success, and meat-sharing
-        if (!huntingPartners.length) return
-
-        for (const partner of huntingPartners) {
-            if (!partner?.id || partner.id === this.id) continue
-
-            // Hunt success: +0.15 trust (significant cooperative achievement)
-            const baseTrust = 0.15
-            const currentTrust = this.getGroupTrustIn(partner) ?? 0
-            const newTrust = Math.min(1, currentTrust + baseTrust)
-
-            this.setGroupTrustIn(partner, newTrust)
-
-            // Log thought about shared hunt success
-            this.addThought(`Successfully hunted together with ${partner.name}. We work well as a team.`, 'social')
-        }
+        return PawnSocial.registerHuntSuccess(this, huntingPartners)
     }
 
     notifyCacheSharing(cacheBuilderId) {
-        // When pawn uses resources from someone else's cache, gain modest trust
-        // Represents relying on someone's preparation and resource management
-        if (!cacheBuilderId) return
-        const cacheBuilder = this.world?.entitiesMap?.get(cacheBuilderId)
-        if (!cacheBuilder || cacheBuilder.id === this.id) return
+        return PawnSocial.notifyCacheSharing(this, cacheBuilderId)
+    }
 
-        // Cache sharing: +0.10 trust (modest, represents reliance on preparation)
-        const baseTrust = 0.10
-        const currentTrust = this.getGroupTrustIn(cacheBuilder) ?? 0
-        const newTrust = Math.min(1, currentTrust + baseTrust)
+    // Tactical methods (delegated to PawnTactical module)
+    recordTacticalMemory(type, location, description, significance = 0.5) {
+        return PawnTactical.recordTacticalMemory(this, type, location, description, significance)
+    }
 
-        this.setGroupTrustIn(cacheBuilder, newTrust)
+    updateTacticalMemory(tick) {
+        return PawnTactical.updateTacticalMemory(this, tick)
+    }
 
-        // Log thought about shared resources
-        this.addThought(`Using ${cacheBuilder.name}'s cache reminds me they think ahead.`, 'social')
+    getTerritoryMemories(minSignificance = 0.3) {
+        return PawnTactical.getTerritoryMemories(this, minSignificance)
+    }
+
+    updateTerritoryLandmarks() {
+        return PawnTactical.updateTerritoryLandmarks(this)
+    }
+
+    assignPatrolRoute(member, waypoints) {
+        return PawnTactical.assignPatrolRoute(this, member, waypoints)
+    }
+
+    assignDefensePosition(member, position) {
+        return PawnTactical.assignDefensePosition(this, member, position)
+    }
+
+    // Security methods (delegated to PawnSecurity module)
+    createSecurityContract(withGroup, type, terms = {}) {
+        return PawnSecurity.createSecurityContract(this, withGroup, type, terms)
+    }
+
+    getActiveSecurityContracts() {
+        return PawnSecurity.getActiveSecurityContracts(this)
+    }
+
+    terminateSecurityContract(contractId) {
+        return PawnSecurity.terminateSecurityContract(this, contractId)
+    }
+
+    createHuntParty(members, targetId, targetLocation) {
+        return PawnSecurity.createHuntParty(this, members, targetId, targetLocation)
+    }
+
+    updateHuntParty(newTargetLocation) {
+        return PawnSecurity.updateHuntParty(this, newTargetLocation)
+    }
+
+    endHuntParty(success = false) {
+        return PawnSecurity.endHuntParty(this, success)
     }
 
     registerSharedCacheContribution(cacheId, otherContributors = []) {

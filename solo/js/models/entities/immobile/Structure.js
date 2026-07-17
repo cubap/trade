@@ -1,4 +1,5 @@
 import ImmobileEntity from './ImmobileEntity.js'
+import * as Degradation from '../../core/Degradation.js'
 
 class Structure extends ImmobileEntity {
     constructor(id, name, x, y) {
@@ -17,9 +18,10 @@ class Structure extends ImmobileEntity {
     update(tick) {
         super.update(tick)
         
-        // Deteriorate over time
-        this.condition -= this.deteriorationRate
-        if (this.condition <= 0) {
+        // Deteriorate over time using shared Degradation module
+        Degradation.update(this, this.deteriorationRate)
+        
+        if (Degradation.isCritical(this)) {
             // Structure is destroyed
             return false
         }
@@ -28,7 +30,7 @@ class Structure extends ImmobileEntity {
     }
     
     repair(amount) {
-        this.condition = Math.min(this.maxCondition, this.condition + amount)
+        Degradation.repair(this, amount, this.maxCondition)
     }
     
     applyBuffsToEntity(entity) {

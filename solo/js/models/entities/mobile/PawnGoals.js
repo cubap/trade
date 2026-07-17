@@ -119,8 +119,12 @@ class PawnGoals {
             // Civic goals
             'build_structure': 'civic',
             'stage_build_materials': 'civic',
+            'build_cache': 'civic',
             'negotiate_group': 'civic',
+            'post_job': 'civic',
+            'accept_job': 'civic',
             'teach_skill': 'civic',
+            'teach_lesson': 'civic',
             'socialize': 'civic',
             'rest': 'civic',
             'seek_shelter': 'civic',
@@ -318,6 +322,33 @@ class PawnGoals {
                 targetType: 'activity',
                 action: 'craft_valuable',
                 completionReward: { purpose: -25, comfort: -15 }
+            },
+            // Phase 2: Civic/Government goals
+            {
+                type: 'build_cache',
+                priority: 1,
+                description: 'Build communal storage for the settlement',
+                targetType: 'activity',
+                action: 'build',
+                completionReward: { comfort: -25, purpose: -20, safety: -20 }
+            },
+            {
+                type: 'post_job',
+                priority: 1,
+                description: 'Post a job on the settlement job board',
+                targetType: 'activity',
+                action: 'post',
+                completionReward: { purpose: -15, social: -10 }
+            },
+            {
+                type: 'teach_lesson',
+                priority: 1,
+                description: 'Teach a curriculum lesson to settlement members',
+                targetType: 'entity',
+                targetSubtype: 'pawn',
+                action: 'teach',
+                duration: 80,
+                completionReward: { social: -20, purpose: -25, knowledge: -15 }
             }
         ]
         
@@ -663,9 +694,12 @@ class PawnGoals {
             'work': { manipulation: 0.1 },
             'explore': { orienteering: 0.4, cartography: 0.1 },
             'build_structure': { planning: 0.3 },
+            'build_cache': { planning: 0.2, cooperation: 0.15 },
             'establish_trade': { convincing: 0.3 },
             'map_territory': { cartography: 0.4 },
-            'study': { planning: 0.3 }
+            'study': { planning: 0.3 },
+            'post_job': { planning: 0.15, convincing: 0.1 },
+            'teach_lesson': { storytelling: 0.2, planning: 0.1 }
         }
         const gains = sg[goal.type]
         if (gains) {
@@ -1613,6 +1647,194 @@ class PawnGoals {
                 const dy = (member.y ?? 0) - this.pawn.y
                 return Math.sqrt(dx * dx + dy * dy) <= (goal.meetingRadius ?? 34)
             })
+
+            if (activeMembers.length >= 2) {
+                // Enough members present to negotiate
+                if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+
+                if (!goal.duration) goal.duration = 60 // Negotiation duration
+                const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+                if (elapsed >= goal.duration) {
+                    this.completeCurrentGoal()
+                }
+            } else {
+                // Not enough members, move toward nearest missing member
+                const missingMember = targetMembers.find(m => !activeMembers.includes(m))
+                if (missingMember) {
+                    this.pawn.nextTargetX = missingMember.x
+                    this.pawn.nextTargetY = missingMember.y
+                }
+            }
+        }
+
+        // Phase 2: Civic/Government goal handlers
+        if (goal.type === 'build_cache') {
+            // Build communal storage at encampment landmark
+            if (!this.pawn.encampmentLandmark) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const cacheLocation = this.pawn.encampmentLandmark
+            const dx = cacheLocation.x - this.pawn.x
+            const dy = cacheLocation.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 10) {
+                // Move to encampment location
+                this.pawn.nextTargetX = cacheLocation.x
+                this.pawn.nextTargetY = cacheLocation.y
+            } else {
+                // Close enough to build cache
+                const cache = this.pawn.createResourceCache({
+                    x: cacheLocation.x,
+                    y: cacheLocation.y,
+                    purpose: 'communal',
+                    name: 'Settlement Cache'
+                })
+
+                if (cache) {
+                    this.pawn.canonizeEncampment(cache)
+                    this.pawn.recordCivicContribution('build', 5)
+                    this.completeCurrentGoal()
+                }
+            }
+        }
+
+        if (goal.type === 'post_job') {
+            // Post a job on the settlement job board
+            if (!this.pawn.encampmentLandmark) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Determine job type based on current needs
+            let jobType = 'gather'
+            if (this.pawn.needs.needs.hunger > 50) jobType = 'gather'
+            else if (this.pawn.needs.needs.safety > 40) jobType = 'defend'
+            else if (this.pawn.skills.planning > 2) jobType = 'build'
+
+            const job = this.pawn.postJob(jobType, 2, 200)
+            if (job) {
+                this.pawn.recordCivicContribution('build', 1)
+                this.completeCurrentGoal()
+            }
+        }
+
+        if (goal.type === 'teach_lesson') {
+            // Teach a curriculum lesson to settlement members
+            if (!this.pawn.encampmentLandmark) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Find a student (group member with lower skill)
+            const members = Array.from(this.pawn.encampmentLandmark.groupMembers || [])
+            const student = members.find(memberId => {
+                const member = this.pawn.world?.entitiesMap?.get(memberId)
+                return member && member.id !== this.pawn.id
+            })
+
+            if (!student) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Find highest skill to teach
+            const highestSkill = Object.entries(this.pawn.skills).sort((a, b) => b[1] - a[1])[0]
+            if (!highestSkill) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const [skillName, skillLevel] = highestSkill
+            if (skillLevel < 2) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Move to student
+            const dx = student.x - this.pawn.x
+            const dy = student.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 10) {
+                this.pawn.nextTargetX = student.x
+                this.pawn.nextTargetY = student.y
+            } else {
+                // Close enough to teach
+                if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+
+                if (!goal.duration) goal.duration = 80
+                const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+                if (elapsed >= goal.duration) {
+                    // Complete lesson
+                    const lesson = this.pawn.addCurriculumLesson(skillName, null, 1)
+                    if (lesson) {
+                        student.gainSkill(skillName, 1)
+                        this.pawn.completeCurriculumLesson(lesson.lessonId)
+                        this.pawn.recordCivicContribution('build', 2)
+                        this.completeCurrentGoal()
+                    }
+                }
+            }
+        }
+
+            if (activeMembers.length >= 2) {
+                // Enough members present to negotiate
+                if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+
+                if (!goal.duration) goal.duration = 60 // Negotiation duration
+                const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+                if (elapsed >= goal.duration) {
+                    this.completeCurrentGoal()
+                }
+            } else {
+                // Not enough members, move toward nearest missing member
+                const missingMember = targetMembers.find(m => !activeMembers.includes(m))
+                if (missingMember) {
+                    this.pawn.nextTargetX = missingMember.x
+                    this.pawn.nextTargetY = missingMember.y
+                }
+            }
+        }
+
+            const [skillName, skillLevel] = highestSkill
+            if (skillLevel < 2) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Move to student
+            const dx = student.x - this.pawn.x
+            const dy = student.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 10) {
+                this.pawn.nextTargetX = student.x
+                this.pawn.nextTargetY = student.y
+            } else {
+                // Close enough to teach
+                if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
+
+                if (!goal.duration) goal.duration = 80
+                const elapsed = this.pawn.world.clock.currentTick - goal.startTime
+
+                if (elapsed >= goal.duration) {
+                    // Complete lesson
+                    const lesson = this.pawn.addCurriculumLesson(skillName, null, 1)
+                    if (lesson) {
+                        student.gainSkill(skillName, 1)
+                        this.pawn.completeCurriculumLesson(lesson.lessonId)
+                        this.pawn.recordCivicContribution('build', 2)
+                        this.completeCurrentGoal()
+                    }
+                }
+            }
+        }
 
             if (activeMembers.length < 2) {
                 const focus = targetMembers.find(member => member.id !== this.pawn.id) ?? targetMembers[0]
