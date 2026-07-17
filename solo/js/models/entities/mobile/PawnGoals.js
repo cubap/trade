@@ -143,7 +143,10 @@ class PawnGoals {
             'craft_sharp_stone': 'mercantile',
             'craft_poultice': 'mercantile',
             'establish_trade': 'mercantile',
-            'gather_materials': 'mercantile'
+            'gather_materials': 'mercantile',
+            // Civic goals (Phase 4)
+            'assign_role': 'civic',
+            'enact_law': 'civic'
         }
 
         return goalBranchMap[goalType] ?? null

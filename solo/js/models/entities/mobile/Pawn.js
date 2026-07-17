@@ -13,6 +13,7 @@ import * as PawnGroup from './PawnGroup.js'
 import * as PawnMemory from './PawnMemory.js'
 import * as PawnInvention from './PawnInvention.js'
 import * as PawnMercantile from './PawnMercantile.js'
+import * as PawnSpecialization from './PawnSpecialization.js'
 import * as PawnInventory from './PawnInventory.js'
 
 class Pawn extends MobileEntity {
@@ -1288,6 +1289,27 @@ class Pawn extends MobileEntity {
 
     findTradePartner(range = 50) {
         return PawnMercantile.findTradePartner(this, range)
+    }
+
+    // Specialization delegation to PawnSpecialization module
+    assignRole(role, settlement) {
+        return PawnSpecialization.assignRole(this, role, settlement)
+    }
+
+    removeRole(settlement) {
+        return PawnSpecialization.removeRole(this, settlement)
+    }
+
+    hasRole(role) {
+        return PawnSpecialization.hasRole(this, role)
+    }
+
+    getSpecializationBonuses() {
+        return PawnSpecialization.getSpecializationBonuses(this)
+    }
+
+    recommendRole() {
+        return PawnSpecialization.recommendRole(this)
     }
 
     forgetLandmark(nameOrType) {
