@@ -9,6 +9,10 @@ import * as PawnCivic from './PawnCivic.js'
 import * as PawnSocial from './PawnSocial.js'
 import * as PawnTactical from './PawnTactical.js'
 import * as PawnSecurity from './PawnSecurity.js'
+import * as PawnGroup from './PawnGroup.js'
+import * as PawnMemory from './PawnMemory.js'
+import * as PawnInvention from './PawnInvention.js'
+import * as PawnInventory from './PawnInventory.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -1255,17 +1259,9 @@ class Pawn extends MobileEntity {
         this.chunkManager = chunkManager
     }
 
-    rememberLandmark({ x, y, type, significance = 1, name = null, event = null, ...metadata }) {
-        // Remove least significant or oldest if at max
-        if (this.memoryMap.length >= this.maxLandmarks) {
-            this.memoryMap.sort((a, b) => (a.significance ?? 1) - (b.significance ?? 1))
-            this.memoryMap.shift()
-        }
-        this.memoryMap.push({
-            x, y, type, significance, name, event,
-            ...metadata,
-            timestamp: Date.now()
-        })
+    // Memory delegation to PawnMemory module
+    rememberLandmark(landmark) {
+        return PawnMemory.rememberLandmark(this, landmark)
     }
 
     forgetLandmark(nameOrType) {
@@ -3242,23 +3238,9 @@ class Pawn extends MobileEntity {
         return trust >= minTrust
     }
 
+    // Group command delegation to PawnGroup module
     receiveGroupCommand(command, issuedByPawn) {
-        if (!command || !issuedByPawn) return false
-        const minTrust = command.minTrust ?? 0.05
-        if (!this.canObeyLeader(issuedByPawn, minTrust)) {
-            this.groupStats.rejectedCommands = (this.groupStats.rejectedCommands ?? 0) + 1
-            this.groupState.cohesion = Math.max(0, (this.groupState.cohesion ?? 0) - 0.02)
-            return false
-        }
-
-        this.groupCommandQueue.push({
-            ...command,
-            issuedBy: issuedByPawn.id,
-            issuedAt: Date.now()
-        })
-        this.groupStats.obeyedCommands = (this.groupStats.obeyedCommands ?? 0) + 1
-        this.groupState.cohesion = Math.min(1, (this.groupState.cohesion ?? 0) + 0.02)
-        return true
+        return PawnGroup.receiveGroupCommand(this, command, issuedByPawn)
     }
 
     issueGroupCommand(command) {
