@@ -1,5 +1,6 @@
 import { decomposeGoal, isGoalReachable } from './GoalPlanner.js'
 import Structure from '../immobile/Structure.js'
+import * as PawnMercantile from './PawnMercantile.js'
 
 class PawnGoals {
     constructor(pawn) {
@@ -131,6 +132,9 @@ class PawnGoals {
             'collaborative_craft': 'civic',
             // Mercantile goals
             'trade': 'mercantile',
+            'barter': 'mercantile',
+            'seek_trade': 'mercantile',
+            'travel_route': 'mercantile',
             'accumulate_valuables': 'mercantile',
             'search_resource': 'mercantile',
             'gather_specific': 'mercantile',
@@ -1779,6 +1783,96 @@ class PawnGoals {
                         this.completeCurrentGoal()
                     }
                 }
+            }
+        }
+
+        if (goal.type === 'barter') {
+            // Execute a trade with another pawn
+            const partner = PawnMercantile.findTradePartner(this.pawn, 50)
+
+            if (!partner) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Move to partner
+            const dx = partner.x - this.pawn.x
+            const dy = partner.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 10) {
+                this.pawn.nextTargetX = partner.x
+                this.pawn.nextTargetY = partner.y
+            } else {
+                // Close enough to trade
+                const surplus = PawnMercantile.getSurplusItems(this.pawn)
+
+                if (surplus.length === 0) {
+                    this.completeCurrentGoal()
+                    return
+                }
+
+                // Find something partner has that we want
+                const offer = surplus[0]
+                const wantType = Object.keys(partner.inventory || {}).find(
+                    type => partner.countItem(type) > 0 && type !== offer.type
+                )
+
+                if (!wantType) {
+                    this.completeCurrentGoal()
+                    return
+                }
+
+                const tradeOffer = PawnMercantile.initiateBarter(
+                    this.pawn, partner,
+                    offer.type, Math.min(offer.surplus, 2),
+                    wantType, 1
+                )
+
+                if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
+                    this.pawn.gainSkill('bartering', 1)
+                    this.completeCurrentGoal()
+                }
+            }
+        }
+
+        if (goal.type === 'seek_trade') {
+            // Look for trade opportunities
+            if (!PawnMercantile.shouldSeekTrade(this.pawn)) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            const partner = PawnMercantile.findTradePartner(this.pawn, 50)
+            if (partner) {
+                // Switch to barter goal
+                goal.type = 'barter'
+            } else {
+                // No partner nearby, wander to find one
+                this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
+                this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
+            }
+        }
+
+        if (goal.type === 'travel_route') {
+            // Travel to a trade destination
+            const destination = goal.destination
+            if (!destination) {
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Move toward destination
+            const dx = destination.x - this.pawn.x
+            const dy = destination.y - this.pawn.y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+
+            if (dist > 10) {
+                this.pawn.nextTargetX = destination.x
+                this.pawn.nextTargetY = destination.y
+            } else {
+                // Arrived at destination
+                this.completeCurrentGoal()
             }
         }
 

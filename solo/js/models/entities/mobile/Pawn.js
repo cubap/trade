@@ -12,6 +12,7 @@ import * as PawnSecurity from './PawnSecurity.js'
 import * as PawnGroup from './PawnGroup.js'
 import * as PawnMemory from './PawnMemory.js'
 import * as PawnInvention from './PawnInvention.js'
+import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnInventory from './PawnInventory.js'
 
 class Pawn extends MobileEntity {
@@ -1262,6 +1263,31 @@ class Pawn extends MobileEntity {
     // Memory delegation to PawnMemory module
     rememberLandmark(landmark) {
         return PawnMemory.rememberLandmark(this, landmark)
+    }
+
+    // Mercantile delegation to PawnMercantile module
+    hasSurplus(itemType, personalNeed = 3) {
+        return PawnMercantile.hasSurplus(this, itemType, personalNeed)
+    }
+
+    getSurplusItems(personalNeed = 3) {
+        return PawnMercantile.getSurplusItems(this, personalNeed)
+    }
+
+    initiateBarter(target, offerType, offerAmount, wantType, wantAmount) {
+        return PawnMercantile.initiateBarter(this, target, offerType, offerAmount, wantType, wantAmount)
+    }
+
+    acceptBarter(offer) {
+        return PawnMercantile.acceptBarter(this, offer)
+    }
+
+    shouldSeekTrade() {
+        return PawnMercantile.shouldSeekTrade(this)
+    }
+
+    findTradePartner(range = 50) {
+        return PawnMercantile.findTradePartner(this, range)
     }
 
     forgetLandmark(nameOrType) {
