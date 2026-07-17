@@ -400,6 +400,30 @@ export function selectLearningGoal(pawn, range = 50) {
         }
     }
 
+    // If pawn has discovered solutions, teach them to nearby pawns
+    if (pawn.discoveredSolutions?.size > 0) {
+        for (const entity of pawn.world.entities) {
+            if (entity.subtype !== 'pawn' || entity.id === pawn.id) continue
+
+            const dist = Math.sqrt((pawn.x - entity.x) ** 2 + (pawn.y - entity.y) ** 2)
+            if (dist > range) continue
+
+            // Find a solution this pawn has that the other doesn't
+            for (const solutionId of pawn.discoveredSolutions) {
+                if (!entity.discoveredSolutions?.has(solutionId)) {
+                    return {
+                        type: 'teach_skill',
+                        skill: 'invention',
+                        target: entity,
+                        priority: 2,
+                        description: `Teach discovered solution to ${entity.name}`,
+                        duration: 100
+                    }
+                }
+            }
+        }
+    }
+
     // Find any teacher for a skill the pawn needs
     const pawnSkills = Object.entries(pawn.skills).sort((a, b) => a[1] - b[1])
     for (const [skill, level] of pawnSkills) {
@@ -419,4 +443,52 @@ export function selectLearningGoal(pawn, range = 50) {
     }
 
     return null
+}
+
+/**
+ * Share discovered solutions from a mentor to an apprentice.
+ * Called after a teaching session to transfer knowledge.
+ * @param {Pawn} mentor - The teaching pawn
+ * @param {Pawn} apprentice - The learning pawn
+ * @param {number} maxSolutions - Maximum solutions to share per session
+ */
+export function shareDiscoveredSolutions(mentor, apprentice, maxSolutions = 3) {
+    let shared = 0
+
+    for (const solutionId of mentor.discoveredSolutions) {
+        if (shared >= maxSolutions) break
+        if (apprentice.discoveredSolutions?.has(solutionId)) continue
+
+        apprentice.discoveredSolutions?.add(solutionId)
+        shared++
+    }
+
+    if (shared > 0) {
+        mentor.addThought?.(`Shared ${shared} discovered solutions with ${apprentice.name}`, 'social')
+        apprentice.addThought?.(`Learned ${shared} new solutions from ${mentor.name}`, 'social')
+    }
+}
+
+/**
+ * Share observed crafts from a mentor to an apprentice.
+ * Called after a teaching session to transfer craft knowledge.
+ * @param {Pawn} mentor - The teaching pawn
+ * @param {Pawn} apprentice - The learning pawn
+ * @param {number} maxCrafts - Maximum crafts to share per session
+ */
+export function shareObservedCrafts(mentor, apprentice, maxCrafts = 5) {
+    let shared = 0
+
+    for (const craft of mentor.observedCrafts) {
+        if (shared >= maxCrafts) break
+        if (apprentice.observedCrafts?.has(craft)) continue
+
+        apprentice.observedCrafts?.add(craft)
+        shared++
+    }
+
+    if (shared > 0) {
+        mentor.addThought?.(`Shared ${shared} observed crafts with ${apprentice.name}`, 'social')
+        apprentice.addThought?.(`Learned ${shared} new crafts from ${mentor.name}`, 'social')
+    }
 }
