@@ -1,93 +1,67 @@
 /**
  * Pawn invention systems: pondering, discovery, innovation.
  * 
- * Manages pawn's ability to discover new inventions, tools, and improvements
- * through contemplation and experimentation. Each invention has a difficulty
- * threshold that must be reached through accumulated progress.
+ * Delegates to Pawn.js's existing invention system:
+ * - `ponderProblem()` — add a problem to the pondering queue
+ * - `processPonderingQueue()` — attempt to discover solutions
+ * - `discoveredSolutions` — Set of discovered solution IDs
  * 
- * NOTE: Pawn.js uses `ponderProblem()` for inline constraint-triggered pondering.
- * This module provides a separate invention tracking system for long-term discoveries.
- * The two systems coexist — ponderProblem handles immediate constraints,
- * while this module tracks structured invention progress.
+ * This module provides a consistent API surface for invention-related
+ * operations while reusing the proven implementation in Pawn.js.
  */
 
 /**
- * Create a new invention to ponder.
+ * Add a problem for the pawn to ponder.
+ * Maps to Pawn.ponderProblem() which adds to the pondering queue.
  * 
- * @param {Pawn} pawn - The pawn creating the invention
- * @param {string} category - Invention category: 'tools', 'structures', 'skills', 'civic'
- * @param {string} name - Invention name (e.g., 'Better Axe', 'Stone Wall')
- * @param {number} difficulty - Difficulty level 1-10, determines progress threshold
- * @returns {Object} The created invention object with inventionId
+ * @param {Pawn} pawn - The pawn pondering
+ * @param {string} problemType - Problem type: 'need_better_tools', 'need_shelter', 'inventory_full', etc.
+ * @param {Object} context - Additional context for solution generation
  */
-export function ponderInvention(pawn, category, name, difficulty) {
-    const inventionId = `invention_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    const invention = {
-        inventionId,
-        category,
-        name,
-        difficulty,
-        progress: 0,
-        discovered: false,
-        ponderedAt: pawn.world?.clock?.currentTick ?? 0
-    }
-
-    pawn.inventions.push(invention)
-    return invention
+export function ponderInvention(pawn, problemType, context = {}) {
+    pawn.ponderProblem(problemType, context)
 }
 
 /**
- * Advance progress on an existing invention.
- * When progress reaches difficulty * 10, the invention is discovered.
+ * Process the pawn's pondering queue — attempt to discover a solution.
+ * Maps to Pawn.processPonderingQueue() which handles cooldowns, bonuses, and discovery.
  * 
- * @param {Pawn} pawn - The pawn making progress
- * @param {string} inventionId - ID of the invention to progress
- * @param {number} progress - Progress amount to add (default 1)
+ * @param {Pawn} pawn - The pawn processing pondering
+ * @returns {Object|null} Discovered solution object, or null if no discovery yet
  */
-export function progressInvention(pawn, inventionId, progress = 1) {
-    const invention = pawn.inventions.find(inv => inv.inventionId === inventionId)
-    if (!invention) return
-
-    invention.progress += progress
-
-    // Check if invention is complete
-    if (invention.progress >= invention.difficulty * 10) {
-        invention.discovered = true
-        pawn.addThought(`Discovered invention: ${invention.name}!`, 'invention')
-    }
+export function progressInvention(pawn) {
+    return pawn.processPonderingQueue()
 }
 
 /**
- * Get all inventions the pawn has discovered.
+ * Get all solutions the pawn has discovered.
  * 
  * @param {Pawn} pawn - The pawn to inspect
- * @returns {Object[]} Array of discovered invention objects
+ * @returns {Set} Set of discovered solution IDs
  */
 export function getDiscoveredInventions(pawn) {
-    return pawn.inventions.filter(inv => inv.discovered)
+    return pawn.discoveredSolutions
 }
 
 /**
- * Get all inventions the pawn is actively working on (not yet discovered).
+ * Get all problems the pawn is actively pondering.
  * 
  * @param {Pawn} pawn - The pawn to inspect
- * @returns {Object[]} Array of active invention objects
+ * @returns {Object[]} Array of active problem objects from the pondering queue
  */
 export function getActiveInventions(pawn) {
-    return pawn.inventions.filter(inv => !inv.discovered)
+    return pawn.ponderingQueue
 }
 
 /**
- * Check if a pawn has discovered a specific invention by name.
+ * Check if a pawn has discovered a specific solution.
  * 
  * @param {Pawn} pawn - The pawn to inspect
- * @param {string} inventionName - Name of the invention to check
- * @returns {boolean} True if pawn has discovered this invention
+ * @param {string} solutionId - Solution ID to check
+ * @returns {boolean} True if pawn has discovered this solution
  */
-export function hasDiscovered(pawn, inventionName) {
-    return pawn.inventions.some(inv =>
-        inv.name === inventionName && inv.discovered
-    )
+export function hasDiscovered(pawn, solutionId) {
+    return pawn.discoveredSolutions.has(solutionId)
 }
 
 /**
