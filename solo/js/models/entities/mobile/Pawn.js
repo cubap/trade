@@ -16,6 +16,7 @@ import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnSpecialization from './PawnSpecialization.js'
 import * as PawnLearning from './PawnLearning.js'
 import * as PawnInventory from './PawnInventory.js'
+import * as PawnReputation from './PawnReputation.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -902,6 +903,7 @@ class Pawn extends MobileEntity {
         this.decaySkills(tick)
         this.updateGroupDynamics(tick)
         this.applyTrustDecay()
+        this.applyReputationDecay()
         this.updateHealthEvents()
 
         if (tick % 40 === 0) {
@@ -1348,6 +1350,59 @@ class Pawn extends MobileEntity {
 
     getMentor() {
         return PawnLearning.getMentor(this, this.world)
+    }
+
+    // Reputation delegation to PawnReputation module
+    getGroupReputation(targetGroupId) {
+        return PawnReputation.getGroupReputation(this, targetGroupId)
+    }
+
+    setGroupReputation(targetGroupId, score) {
+        return PawnReputation.setGroupReputation(this, targetGroupId, score)
+    }
+
+    modifyGroupReputation(targetGroupId, eventType, magnitude) {
+        return PawnReputation.modifyGroupReputation(this, targetGroupId, eventType, magnitude)
+    }
+
+    applyReputationDecay(decayRate) {
+        return PawnReputation.applyReputationDecay(this, decayRate)
+    }
+
+    propagateReputationToAllies(contagionFactor) {
+        return PawnReputation.propagateReputationToAllies(this, contagionFactor)
+    }
+
+    meetsReputationThreshold(targetGroupId, action) {
+        return PawnReputation.meetsReputationThreshold(this, targetGroupId, action)
+    }
+
+    getContractRateModifier(otherPawn) {
+        return PawnReputation.getContractRateModifier(this, PawnReputation.getTargetGroupId(otherPawn))
+    }
+
+    getTradePriceModifier(otherPawn) {
+        return PawnReputation.getTradePriceModifier(this, PawnReputation.getTargetGroupId(otherPawn))
+    }
+
+    getReputationLabel(otherPawn) {
+        return PawnReputation.getReputationLabel(this, PawnReputation.getTargetGroupId(otherPawn))
+    }
+
+    canInitiateTrade(otherPawn) {
+        return PawnReputation.canInitiateTrade(this, otherPawn)
+    }
+
+    canOfferContract(otherPawn) {
+        return PawnReputation.canOfferContract(this, otherPawn)
+    }
+
+    recordReputationEvent(targetGroupId, eventType, magnitude, tick) {
+        return PawnReputation.recordReputationEvent(this, targetGroupId, eventType, magnitude, tick)
+    }
+
+    getRecentReputationEvents(otherPawn, maxEvents) {
+        return PawnReputation.getRecentReputationEvents(this, PawnReputation.getTargetGroupId(otherPawn), maxEvents)
     }
 
     forgetLandmark(nameOrType) {
