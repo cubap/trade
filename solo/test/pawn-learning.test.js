@@ -6,6 +6,7 @@ import path from 'node:path'
 // Load modules directly for unit testing
 const PawnLearningPath = path.resolve('solo/js/models/entities/mobile/PawnLearning.js')
 const WorkshopPath = path.resolve('solo/js/models/entities/immobile/Workshop.js')
+const GuildPath = path.resolve('solo/js/models/entities/immobile/Guild.js')
 
 describe('PawnLearning Module Structure', () => {
     it('PawnLearning.js exists', () => {
@@ -188,6 +189,54 @@ describe('PawnLearning Module Structure', () => {
         assert.ok(
             content.includes('teach_skill'),
             'Missing teach_skill goal type in selection'
+        )
+    })
+
+    it('Guild.js exists', () => {
+        assert.ok(fs.existsSync(GuildPath), 'Guild.js not found')
+    })
+
+    it('Guild.js has guild tag and mentor management', () => {
+        const content = fs.readFileSync(GuildPath, 'utf-8')
+        assert.ok(
+            content.includes("'guild'"),
+            'Guild.js missing guild tag'
+        )
+        assert.ok(
+            content.includes('registerMentor'),
+            'Guild.js missing registerMentor method'
+        )
+        assert.ok(
+            content.includes('enrollStudent'),
+            'Guild.js missing enrollStudent method'
+        )
+        assert.ok(
+            content.includes('maxMentors'),
+            'Guild.js missing maxMentors limit'
+        )
+    })
+
+    it('Guild.js has curriculum tracking', () => {
+        const content = fs.readFileSync(GuildPath, 'utf-8')
+        assert.ok(
+            content.includes('this.curriculum'),
+            'Guild.js missing curriculum tracking'
+        )
+        assert.ok(
+            content.includes('getMentorForSkill'),
+            'Guild.js missing getMentorForSkill method'
+        )
+    })
+
+    it('Guild.js uses PawnLearning for mentorship', () => {
+        const content = fs.readFileSync(GuildPath, 'utf-8')
+        assert.ok(
+            content.includes('PawnLearning.establishMentorship'),
+            'Guild.js does not use PawnLearning.establishMentorship'
+        )
+        assert.ok(
+            content.includes('PawnLearning.recordLessonCompleted'),
+            'Guild.js does not use PawnLearning.recordLessonCompleted'
         )
     })
 })
