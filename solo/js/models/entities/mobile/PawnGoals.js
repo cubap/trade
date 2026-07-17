@@ -66,11 +66,79 @@ class PawnGoals {
             this.pawn.priorityBias.nextGoal = null
         }
 
-        // Set current goal if none exists
+        // Set current goal if none exists, with inclination bias
         if (!this.currentGoal && this.goalQueue.length > 0) {
-            this.currentGoal = this.goalQueue.shift()
+            // Apply inclination bias: weight goals by branch alignment
+            let selectedGoal = this.goalQueue[0]
+            let bestWeight = this.getGoalWeight(selectedGoal)
+
+            for (let i = 1; i < this.goalQueue.length; i++) {
+                const weight = this.getGoalWeight(this.goalQueue[i])
+                if (weight > bestWeight) {
+                    bestWeight = weight
+                    selectedGoal = this.goalQueue[i]
+                }
+            }
+
+            // Remove selected goal from queue and set as current
+            this.goalQueue = this.goalQueue.filter(g => g !== selectedGoal)
+            this.currentGoal = selectedGoal
             this.planAndStartGoal(this.currentGoal)
         }
+    }
+
+    /**
+     * Calculate a weight for goal selection based on priority and branch inclination.
+     * Higher weight = more likely to be selected.
+     */
+    getGoalWeight(goal) {
+        if (!goal) return 0
+        const priority = goal.priority ?? 1
+        const bias = this.pawn.getInclinationBias?.(goal.type) ?? 1.0
+        return priority * bias
+    }
+
+    /**
+     * Map a goal type to its branch inclination category.
+     */
+    getGoalBranch(goalType) {
+        const goalBranchMap = {
+            // Tribal goals
+            'hunt': 'tribal',
+            'hunt_animal': 'tribal',
+            'follow': 'tribal',
+            'protect': 'tribal',
+            'scout': 'tribal',
+            'mark': 'tribal',
+            'fight': 'tribal',
+            'follow_leader': 'tribal',
+            'protect_target': 'tribal',
+            'escort_target': 'tribal',
+            'mark_target': 'tribal',
+            'obey_leader': 'tribal',
+            // Civic goals
+            'build_structure': 'civic',
+            'stage_build_materials': 'civic',
+            'negotiate_group': 'civic',
+            'teach_skill': 'civic',
+            'socialize': 'civic',
+            'rest': 'civic',
+            'seek_shelter': 'civic',
+            'collaborative_craft': 'civic',
+            // Mercantile goals
+            'trade': 'mercantile',
+            'accumulate_valuables': 'mercantile',
+            'search_resource': 'mercantile',
+            'gather_specific': 'mercantile',
+            'craft_item': 'mercantile',
+            'craft_cordage': 'mercantile',
+            'craft_sharp_stone': 'mercantile',
+            'craft_poultice': 'mercantile',
+            'establish_trade': 'mercantile',
+            'gather_materials': 'mercantile'
+        }
+
+        return goalBranchMap[goalType] ?? null
     }
 
     shouldPreemptForEmergencyNeed(topNeed) {
@@ -577,6 +645,12 @@ class PawnGoals {
             this.pawn.completeCivicNegotiation?.(goal)
             this.pawn.setRecentAction?.('Formalized civic plans')
         }
+
+        // Record inclination signal from completed goal type
+        this.pawn.recordInclinationSignal?.(
+            this.getGoalBranch(goal.type),
+            0.03
+        )
 
         // Skill gains based on goal type (lightweight for now)
         const sg = {

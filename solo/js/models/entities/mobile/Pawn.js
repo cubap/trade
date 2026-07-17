@@ -139,6 +139,25 @@ class Pawn extends MobileEntity {
             cohesionDecayFar: 0.03
         }
 
+        // Branch inclination vectors (tribal, civic, mercantile)
+        // Range 0-1, sum ~1.0. Bias goal selection toward matching triad behavior.
+        this.branchInclination = {
+            tribal: 0.33,
+            civic: 0.34,
+            mercantile: 0.33
+        }
+        this.inclinationHistory = [] // Track recent inclination shifts for smoothing
+        this.maxInclinationHistory = 10
+
+        // Trust decay configuration
+        this.trustDecayConfig = {
+            enabled: true,
+            decayRate: 0.002, // Per tick
+            decayFloor: 0.1, // Minimum trust retained
+            decayPeriod: 200, // Ticks between decay passes
+            lastDecayTick: 0
+        }
+
         // Health attributes
         this.traits = {
             health: 100,
@@ -845,6 +864,7 @@ class Pawn extends MobileEntity {
         this.passiveSkillTick()
         this.decaySkills(tick)
         this.updateGroupDynamics(tick)
+        this.applyTrustDecay()
         this.updateHealthEvents()
 
         if (tick % 40 === 0) {
@@ -2338,6 +2358,126 @@ class Pawn extends MobileEntity {
             tradeValue: 100,  // Base value for trade routes
             baseTrust: Math.min(...potentialMembers.map(p => this.getGroupTrustIn(p) ?? 0))
         }
+    }
+
+    /**
+     * Apply trust decay over time. Trust slowly erodes when pawns don't interact.
+     * Called periodically from the game tick loop.
+     */
+    applyTrustDecay() {
+        if (!this.trustDecayConfig.enabled) return
+
+        const currentTick = this.world?.clock?.currentTick ?? 0
+        const { decayPeriod, lastDecayTick, decayRate, decayFloor } = this.trustDecayConfig
+
+        if (currentTick - lastDecayTick < decayPeriod) return
+
+        this.trustDecayConfig.lastDecayTick = currentTick
+
+        for (const [pawnId, trust] of Object.entries(this.groupTrust)) {
+            if (trust <= decayFloor) {
+                this.groupTrust[pawnId] = decayFloor
+                continue
+            }
+
+            const newTrust = Math.max(decayFloor, trust - decayRate)
+            this.groupTrust[pawnId] = newTrust
+        }
+    }
+
+    /**
+     * Record a behavioral signal that influences branch inclination.
+     * @param {'tribal'|'civic'|'mercantile'} branch - The branch this behavior signals
+     * @param {number} strength - Signal strength (0.01-0.1)
+     */
+    recordInclinationSignal(branch, strength = 0.05) {
+        if (!this.branchInclination[branch]) return
+
+        // Apply signal
+        this.branchInclination[branch] = Math.min(1, this.branchInclination[branch] + strength)
+
+        // Store in history for smoothing
+        this.inclinationHistory.push({
+            branch,
+            strength,
+            tick: this.world?.clock?.currentTick ?? 0
+        })
+
+        if (this.inclinationHistory.length > this.maxInclinationHistory) {
+            this.inclinationHistory.shift()
+        }
+
+        // Normalize so inclinations sum to ~1.0
+        this.normalizeInclinations()
+    }
+
+    /**
+     * Normalize inclination values so they sum to 1.0.
+     */
+    normalizeInclinations() {
+        const total = Object.values(this.branchInclination).reduce((a, b) => a + b, 0)
+        if (total <= 0) return
+
+        for (const branch of Object.keys(this.branchInclination)) {
+            this.branchInclination[branch] = this.branchInclination[branch] / total
+        }
+    }
+
+    /**
+     * Get a bias multiplier for goal selection based on branch inclination.
+     * Goals matching the pawn's dominant inclination get a bonus.
+     * @param {string} goalType - The goal type to check (e.g., 'hunt', 'build_structure', 'trade')
+     * @returns {number} Multiplier (1.0 = neutral, >1.0 = favored, <1.0 = deprioritized)
+     */
+    getInclinationBias(goalType) {
+        const goalBranchMap = {
+            // Tribal goals
+            'hunt': 'tribal',
+            'hunt_animal': 'tribal',
+            'follow': 'tribal',
+            'protect': 'tribal',
+            'scout': 'tribal',
+            'mark': 'tribal',
+            'fight': 'tribal',
+            // Civic goals
+            'build_structure': 'civic',
+            'stage_build_materials': 'civic',
+            'negotiate_group': 'civic',
+            'teach_skill': 'civic',
+            'socialize': 'civic',
+            'rest': 'civic',
+            // Mercantile goals
+            'trade': 'mercantile',
+            'accumulate_valuables': 'mercantile',
+            'search_resource': 'mercantile',
+            'gather_specific': 'mercantile',
+            'craft_item': 'mercantile'
+        }
+
+        const goalBranch = goalBranchMap[goalType]
+        if (!goalBranch) return 1.0
+
+        const inclination = this.branchInclination[goalBranch] ?? 0.33
+        // Map inclination (0-1) to bias multiplier (0.7-1.3)
+        return 0.7 + (inclination * 0.6)
+    }
+
+    /**
+     * Get the dominant branch inclination.
+     * @returns {'tribal'|'civic'|'mercantile'} The branch with highest inclination
+     */
+    getDominantBranch() {
+        let maxBranch = 'civic'
+        let maxVal = 0
+
+        for (const [branch, val] of Object.entries(this.branchInclination)) {
+            if (val > maxVal) {
+                maxVal = val
+                maxBranch = branch
+            }
+        }
+
+        return maxBranch
     }
 
     auditRememberedCaches() {
@@ -3976,6 +4116,47 @@ class Pawn extends MobileEntity {
     }
     recordDrink() {
         this.lastDrinkTime = this.gameTime ?? 0
+    }
+
+    /**
+     * Serialize Phase 0 state for save/load persistence.
+     * Includes group state, trust, inclinations, and home landmark.
+     * @returns {object} Serializable state object
+     */
+    serializePhase0State() {
+        return {
+            groupState: { ...this.groupState },
+            groupTrust: { ...this.groupTrust },
+            groupMemberships: { ...this.groupMemberships },
+            groupAffiliationsByType: { ...this.groupAffiliationsByType },
+            groupNegotiation: this.groupNegotiation ? { ...this.groupNegotiation } : null,
+            groupStats: { ...this.groupStats },
+            branchInclination: { ...this.branchInclination },
+            inclinationHistory: [...this.inclinationHistory],
+            trustDecayConfig: { ...this.trustDecayConfig },
+            homeLandmark: this.homeLandmark ? { ...this.homeLandmark } : null
+        }
+    }
+
+    /**
+     * Load Phase 0 state from a serialized object.
+     * @param {object} state - Previously serialized Phase 0 state
+     */
+    loadPhase0State(state) {
+        if (!state) return
+
+        if (state.groupState) Object.assign(this.groupState, state.groupState)
+        if (state.groupTrust) Object.assign(this.groupTrust, state.groupTrust)
+        if (state.groupMemberships) Object.assign(this.groupMemberships, state.groupMemberships)
+        if (state.groupAffiliationsByType) Object.assign(this.groupAffiliationsByType, state.groupAffiliationsByType)
+        if (state.groupNegotiation) Object.assign(this.groupNegotiation ?? {}, state.groupNegotiation)
+        if (state.groupStats) Object.assign(this.groupStats, state.groupStats)
+        if (state.branchInclination) Object.assign(this.branchInclination, state.branchInclination)
+        if (state.inclinationHistory) this.inclinationHistory = [...state.inclinationHistory]
+        if (state.trustDecayConfig) Object.assign(this.trustDecayConfig, state.trustDecayConfig)
+        if (state.homeLandmark) {
+            this.homeLandmark = { ...state.homeLandmark }
+        }
     }
 
 }
