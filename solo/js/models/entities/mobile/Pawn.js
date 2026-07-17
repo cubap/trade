@@ -14,6 +14,7 @@ import * as PawnMemory from './PawnMemory.js'
 import * as PawnInvention from './PawnInvention.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnSpecialization from './PawnSpecialization.js'
+import * as PawnLearning from './PawnLearning.js'
 import * as PawnInventory from './PawnInventory.js'
 
 class Pawn extends MobileEntity {
@@ -1310,6 +1311,27 @@ class Pawn extends MobileEntity {
 
     recommendRole() {
         return PawnSpecialization.recommendRole(this)
+    }
+
+    // Learning delegation to PawnLearning module
+    teach(student, skill) {
+        return PawnLearning.teach(this, student, skill)
+    }
+
+    observe(teacher, skill) {
+        return PawnLearning.observe(teacher, this, skill)
+    }
+
+    apprentice(teacher, skill) {
+        return PawnLearning.apprentice(teacher, this, skill)
+    }
+
+    getWorkSpeedMultiplier() {
+        return PawnLearning.getWorkSpeedMultiplier(this)
+    }
+
+    findTeacher(skill, range = 50) {
+        return PawnLearning.findTeacher(this, skill, range)
     }
 
     forgetLandmark(nameOrType) {

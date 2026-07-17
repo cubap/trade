@@ -1,6 +1,7 @@
 import { decomposeGoal, isGoalReachable } from './GoalPlanner.js'
 import Structure from '../immobile/Structure.js'
 import * as PawnMercantile from './PawnMercantile.js'
+import * as PawnLearning from './PawnLearning.js'
 
 class PawnGoals {
     constructor(pawn) {
@@ -965,15 +966,21 @@ class PawnGoals {
                 if (close) {
                     const skill = goal.skill || 'manipulation'
                     if (goal.type === 'train_skill') {
-                        this.pawn.trainSkill(skill, target, 0.05)
+                        // Teaching: teacher gives full attention, student learns fastest
+                        PawnLearning.teach(this.pawn, target, skill)
+                        this.pawn.behaviorState = 'teaching'
                     } else {
-                        this.pawn.apprenticeSkill(skill, target, 0.04)
+                        // Apprenticing: student works alongside teacher, moderate learning
+                        PawnLearning.apprentice(target, this.pawn, skill)
+                        this.pawn.behaviorState = 'learning'
                     }
                     if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
                     // Auto-complete after duration if specified
                     if (goal.duration) {
                         const elapsed = this.pawn.world.clock.currentTick - goal.startTime
                         if (elapsed >= goal.duration) {
+                            PawnLearning.clearApprenticeSlowdown(this.pawn)
+                            PawnLearning.clearApprenticeSlowdown(target)
                             this.completeCurrentGoal()
                         }
                     }
@@ -1879,103 +1886,6 @@ class PawnGoals {
             }
         }
 
-            if (activeMembers.length >= 2) {
-                // Enough members present to negotiate
-                if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
-
-                if (!goal.duration) goal.duration = 60 // Negotiation duration
-                const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-
-                if (elapsed >= goal.duration) {
-                    this.completeCurrentGoal()
-                }
-            } else {
-                // Not enough members, move toward nearest missing member
-                const missingMember = targetMembers.find(m => !activeMembers.includes(m))
-                if (missingMember) {
-                    this.pawn.nextTargetX = missingMember.x
-                    this.pawn.nextTargetY = missingMember.y
-                }
-            }
-        }
-
-            const [skillName, skillLevel] = highestSkill
-            if (skillLevel < 2) {
-                this.completeCurrentGoal()
-                return
-            }
-
-            // Move to student
-            const dx = student.x - this.pawn.x
-            const dy = student.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > 10) {
-                this.pawn.nextTargetX = student.x
-                this.pawn.nextTargetY = student.y
-            } else {
-                // Close enough to teach
-                if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
-
-                if (!goal.duration) goal.duration = 80
-                const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-
-                if (elapsed >= goal.duration) {
-                    // Complete lesson
-                    const lesson = this.pawn.addCurriculumLesson(skillName, null, 1)
-                    if (lesson) {
-                        student.gainSkill(skillName, 1)
-                        this.pawn.completeCurriculumLesson(lesson.lessonId)
-                        this.pawn.recordCivicContribution('build', 2)
-                        this.completeCurrentGoal()
-                    }
-                }
-            }
-        }
-
-            if (activeMembers.length < 2) {
-                const focus = targetMembers.find(member => member.id !== this.pawn.id) ?? targetMembers[0]
-                if (focus) {
-                    this.pawn.nextTargetX = focus.x
-                    this.pawn.nextTargetY = focus.y
-                    this.pawn.setRecentAction?.(`Heading to negotiate with ${focus.name}`)
-                }
-                return
-            }
-
-            if (!goal.startTime) {
-                goal.startTime = this.pawn.world.clock.currentTick
-                this.pawn.setRecentAction?.('Negotiating a civic group')
-            }
-
-            const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-            const centerX = activeMembers.reduce((sum, member) => sum + (member.x ?? 0), 0) / activeMembers.length
-            const centerY = activeMembers.reduce((sum, member) => sum + (member.y ?? 0), 0) / activeMembers.length
-            const distanceToCenter = Math.sqrt((this.pawn.x - centerX) ** 2 + (this.pawn.y - centerY) ** 2)
-
-            if (distanceToCenter > (goal.meetingRadius ?? 34)) {
-                this.pawn.nextTargetX = centerX
-                this.pawn.nextTargetY = centerY
-                this.pawn.setRecentAction?.('Gathering the group to negotiate')
-                return
-            }
-
-            if (elapsed % 15 === 0) {
-                for (const other of activeMembers) {
-                    if (other.id === this.pawn.id) continue
-                    const currentTrust = this.pawn.getGroupTrustIn(other) ?? 0
-                    this.pawn.setGroupTrustIn(other, Math.min(1, currentTrust + 0.03))
-                }
-                this.pawn.useSkill('planning', 0.03)
-                this.pawn.useSkill('cooperation', 0.04)
-            }
-
-            if (elapsed >= (goal.duration ?? 60)) {
-                this.completeCurrentGoal()
-            }
-            return
-        }
-        
         // Accumulate valuables: craft high-quality items
         if (goal.type === 'accumulate_valuables') {
             if (!goal.startTime) goal.startTime = this.pawn.world.clock.currentTick
@@ -2030,20 +1940,16 @@ class PawnGoals {
                     this.pawn.nextTargetX = target.x
                     this.pawn.nextTargetY = target.y
                 } else {
-                    // Teaching in progress
+                    // Teaching in progress — uses PawnLearning for bonus calculation
                     if (!goal.startTime) {
                         goal.startTime = this.pawn.world.clock.currentTick
                         console.log(`${this.pawn.name} begins teaching ${goal.skill} to ${target.name}`)
                     }
                     
-                    // Periodic skill transfer
-                    const elapsed = this.pawn.world.clock.currentTick - goal.startTime
-                    if (elapsed % 10 === 0) {
-                        this.pawn.trainSkill(goal.skill, target, 0.2)
-                        this.pawn.increaseSkill('storytelling', 0.05) // Teacher also improves
-                    }
+                    // Per-tick skill transfer with teaching/trust/structure bonuses
+                    PawnLearning.teach(this.pawn, target, goal.skill)
                     
-                    if (elapsed >= (goal.duration || 100)) {
+                    if (this.pawn.world.clock.currentTick - goal.startTime >= (goal.duration || 100)) {
                         console.log(`${this.pawn.name} finished teaching ${goal.skill} to ${target.name}`)
                         this.completeCurrentGoal()
                     }
