@@ -47,6 +47,7 @@ class PawnGoals {
         // Add some long-term goals if immediate needs are met
         if (needsPriority.length === 0 || needsPriority[0].priority <= 2) {
             this.addLongTermGoals()
+            this.addLearningGoals()
             this.addCivicNegotiationGoals()
         }
         
@@ -381,6 +382,18 @@ class PawnGoals {
         const count = 1 + Math.floor(Math.random() * 3)
         const selected = this.selectRandomGoals(longTermGoals, count)
         this.goalQueue.push(...selected)
+    }
+
+    addLearningGoals() {
+        // Check if pawn already has a learning goal in progress
+        if (this.currentGoal?.type === 'teach_skill' || this.currentGoal?.type === 'apprentice_skill') return
+        if (this.goalQueue.some(g => g.type === 'teach_skill' || g.type === 'apprentice_skill')) return
+
+        // Use PawnLearning to select the best learning goal
+        const learningGoal = PawnLearning.selectLearningGoal(this.pawn, 50)
+        if (learningGoal) {
+            this.goalQueue.unshift(learningGoal)
+        }
     }
 
     addCivicNegotiationGoals() {
