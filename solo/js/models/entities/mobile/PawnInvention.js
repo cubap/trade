@@ -72,11 +72,6 @@ export function hasDiscovered(pawn, solutionId) {
  * @param {Pawn} pawn - The pawn to apply bonuses to
  */
 export function applyInventionBonuses(pawn) {
-    // Placeholder for future invention effects
-    // e.g., discovered tools unlock new crafting recipes
-}
- */
-export function applyInventionBonuses(pawn) {
     const discovered = getDiscoveredInventions(pawn)
 
     for (const invention of discovered) {
