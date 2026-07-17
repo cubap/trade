@@ -17,6 +17,7 @@ import * as PawnSpecialization from './PawnSpecialization.js'
 import * as PawnLearning from './PawnLearning.js'
 import * as PawnInventory from './PawnInventory.js'
 import * as PawnReputation from './PawnReputation.js'
+import * as PawnContract from './PawnContract.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -904,6 +905,7 @@ class Pawn extends MobileEntity {
         this.updateGroupDynamics(tick)
         this.applyTrustDecay()
         this.applyReputationDecay()
+        this.expireExpiredContracts()
         this.updateHealthEvents()
 
         if (tick % 40 === 0) {
@@ -1403,6 +1405,59 @@ class Pawn extends MobileEntity {
 
     getRecentReputationEvents(otherPawn, maxEvents) {
         return PawnReputation.getRecentReputationEvents(this, PawnReputation.getTargetGroupId(otherPawn), maxEvents)
+    }
+
+    // Contract delegation to PawnContract module
+    offerContract(targetPawn, type, terms) {
+        return PawnContract.offerContract(this, targetPawn, type, terms)
+    }
+
+    acceptContract(contractId) {
+        return PawnContract.acceptContract(this, contractId)
+    }
+
+    activateContract(contractId) {
+        return PawnContract.activateContract(this, contractId)
+    }
+
+    fulfillContract(contractId, results) {
+        return PawnContract.fulfillContract(this, contractId, results)
+    }
+
+    completeContract(contractId) {
+        return PawnContract.completeContract(this, contractId)
+    }
+
+    disputeContract(contractId, reason) {
+        return PawnContract.disputeContract(this, contractId, reason)
+    }
+
+    terminateContract(contractId) {
+        return PawnContract.terminateContract(this, contractId)
+    }
+
+    getContract(contractId) {
+        return PawnContract.getContract(this, contractId)
+    }
+
+    getActiveContracts() {
+        return PawnContract.getActiveContracts(this)
+    }
+
+    getPendingContracts() {
+        return PawnContract.getPendingContracts(this)
+    }
+
+    getOfferedContracts() {
+        return PawnContract.getOfferedContracts(this)
+    }
+
+    getContractRate(targetPawn) {
+        return PawnContract.getContractRate(this, targetPawn)
+    }
+
+    expireExpiredContracts() {
+        return PawnContract.expireExpiredContracts(this)
     }
 
     forgetLandmark(nameOrType) {
