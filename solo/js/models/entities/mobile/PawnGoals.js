@@ -148,7 +148,9 @@ class PawnGoals {
             'gather_materials': 'mercantile',
             // Civic goals (Phase 4)
             'assign_role': 'civic',
-            'enact_law': 'civic'
+            'enact_law': 'civic',
+            // Learning goals (Phase 4)
+            'observe_skill': 'civic'
         }
 
         return goalBranchMap[goalType] ?? null
@@ -543,6 +545,7 @@ class PawnGoals {
             'train_skill': 'teaching',
             'teach_skill': 'teaching',
             'apprentice_skill': 'learning',
+            'observe_skill': 'observing',
             'follow_leader': 'following',
             'protect_target': 'guarding',
             'escort_target': 'escorting',
