@@ -242,3 +242,181 @@ export function isAvailableToTeach(pawn) {
     // A pawn apprenticing with someone can still teach (different skill)
     return true
 }
+
+/**
+ * Establish a mentor-apprentice relationship between two pawns.
+ * The mentor commits to teaching the apprentice specific skills.
+ * @param {Pawn} mentor - The teaching pawn
+ * @param {Pawn} apprentice - The learning pawn
+ * @param {string[]} skills - Skills the mentor will teach
+ */
+export function establishMentorship(mentor, apprentice, skills = []) {
+    mentor.mentorOf = mentor.mentorOf ?? new Map()
+    apprentice.mentorOf = apprentice.mentorOf ?? new Map()
+
+    mentor.mentorOf.set(apprentice.id, {
+        skills,
+        startedAt: mentor.world?.clock?.currentTick,
+        lessonsCompleted: 0
+    })
+
+    apprentice.mentorOf = mentor.id
+
+    mentor.addThought?.(`Mentoring ${apprentice.name} in ${skills.join(', ') || 'various skills'}`, 'social')
+    apprentice.addThought?.(`Apprenticed to ${mentor.name}`, 'social')
+}
+
+/**
+ * Dissolve a mentor-apprentice relationship.
+ * @param {Pawn} mentor - The teaching pawn
+ * @param {Pawn} apprentice - The learning pawn
+ */
+export function dissolveMentorship(mentor, apprentice) {
+    mentor.mentorOf?.delete(apprentice.id)
+    if (apprentice.mentorOf === mentor.id) {
+        delete apprentice.mentorOf
+    }
+
+    mentor.addThought?.(`Mentorship with ${apprentice.name} ended`, 'social')
+    apprentice.addThought?.(`No longer apprenticed to ${mentor.name}`, 'social')
+}
+
+/**
+ * Check if two pawns have an active mentor-apprentice relationship.
+ * @param {Pawn} mentor - Potential mentor
+ * @param {Pawn} apprentice - Potential apprentice
+ * @returns {boolean}
+ */
+export function isMentorOf(mentor, apprentice) {
+    return mentor.mentorOf?.has(apprentice.id) ?? false
+}
+
+/**
+ * Get the mentor for an apprentice pawn.
+ * @param {Pawn} apprentice - The learning pawn
+ * @returns {Pawn|null} The mentor or null
+ */
+export function getMentor(apprentice, world) {
+    if (!apprentice.mentorOf || !world) return null
+    return world.entitiesMap?.get(apprentice.mentorOf) ?? null
+}
+
+/**
+ * Record a completed lesson in a mentorship relationship.
+ * @param {Pawn} mentor - The teaching pawn
+ * @param {Pawn} apprentice - The learning pawn
+ * @param {string} skill - The skill taught
+ */
+export function recordLessonCompleted(mentor, apprentice, skill) {
+    const record = mentor.mentorOf?.get(apprentice.id)
+    if (record) {
+        record.lessonsCompleted++
+    }
+}
+
+/**
+ * Recommend a learning mode based on pawn states and context.
+ * - Teaching: when pawn has high skill and a mentorship bond
+ * - Apprenticing: when pawn has a mentor and wants to learn while working
+ * - Observing: when pawn wants to learn without disrupting the teacher
+ * @param {Pawn} pawn - The pawn choosing a learning mode
+ * @param {Pawn} target - The other pawn involved
+ * @param {string} skill - The skill in question
+ * @returns {string} 'teaching', 'apprenticing', or 'observing'
+ */
+export function recommendLearningMode(pawn, target, skill) {
+    // If pawn is the mentor, prefer teaching
+    if (isMentorOf(pawn, target)) {
+        return 'teaching'
+    }
+
+    // If pawn has a mentor and it's this target, prefer apprenticing
+    if (pawn.mentorOf === target.id) {
+        return 'apprenticing'
+    }
+
+    // If pawn is significantly less skilled, apprenticing allows new skill discovery
+    if (pawn.getSkill(skill) === 0 && target.getSkill(skill) > 0) {
+        return 'apprenticing'
+    }
+
+    // Default to observing for minimal disruption
+    return 'observing'
+}
+
+/**
+ * Select the best learning goal for a pawn based on current state.
+ * Considers mentor relationships, skill gaps, and available teachers.
+ * @param {Pawn} pawn - The pawn selecting a goal
+ * @param {number} range - Search radius for potential teachers
+ * @returns {Object|null} Goal object or null if no learning goal appropriate
+ */
+export function selectLearningGoal(pawn, range = 50) {
+    // If pawn has a mentor, prioritize learning from them
+    const mentor = getMentor(pawn, pawn.world)
+    if (mentor) {
+        const dist = Math.sqrt((pawn.x - mentor.x) ** 2 + (pawn.y - mentor.y) ** 2)
+        if (dist <= range) {
+            // Find a skill the mentor has that pawn lacks
+            const mentorSkills = Object.entries(mentor.skills).sort((a, b) => b[1] - a[1])
+            for (const [skill, level] of mentorSkills) {
+                if (level > pawn.getSkill(skill)) {
+                    return {
+                        type: 'apprentice_skill',
+                        skill,
+                        target: mentor,
+                        priority: 3,
+                        description: `Apprentice ${skill} under ${mentor.name}`,
+                        duration: 80
+                    }
+                }
+            }
+        }
+    }
+
+    // If pawn is a mentor to someone nearby, teach them
+    if (pawn.mentorOf) {
+        for (const [appId, record] of pawn.mentorOf) {
+            const apprentice = pawn.world?.entitiesMap?.get(appId)
+            if (!apprentice) continue
+
+            const dist = Math.sqrt((pawn.x - apprentice.x) ** 2 + (pawn.y - apprentice.y) ** 2)
+            if (dist <= range) {
+                // Find a skill to teach from the mentorship record
+                const skill = record.skills?.[0] || Object.entries(pawn.skills)
+                    .sort((a, b) => b[1] - a[1])[0]?.[0]
+
+                if (skill && pawn.getSkill(skill) > apprentice.getSkill(skill)) {
+                    return {
+                        type: 'teach_skill',
+                        skill,
+                        target: apprentice,
+                        priority: 3,
+                        description: `Teach ${skill} to ${apprentice.name}`,
+                        duration: 100
+                    }
+                }
+            }
+        }
+    }
+
+    // Find any teacher for a skill the pawn needs
+    const pawnSkills = Object.entries(pawn.skills).sort((a, b) => a[1] - b[1])
+    for (const [skill, level] of pawnSkills) {
+        if (level >= 5) continue // Already proficient
+
+        const teacher = findTeacher(pawn, skill, range)
+        if (teacher) {
+            return {
+                type: 'apprentice_skill',
+                skill,
+                target: teacher,
+                priority: 2,
+                description: `Learn ${skill} from ${teacher.name}`,
+                duration: 80
+            }
+        }
+    }
+
+    return null
+}

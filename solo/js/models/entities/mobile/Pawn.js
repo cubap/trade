@@ -1334,6 +1334,22 @@ class Pawn extends MobileEntity {
         return PawnLearning.findTeacher(this, skill, range)
     }
 
+    establishMentorship(apprentice, skills = []) {
+        return PawnLearning.establishMentorship(this, apprentice, skills)
+    }
+
+    dissolveMentorship(apprentice) {
+        return PawnLearning.dissolveMentorship(this, apprentice)
+    }
+
+    isMentorOf(apprentice) {
+        return PawnLearning.isMentorOf(this, apprentice)
+    }
+
+    getMentor() {
+        return PawnLearning.getMentor(this, this.world)
+    }
+
     forgetLandmark(nameOrType) {
         this.memoryMap = this.memoryMap.filter(lm => lm.name !== nameOrType && lm.type !== nameOrType)
     }
