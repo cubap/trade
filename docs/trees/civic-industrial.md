@@ -11,29 +11,38 @@ The civic-industrial path emerges when pawns establish stable settlements, organ
 Multiple pawns occupy a shared area and begin to coordinate survival.
 
 ### Proto-Settlement 🔮
-> At least 3–5 pawns maintaining co-location with a shared structure.
+> A social group of 3–5 pawns maintaining co-location around shared shelter.
 
 - **Prerequisites (any one path):**
-  - ≥ 3 pawns with average mutual bond > 10 AND ≥ 1 shelter structure within radius
+  - ≥ 3 pawns with average mutual trust > 0.2 AND ≥ 1 shelter structure within radius
   - OR ≥ 5 pawns staying ≥ 3 cycles in the same location with moderate resource richness
-  - Cross-path: [Tribal › Territory Claim](tribal-military.md#territory-claim) stabilises an area for settlement
+  - Cross-path: [Tribal › Territory Claim](tribal-military.md#territory-claim) stabilizes an area for settlement
 - **Group type:** `proto_settlement`
 - **Enables:**
   - Communal storage threshold check (triggers [Storage Pit](structures.md#storage-pit))
   - [Civic Score](#civic-score) tracking begins
-  - Back-pressures planning, construction, and specialisation
+  - Back-pressures planning, construction, and specialization
+
+**Shelter structure** is a class of structure (bedroll, tent, camp, lean-to) that provides comfort and security for rest. It may be portable. The proto-settlement is the social bond — the shared encampment landmark — not the physical footprint.
+
+**Social dynamics:** Lone pawns are biased to camp near others they do not fear. As the group grows, foreigners become less trusted by default. Trust grows through proximity to shared space with resource richness (nearby food, water, and materials above a threshold that prevents desert settlements but allows later-game trade outposts). When the whole social group gains sufficient mutual trust near a resource-rich shelter, the encampment landmark is canonized — discoverable to new pawns and enabling faster growth of physical and social structures.
+
+**Cross-path interactions:** Other branches require minimal civic levels to interact with proto-settlements. A merchant establishing a trading post needs a stable encampment to anchor to. A tribal group offering to guard a wealthy hamlet needs a recognizable social group to contract with.
 
 ---
 
 ### Communal Storage 🔮
-> A shared inventory accessible to all group members.
+> A shared inventory accessible to all group members, canonizing the encampment landmark.
 
 - **Prerequisites:**
   - Proto-settlement established AND [Structures › Storage Pit](structures.md#storage-pit) built
 - **Enables:**
   - Food and material sharing without direct hand-off
-  - Surplus accumulation enabling specialisation
+  - Surplus accumulation enabling specialization
+  - Encampment landmark becomes discoverable to new pawns (faster group growth)
   - Required for [Hamlet](#hamlet) classification
+
+**Canonization:** When communal storage is created at a proto-settlement's encampment landmark, the landmark becomes discoverable to wandering pawns. This enables faster growth of both physical structures (new pawns can find the settlement) and social structures (new pawns can join the group).
 
 ---
 
