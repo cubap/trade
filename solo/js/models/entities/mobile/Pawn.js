@@ -905,6 +905,7 @@ class Pawn extends MobileEntity {
         this.updateGroupDynamics(tick)
         this.applyTrustDecay()
         this.applyReputationDecay()
+        this.applyProfessionDrift()
         this.expireExpiredContracts()
         this.updateHealthEvents()
 
@@ -1315,6 +1316,35 @@ class Pawn extends MobileEntity {
 
     recommendRole() {
         return PawnSpecialization.recommendRole(this)
+    }
+
+    // Occupation delegation to PawnSpecialization module
+    getCurrentOccupation() {
+        return PawnSpecialization.getCurrentOccupation(this)
+    }
+
+    hasOccupationIdentity(occupation) {
+        return PawnSpecialization.hasOccupationIdentity(this, occupation)
+    }
+
+    getOccupationBonuses() {
+        return PawnSpecialization.getOccupationBonuses(this)
+    }
+
+    getOccupationBonusMultiplier(activity) {
+        return PawnSpecialization.getOccupationBonusMultiplier(this, activity)
+    }
+
+    getOccupationLabel() {
+        return PawnSpecialization.getOccupationLabel(this)
+    }
+
+    getRecommendedOccupation() {
+        return PawnSpecialization.getRecommendedOccupation(this)
+    }
+
+    applyProfessionDrift(driftRate) {
+        return PawnSpecialization.applyProfessionDrift(this, driftRate)
     }
 
     // Learning delegation to PawnLearning module
