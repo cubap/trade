@@ -1,4 +1,5 @@
 import Structure from './Structure.js'
+import * as Inventory from '../../core/Inventory.js'
 
 class ResourceCache extends Structure {
   constructor(id, name, x, y, options = {}) {
@@ -22,7 +23,7 @@ class ResourceCache extends Structure {
     super.update(tick)
     this.processSoakJobs(tick)
 
-    const hasNoItems = this.items.length === 0
+    const hasNoItems = Inventory.totalItems(this) === 0
     const hasNoJobs = this.soakJobs.length === 0
     const idleTooLong = tick - (this.lastInteractionTick || this.spawned || tick) > this.maxIdleTicks
 
@@ -34,17 +35,17 @@ class ResourceCache extends Structure {
   }
 
   totalItems() {
-    return this.items.length
+    return Inventory.totalItems(this)
   }
 
   countByType(type) {
-    return this.items.filter(item => item?.type === type).length
+    return Inventory.countByType(this, type)
   }
 
   addItem(item, tick = 0) {
     if (!item) return false
-    if (this.items.length >= this.capacity) return false
-    this.items.push(item)
+    if (Inventory.totalItems(this) >= this.capacity) return false
+    Inventory.addItem(this, item)
     this.lastInteractionTick = tick
     return true
   }
