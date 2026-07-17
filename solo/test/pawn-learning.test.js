@@ -25,7 +25,14 @@ describe('PawnLearning Module Structure', () => {
             'export function clearApprenticeSlowdown',
             'export function getWorkSpeedMultiplier',
             'export function findTeacher',
-            'export function isAvailableToTeach'
+            'export function isAvailableToTeach',
+            'export function establishMentorship',
+            'export function dissolveMentorship',
+            'export function isMentorOf',
+            'export function getMentor',
+            'export function recordLessonCompleted',
+            'export function recommendLearningMode',
+            'export function selectLearningGoal'
         ]
 
         for (const fn of required) {
@@ -104,7 +111,11 @@ describe('PawnLearning Module Structure', () => {
             'observe(teacher, skill',
             'apprentice(teacher, skill',
             'getWorkSpeedMultiplier()',
-            'findTeacher(skill'
+            'findTeacher(skill',
+            'establishMentorship(apprentice',
+            'dissolveMentorship(apprentice',
+            'isMentorOf(apprentice',
+            'getMentor()'
         ]
 
         for (const wrapper of wrappers) {
@@ -149,6 +160,34 @@ describe('PawnLearning Module Structure', () => {
         assert.ok(
             content.includes('apprenticeBoost'),
             'Workshop.js missing apprentice boost'
+        )
+    })
+
+    it('PawnLearning.js has mentorship management functions', () => {
+        const content = fs.readFileSync(PawnLearningPath, 'utf-8')
+        assert.ok(
+            content.includes('mentorOf'),
+            'Missing mentorOf relationship tracking'
+        )
+        assert.ok(
+            content.includes('lessonsCompleted'),
+            'Missing lesson completion tracking in mentorship'
+        )
+    })
+
+    it('PawnLearning.js has goal selection logic', () => {
+        const content = fs.readFileSync(PawnLearningPath, 'utf-8')
+        assert.ok(
+            content.includes('selectLearningGoal'),
+            'Missing goal selection function'
+        )
+        assert.ok(
+            content.includes('apprentice_skill'),
+            'Missing apprentice_skill goal type in selection'
+        )
+        assert.ok(
+            content.includes('teach_skill'),
+            'Missing teach_skill goal type in selection'
         )
     })
 })
