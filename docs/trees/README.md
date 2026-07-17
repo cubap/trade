@@ -21,6 +21,7 @@ See also **[Occupation and Economy Framework](../architecture/occupation-and-eco
 | [tools.md](tools.md) | Hand tools and carried equipment |
 | [structures.md](structures.md) | Placeable buildings and infrastructure |
 | [knowledge.md](knowledge.md) | Invention, pondering, and cross-domain insight |
+| [cartography.md](cartography.md) | Wayfinding, route markers, and desire paths |
 
 ## Emergent Paths
 

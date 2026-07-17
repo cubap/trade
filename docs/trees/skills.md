@@ -144,7 +144,25 @@ Each entry lists the conditions that cause the skill to **first become available
 - **Enables:**
   - Longer resource memory retention
   - Ability to share memory with other pawns
+  - At `cartography ≥ 2`: unlocks [Waypost](cartography.md#waypost) crafting
+  - At `cartography ≥ 3`: unlocks [Trail Marker](cartography.md#trail-marker) crafting
+  - At `cartography ≥ 5`: unlocks [Map](cartography.md#map) crafting
   - Facilitates [Mercantile › Trade Routes](mercantile-entrepreneurial.md#trade-routes)
+- **See also:** [Cartography and Wayfinding](cartography.md) — full skill progression, crafted artifacts, and desire path system
+
+---
+
+### Wayfinding 🔮
+> Reading and following markers, paths, and terrain features.
+
+- **Prerequisites (any one path):**
+  - `tracking ≥ 3` AND `cartography ≥ 1`
+  - OR pawn has followed a [Waypost](cartography.md#waypost) or [Trail Marker](cartography.md#trail-marker) successfully
+- **Enables:**
+  - Movement bonus when following marked paths
+  - Ability to interpret [Map](cartography.md#map) artifacts
+  - Unlocks [Pathfinder](cartography.md#pathfinder) role in groups
+- **See also:** [Cartography and Wayfinding](cartography.md) — desire path system and route economics
 
 ---
 

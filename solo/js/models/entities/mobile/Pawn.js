@@ -139,6 +139,20 @@ class Pawn extends MobileEntity {
             cohesionDecayFar: 0.03
         }
 
+        // Phase 1: Tactical memory and territory management
+        this.tacticalMemory = [] // { type: 'territory'|'route'|'threat'|'resource', location, description, tick, significance }
+        this.maxTacticalMemory = 30
+        this.patrolRoutes = {} // { routeId: { waypoints: [{x,y}], assignedAt, active } }
+        this.defenseAssignments = {} // { assignmentId: { position: {x,y}, assignedAt, defendingGroup, active } }
+        this.territoryLandmarks = [] // { x, y, type, significance, claimedAt }
+
+        // Phase 1: Hunt coordination
+        this.huntParty = null // { partyId, targetId, targetLocation, members: [], startedAt }
+        this.huntHistory = [] // { target, success, tick, partySize }
+
+        // Phase 1: Security contracts between groups
+        this.securityContracts = {} // { contractId: { withGroup, type: 'patrol'|'defense', terms, active, createdAt } }
+
         // Branch inclination vectors (tribal, civic, mercantile)
         // Range 0-1, sum ~1.0. Bias goal selection toward matching triad behavior.
         this.branchInclination = {
@@ -3362,6 +3376,20 @@ class Pawn extends MobileEntity {
             }
         }
 
+        if (command.type === 'scout') {
+            return {
+                type: 'scout_area',
+                priority: basePriority,
+                description: 'Scout assigned area for group',
+                targetType: 'location',
+                targetLocation: command.targetLocation ?? { x: this.x, y: this.y },
+                radius: command.radius ?? 120,
+                action: 'scout',
+                duration,
+                groupCommand: true
+            }
+        }
+
         if (command.type === 'mark') {
             const target = command.target ?? null
             return {
@@ -3373,6 +3401,35 @@ class Pawn extends MobileEntity {
                 target,
                 targetLocation: command.targetLocation ?? (target ? { x: target.x, y: target.y } : null),
                 action: 'mark',
+                groupCommand: true
+            }
+        }
+
+        if (command.type === 'patrol') {
+            return {
+                type: 'patrol_route',
+                priority: basePriority,
+                description: 'Patrol assigned route for group defense',
+                targetType: 'route',
+                waypoints: command.waypoints ?? [],
+                routeId: command.routeId ?? null,
+                action: 'patrol',
+                duration,
+                groupCommand: true
+            }
+        }
+
+        if (command.type === 'defend') {
+            const target = command.target ?? null
+            return {
+                type: 'defend_position',
+                priority: basePriority,
+                description: 'Defend assigned position for group',
+                targetType: 'location',
+                targetLocation: command.targetLocation ?? (target ? { x: target.x, y: target.y } : { x: this.x, y: this.y }),
+                target,
+                action: 'defend',
+                duration,
                 groupCommand: true
             }
         }
@@ -3495,6 +3552,321 @@ class Pawn extends MobileEntity {
         if (this.shouldPromoteNewLeader()) {
             this.groupState.role = 'leader-candidate'
         }
+
+        // Phase 1: Update tactical memory and territory loops
+        this.updateTacticalMemory(tick)
+
+        // Phase 1: Update patrol routes if assigned
+        if (this.groupState.role === 'member' && Object.keys(this.patrolRoutes).length > 0) {
+            this.updatePatrolRoutes(tick)
+        }
+
+        // Phase 1: Update defense assignments if assigned
+        if (Object.keys(this.defenseAssignments).length > 0) {
+            this.updateDefenseAssignments(tick)
+        }
+
+        // Phase 1: Update hunt party coordination
+        if (this.huntParty) {
+            this.updateHuntParty(tick)
+        }
+    }
+
+    /**
+     * Record tactical memory for territory awareness.
+     * @param {string} type - 'territory'|'route'|'threat'|'resource'
+     * @param {object} location - { x, y }
+     * @param {string} description - Human-readable description
+     * @param {number} significance - 0-1 importance weight
+     */
+    recordTacticalMemory(type, location, description, significance = 0.5) {
+        const tick = this.world?.clock?.currentTick ?? 0
+        this.tacticalMemory.push({ type, location, description, tick, significance })
+
+        if (this.tacticalMemory.length > this.maxTacticalMemory) {
+            // Keep most significant memories
+            this.tacticalMemory.sort((a, b) => b.significance - a.significance)
+            this.tacticalMemory = this.tacticalMemory.slice(0, this.maxTacticalMemory)
+        }
+    }
+
+    /**
+     * Update tactical memory decay and territory awareness.
+     */
+    updateTacticalMemory(tick) {
+        if (tick % 100 !== 0) return
+
+        // Decay old memories
+        this.tacticalMemory = this.tacticalMemory.filter(memory => {
+            const age = tick - memory.tick
+            if (age > 1000) return false // Remove very old memories
+            memory.significance = Math.max(0, memory.significance - 0.01) // Slow decay
+            return memory.significance > 0
+        })
+
+        // Update territory landmarks based on recent memories
+        const territoryMemories = this.tacticalMemory.filter(m => m.type === 'territory')
+        if (territoryMemories.length > 0) {
+            this.updateTerritoryLandmarks(territoryMemories)
+        }
+    }
+
+    /**
+     * Update territory landmarks from tactical memories.
+     */
+    updateTerritoryLandmarks(territoryMemories) {
+        const tick = this.world?.clock?.currentTick ?? 0
+
+        for (const memory of territoryMemories) {
+            const existing = this.territoryLandmarks.find(
+                l => Math.abs(l.x - memory.location.x) < 20 && Math.abs(l.y - memory.location.y) < 20
+            )
+
+            if (existing) {
+                existing.significance = Math.min(1, existing.significance + 0.05)
+            } else if (memory.significance > 0.3) {
+                this.territoryLandmarks.push({
+                    x: memory.location.x,
+                    y: memory.location.y,
+                    type: memory.description,
+                    significance: memory.significance,
+                    claimedAt: tick
+                })
+            }
+        }
+    }
+
+    /**
+     * Get territory memories that influence patrol and defense decisions.
+     */
+    getTerritoryMemories() {
+        return this.tacticalMemory.filter(m => m.type === 'territory' && m.significance > 0.2)
+    }
+
+    /**
+     * Assign a patrol route to a group member.
+     * @param {string} routeId - Unique route identifier
+     * @param {Array} waypoints - Array of { x, y } waypoints
+     * @param {object} issuedByPawn - Pawn issuing the patrol assignment
+     */
+    assignPatrolRoute(routeId, waypoints, issuedByPawn) {
+        if (this.groupState?.role !== 'leader' || !waypoints?.length) return false
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const members = this.getGroupMembers().filter(m => m.id !== this.id)
+
+        for (const member of members) {
+            member.patrolRoutes[routeId] = {
+                waypoints,
+                assignedAt: tick,
+                active: true,
+                assignedBy: this.id
+            }
+        }
+
+        this.recordTacticalMemory('route', waypoints[0], `Patrol route ${routeId} assigned`, 0.6)
+        return true
+    }
+
+    /**
+     * Update patrol route execution for assigned member.
+     */
+    updatePatrolRoutes(tick) {
+        for (const [routeId, route] of Object.entries(this.patrolRoutes)) {
+            if (!route.active) continue
+
+            // Patrol execution is handled by goal system when patrol_route goal is active
+            // This just ensures route data stays current
+            route.active = true
+        }
+    }
+
+    /**
+     * Assign a defense position to a group member.
+     * @param {string} assignmentId - Unique assignment identifier
+     * @param {object} position - { x, y } position to defend
+     * @param {object} issuedByPawn - Pawn issuing the defense assignment
+     */
+    assignDefensePosition(assignmentId, position, issuedByPawn) {
+        if (this.groupState?.role !== 'leader' || !position) return false
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const members = this.getGroupMembers().filter(m => m.id !== this.id)
+
+        for (const member of members) {
+            member.defenseAssignments[assignmentId] = {
+                position,
+                assignedAt: tick,
+                defendingGroup: this.groupState?.id,
+                active: true,
+                assignedBy: this.id
+            }
+        }
+
+        this.recordTacticalMemory('territory', position, `Defense position ${assignmentId} assigned`, 0.7)
+        return true
+    }
+
+    /**
+     * Update defense assignment execution for assigned member.
+     */
+    updateDefenseAssignments(tick) {
+        for (const [assignmentId, assignment] of Object.entries(this.defenseAssignments)) {
+            if (!assignment.active) continue
+
+            // Defense execution is handled by goal system when defend_position goal is active
+            assignment.active = true
+        }
+    }
+
+    /**
+     * Create a coordinated hunt with party members.
+     * @param {object} target - Target entity or { x, y, type }
+     * @param {Array} partyMembers - Array of pawn IDs to include in hunt party
+     */
+    createHuntParty(target, partyMembers = []) {
+        if (this.groupState?.role !== 'leader') return null
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const partyId = `hunt-${this.id}-${tick}`
+        const targetLocation = target ? { x: target.x ?? 0, y: target.y ?? 0 } : { x: this.x, y: this.y }
+
+        const huntParty = {
+            partyId,
+            targetId: target?.id ?? null,
+            targetLocation,
+            target,
+            members: [this.id, ...partyMembers],
+            startedAt: tick,
+            active: true
+        }
+
+        // Assign hunt party to all members
+        for (const memberId of partyMembers) {
+            const member = this.world?.entitiesMap?.get(memberId)
+            if (member && member.subtype === 'pawn') {
+                member.huntParty = { ...huntParty }
+                member.recordTacticalMemory('threat', targetLocation, `Hunt target ${target?.type ?? 'unknown'}`, 0.8)
+            }
+        }
+
+        this.huntParty = huntParty
+        this.recordTacticalMemory('threat', targetLocation, `Leading hunt for ${target?.type ?? 'unknown'}`, 0.9)
+
+        return huntParty
+    }
+
+    /**
+     * Update hunt party coordination during active hunt.
+     */
+    updateHuntParty(tick) {
+        if (!this.huntParty || !this.huntParty.active) return
+
+        // Check if hunt target is still valid
+        if (this.huntParty.targetId) {
+            const target = this.world?.entitiesMap?.get(this.huntParty.targetId)
+            if (!target) {
+                // Target no longer exists, end hunt
+                this.endHuntParty(false)
+                return
+            }
+
+            // Update target location for party coordination
+            this.huntParty.targetLocation = { x: target.x, y: target.y }
+        }
+
+        // Check if hunt duration has expired
+        const huntDuration = tick - this.huntParty.startedAt
+        if (huntDuration > 600) { // 600 tick max hunt duration
+            this.endHuntParty(false)
+        }
+    }
+
+    /**
+     * End hunt party and record results.
+     * @param {boolean} success - Whether the hunt was successful
+     */
+    endHuntParty(success = false) {
+        if (!this.huntParty) return
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const huntTarget = this.huntParty.target
+        const partySize = this.huntParty.members.length
+
+        this.huntHistory.push({
+            target: huntTarget,
+            success,
+            tick,
+            partySize
+        })
+
+        // Notify all party members
+        for (const memberId of this.huntParty.members) {
+            const member = this.world?.entitiesMap?.get(memberId)
+            if (member && member.subtype === 'pawn') {
+                member.huntParty = null
+                member.huntHistory.push({
+                    target: huntTarget,
+                    success,
+                    tick,
+                    partySize
+                })
+
+                if (success) {
+                    member.addThought('Our hunt was successful!', 'social')
+                } else {
+                    member.addThought('Our hunt ended without success.', 'social')
+                }
+            }
+        }
+
+        this.huntParty = null
+    }
+
+    /**
+     * Create a security contract between groups for patrol or defense.
+     * @param {string} contractId - Unique contract identifier
+     * @param {string} withGroup - Group ID to contract with
+     * @param {string} type - 'patrol'|'defense'
+     * @param {object} terms - Contract terms { waypoints, position, duration, compensation }
+     */
+    createSecurityContract(contractId, withGroup, type, terms = {}) {
+        if (this.groupState?.role !== 'leader') return null
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const contract = {
+            contractId,
+            withGroup,
+            type,
+            terms,
+            active: true,
+            createdAt: tick
+        }
+
+        this.securityContracts[contractId] = contract
+        this.recordTacticalMemory(type === 'patrol' ? 'route' : 'territory', terms.waypoints?.[0] ?? terms.position ?? { x: this.x, y: this.y }, `Security contract ${contractId}`, 0.8)
+
+        return contract
+    }
+
+    /**
+     * Get active security contracts.
+     */
+    getActiveSecurityContracts() {
+        return Object.values(this.securityContracts).filter(c => c.active)
+    }
+
+    /**
+     * Terminate a security contract.
+     * @param {string} contractId - Contract to terminate
+     */
+    terminateSecurityContract(contractId) {
+        const contract = this.securityContracts[contractId]
+        if (contract && contract.active) {
+            contract.active = false
+            return true
+        }
+        return false
     }
 
     getPerceivedReputation(targetPawn) {
@@ -4139,6 +4511,23 @@ class Pawn extends MobileEntity {
     }
 
     /**
+     * Serialize Phase 1 state for save/load persistence.
+     * Includes tactical memory, patrol routes, defense assignments, hunt coordination, and security contracts.
+     * @returns {object} Serializable state object
+     */
+    serializePhase1State() {
+        return {
+            tacticalMemory: [...this.tacticalMemory],
+            patrolRoutes: { ...this.patrolRoutes },
+            defenseAssignments: { ...this.defenseAssignments },
+            territoryLandmarks: [...this.territoryLandmarks],
+            huntParty: this.huntParty ? { ...this.huntParty } : null,
+            huntHistory: [...this.huntHistory],
+            securityContracts: { ...this.securityContracts }
+        }
+    }
+
+    /**
      * Load Phase 0 state from a serialized object.
      * @param {object} state - Previously serialized Phase 0 state
      */
@@ -4157,6 +4546,22 @@ class Pawn extends MobileEntity {
         if (state.homeLandmark) {
             this.homeLandmark = { ...state.homeLandmark }
         }
+    }
+
+    /**
+     * Load Phase 1 state from a serialized object.
+     * @param {object} state - Previously serialized Phase 1 state
+     */
+    loadPhase1State(state) {
+        if (!state) return
+
+        if (state.tacticalMemory) this.tacticalMemory = [...state.tacticalMemory]
+        if (state.patrolRoutes) Object.assign(this.patrolRoutes, state.patrolRoutes)
+        if (state.defenseAssignments) Object.assign(this.defenseAssignments, state.defenseAssignments)
+        if (state.territoryLandmarks) this.territoryLandmarks = [...state.territoryLandmarks]
+        if (state.huntParty) this.huntParty = { ...state.huntParty }
+        if (state.huntHistory) this.huntHistory = [...state.huntHistory]
+        if (state.securityContracts) Object.assign(this.securityContracts, state.securityContracts)
     }
 
 }
