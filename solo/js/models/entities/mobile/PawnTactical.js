@@ -82,27 +82,31 @@ export function updateTerritoryLandmarks(pawn) {
  * @param {Pawn} pawn - Leader assigning the route
  * @param {Pawn} member - Member to assign
  * @param {Array} waypoints - Array of {x, y} waypoints
+ * @param {string} [routeId] - Optional explicit route ID
  * @returns {string} Route ID
  */
-export function assignPatrolRoute(pawn, member, waypoints) {
-    const routeId = `route_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    pawn.patrolRoutes[routeId] = {
+export function assignPatrolRoute(pawn, member, waypoints, routeId = null) {
+    const finalRouteId = routeId || `route_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    const routeData = {
         waypoints,
         assignedAt: pawn.world?.clock?.currentTick ?? 0,
         active: true,
-        assignedTo: member.id
+        assignedTo: member?.id ?? pawn.id
     }
 
-    // Notify member
+    pawn.patrolRoutes[finalRouteId] = { ...routeData }
+
+    // Notify member and store route on them as well
     if (member) {
+        member.patrolRoutes[finalRouteId] = { ...routeData, assignedTo: member.id }
         member.receiveGroupCommand({
             type: 'patrol',
             waypoints,
-            routeId
-        })
+            routeId: finalRouteId
+        }, pawn)
     }
 
-    return routeId
+    return finalRouteId
 }
 
 /**
@@ -110,25 +114,29 @@ export function assignPatrolRoute(pawn, member, waypoints) {
  * @param {Pawn} pawn - Leader assigning the position
  * @param {Pawn} member - Member to assign
  * @param {Object} position - {x, y} position to defend
+ * @param {string} [assignmentId] - Optional explicit assignment ID
  * @returns {string} Assignment ID
  */
-export function assignDefensePosition(pawn, member, position) {
-    const assignmentId = `defense_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    pawn.defenseAssignments[assignmentId] = {
+export function assignDefensePosition(pawn, member, position, assignmentId = null) {
+    const finalAssignmentId = assignmentId || `defense_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    const assignmentData = {
         position,
         assignedAt: pawn.world?.clock?.currentTick ?? 0,
         active: true,
-        assignedTo: member.id
+        assignedTo: member?.id ?? pawn.id
     }
 
-    // Notify member
+    pawn.defenseAssignments[finalAssignmentId] = { ...assignmentData }
+
+    // Notify member and store assignment on them as well
     if (member) {
+        member.defenseAssignments[finalAssignmentId] = { ...assignmentData, assignedTo: member.id }
         member.receiveGroupCommand({
             type: 'defend',
             position,
-            assignmentId
-        })
+            assignmentId: finalAssignmentId
+        }, pawn)
     }
 
-    return assignmentId
+    return finalAssignmentId
 }

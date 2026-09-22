@@ -10,10 +10,38 @@
  * No direct pawn commands are issued from here.
  */
 
-// ── Demoted to logging only — no visual toasts or panels ──────────────────────
-
-function showToast({ text, accentColor = '#38bdf8' }) {
+function showToast({ text, accentColor = '#38bdf8', durationMs = 4000 }) {
     console.log(`[feedback] ${text}`)
+
+    if (typeof document === 'undefined' || !document.createElement || !document.body) return
+
+    const el = document.createElement('div')
+    el.textContent = text
+    el.style.cssText = `
+        position: fixed;
+        bottom: 1rem;
+        right: 1rem;
+        background: ${accentColor};
+        color: #0f172a;
+        padding: 0.75rem 1rem;
+        border-radius: 0.5rem;
+        font-family: sans-serif;
+        z-index: 9999;
+        transition: opacity 0.3s ease;
+    `
+
+    document.body.appendChild(el)
+
+    if (typeof setTimeout !== 'undefined') {
+        setTimeout(() => {
+            el.style.opacity = '0'
+            if (typeof requestAnimationFrame !== 'undefined') {
+                requestAnimationFrame(() => el.remove())
+            } else {
+                el.remove()
+            }
+        }, durationMs)
+    }
 }
 
 function showCapabilityReflection(payload) {
@@ -24,6 +52,42 @@ function showCapabilityReflection(payload) {
         minimap: modules.minimap,
         controls: Array.isArray(modules.interactionControls) ? modules.interactionControls : []
     })
+
+    if (typeof document === 'undefined' || !document.createElement || !document.body) return
+
+    const camera = formatModuleValue(modules.validCamera)
+    const minimap = formatModuleValue(modules.minimap)
+    const controls = Array.isArray(modules.interactionControls)
+        ? modules.interactionControls.map(formatModuleValue).join(', ')
+        : formatModuleValue(modules.interactionControls)
+
+    const el = document.createElement('div')
+    el.textContent = `Phase ${phase.replace(/_/g, ' ')}: camera ${camera}, minimap ${minimap}, controls ${controls}`
+    el.style.cssText = `
+        position: fixed;
+        top: 1rem;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1e293b;
+        color: #f8fafc;
+        padding: 1rem 1.5rem;
+        border-radius: 0.5rem;
+        font-family: sans-serif;
+        z-index: 9999;
+    `
+
+    document.body.appendChild(el)
+
+    if (typeof setTimeout !== 'undefined') {
+        setTimeout(() => {
+            el.style.opacity = '0'
+            if (typeof requestAnimationFrame !== 'undefined') {
+                requestAnimationFrame(() => el.remove())
+            } else {
+                el.remove()
+            }
+        }, 5000)
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
