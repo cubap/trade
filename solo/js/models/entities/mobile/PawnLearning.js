@@ -15,6 +15,18 @@
  */
 
 /**
+ * Return an iterable of world entities, supporting both Map-backed and array-backed worlds.
+ * @param {object} world
+ * @returns {Iterable<object>}
+ */
+function getWorldEntities(world) {
+    if (!world) return []
+    if (world.entitiesMap) return Array.from(world.entitiesMap.values())
+    if (Array.isArray(world.entities)) return world.entities
+    return []
+}
+
+/**
  * Calculate the base learning rate for a skill transfer.
  * @param {Pawn} teacher - The teaching pawn
  * @param {Pawn} student - The learning pawn
@@ -71,7 +83,7 @@ export function getStructureBonus(teacher, student, mode) {
 
     // Find nearby structure by scanning world entities
     let nearby = null
-    for (const entity of pawn.world.entities) {
+    for (const entity of getWorldEntities(pawn.world)) {
         if (entity.subtype !== 'structure') continue
         const dist = Math.sqrt((pawn.x - entity.x) ** 2 + (pawn.y - entity.y) ** 2)
         if (dist <= 30) {
@@ -215,7 +227,7 @@ export function findTeacher(student, skill, range = 50) {
     let best = null
     let bestLevel = 0
 
-    for (const entity of student.world.entities) {
+    for (const entity of getWorldEntities(student.world)) {
         if (entity.subtype !== 'pawn' || entity.id === student.id) continue
 
         const dist = Math.sqrt((student.x - entity.x) ** 2 + (student.y - entity.y) ** 2)
@@ -402,7 +414,7 @@ export function selectLearningGoal(pawn, range = 50) {
 
     // If pawn has discovered solutions, teach them to nearby pawns
     if (pawn.discoveredSolutions?.size > 0) {
-        for (const entity of pawn.world.entities) {
+        for (const entity of getWorldEntities(pawn.world)) {
             if (entity.subtype !== 'pawn' || entity.id === pawn.id) continue
 
             const dist = Math.sqrt((pawn.x - entity.x) ** 2 + (pawn.y - entity.y) ** 2)

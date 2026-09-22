@@ -14,12 +14,13 @@ const server = createServer(app)
 // Middleware
 app.use(cors())
 app.use(express.json())
-app.use(express.static('solo'))
 
-// Basic route
+// Basic route (declared before static so '/' isn't shadowed by solo/index.html)
 app.get('/', (req, res) => {
   res.send('Server is running')
 })
+
+app.use(express.static('solo'))
 
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end()
@@ -44,7 +45,7 @@ const startServer = async () => {
     server.once('error', reject)
     server.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`)
-      console.log(`Solo game: http://localhost:${PORT}/solo/index.html`)
+      console.log(`Solo game: http://localhost:${PORT}/index.html`)
       resolve()
     })
   })

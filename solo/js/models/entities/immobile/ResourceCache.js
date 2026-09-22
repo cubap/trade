@@ -1,5 +1,5 @@
 import Structure from './Structure.js'
-import * as Inventory from '../../core/Inventory.js'
+import * as Inventory from '../../../core/Inventory.js'
 
 class ResourceCache extends Structure {
   constructor(id, name, x, y, options = {}) {

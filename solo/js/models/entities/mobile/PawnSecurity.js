@@ -5,22 +5,38 @@
 /**
  * Create a security contract between groups.
  * @param {Pawn} pawn - Initiating pawn (leader)
- * @param {string} withGroup - Group ID to contract with
- * @param {string} type - Contract type: 'patrol', 'defense'
- * @param {Object} terms - Contract terms
- * @returns {string} Contract ID
+ * @param {string} contractIdOrWithGroup - Explicit contract ID or group ID to contract with
+ * @param {string} withGroupOrType - Group ID to contract with or contract type
+ * @param {string} typeOrTerms - Contract type or contract terms
+ * @param {Object} termsOrNone - Contract terms when explicit contract ID is provided
+ * @returns {Object} Contract object
  */
-export function createSecurityContract(pawn, withGroup, type, terms = {}) {
-    const contractId = `contract_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
-    pawn.securityContracts[contractId] = {
+export function createSecurityContract(pawn, contractIdOrWithGroup, withGroupOrType, typeOrTerms, termsOrNone = {}) {
+    let contractId, withGroup, type, terms
+
+    if (typeof contractIdOrWithGroup === 'string' && typeof withGroupOrType === 'string' && typeof typeOrTerms === 'string') {
+        contractId = contractIdOrWithGroup
+        withGroup = withGroupOrType
+        type = typeOrTerms
+        terms = termsOrNone
+    } else {
+        withGroup = contractIdOrWithGroup
+        type = withGroupOrType
+        terms = typeOrTerms ?? {}
+        contractId = `contract_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+    }
+
+    const contract = {
+        contractId,
         withGroup,
         type,
         terms,
         active: true,
         createdAt: pawn.world?.clock?.currentTick ?? 0
     }
+    pawn.securityContracts[contractId] = contract
 
-    return contractId
+    return contract
 }
 
 /**

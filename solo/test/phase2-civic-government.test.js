@@ -46,12 +46,12 @@ describe('Phase 2: File Structure Verification', () => {
 
     it('Structure.js imports Degradation module', () => {
         const structureContent = fs.readFileSync('solo/js/models/entities/immobile/Structure.js', 'utf8')
-        assert.ok(structureContent.includes("import * as Degradation from '../../core/Degradation.js'"))
+        assert.ok(structureContent.includes("import * as Degradation from '../../../core/Degradation.js'"))
     })
 
     it('ResourceCache.js imports Inventory module', () => {
         const cacheContent = fs.readFileSync('solo/js/models/entities/immobile/ResourceCache.js', 'utf8')
-        assert.ok(cacheContent.includes("import * as Inventory from '../../core/Inventory.js'"))
+        assert.ok(cacheContent.includes("import * as Inventory from '../../../core/Inventory.js'"))
     })
 
     it('PawnCivic.js exports all required functions', () => {

@@ -6,7 +6,7 @@
  * for price tracking and PawnInventory for item management.
  */
 
-import { recordTrade } from '../core/PriceRegistry.js'
+import { recordTrade } from '../../../core/PriceRegistry.js'
 
 /**
  * Count items of a specific type in pawn's inventory.
@@ -166,7 +166,6 @@ export function recordTradeObservation(pawn, offer, registry) {
     const tick = pawn.world?.clock?.currentTick ?? 0
 
     // Record from both perspectives
-    const { recordTrade } = require('../core/PriceRegistry.js')
     recordTrade(registry, offer.offerType, location, offer.ratio, tick)
     recordTrade(registry, offer.wantType, location, 1 / offer.ratio, tick)
 }
@@ -204,7 +203,7 @@ export function findTradePartner(pawn, range = 50) {
     if (surplus.length === 0) return null
 
     const nearby = pawn.getNearbyEntities(range).filter(e => e.subtype === 'pawn')
-countItem(partner, 
+
     for (const partner of nearby) {
         // Check if partner has something we want
         for (const { type } of surplus) {

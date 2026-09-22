@@ -18,44 +18,37 @@ export function sendGroupCommand(pawn, member, command) {
  * Receive a group command from a leader.
  * @param {Pawn} pawn - Member receiving the command
  * @param {Object} command - Command object with type and parameters
+ * @param {Pawn} issuedByPawn - Leader issuing the command
+ * @returns {boolean} True if the command was accepted
  */
-export function receiveGroupCommand(pawn, command) {
-    if (!command?.type) return
+export function receiveGroupCommand(pawn, command, issuedByPawn) {
+    if (!command?.type) return false
+
+    // Validate command issuer
+    if (!issuedByPawn?.id) return false
+    if (issuedByPawn.id === pawn.id) return false
+
+    // Must be in the same group with the issuer as leader
+    if (!pawn.groupState?.id || pawn.groupState.id !== issuedByPawn.groupState?.id) return false
+    if (pawn.groupState.leaderId !== issuedByPawn.id) return false
+
+    // Trust check
+    const minTrust = command.minTrust ?? 0.05
+    const trust = pawn.getGroupTrustIn?.(issuedByPawn) ?? 0
+    if (trust < minTrust) return false
 
     // Log received command
     pawn.addThought(`Received group command: ${command.type}`, 'social')
 
-    // Execute command based on type
-    switch (command.type) {
-        case 'patrol':
-            // Set patrol waypoints
-            if (command.waypoints) {
-                pawn.currentPatrolRoute = command.waypoints
-            }
-            break
-        case 'defend':
-            // Set defense position
-            if (command.position) {
-                pawn.currentDefensePosition = command.position
-            }
-            break
-        case 'hunt':
-            // Join hunt party
-            if (command.partyId && command.targetLocation) {
-                pawn.currentHuntParty = {
-                    partyId: command.partyId,
-                    targetLocation: command.targetLocation
-                }
-            }
-            break
-        case 'hunt_end':
-            // Hunt ended
-            pawn.currentHuntParty = null
-            break
-        default:
-            // Unknown command type
-            break
+    // Queue the command for later goal conversion
+    const queuedCommand = {
+        ...command,
+        issuedBy: issuedByPawn.id,
+        issuedAt: command.issuedAt ?? Date.now()
     }
+    pawn.groupCommandQueue.push(queuedCommand)
+
+    return true
 }
 
 /**

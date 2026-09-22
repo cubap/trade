@@ -417,7 +417,7 @@ class PawnGoals {
 
         const goal = {
             type: 'negotiate_group',
-            priority: 2,
+            priority: 3,
             description: pendingNegotiation?.pendingThird
                 ? 'Bring the civic group together'
                 : 'Negotiate a civic group',

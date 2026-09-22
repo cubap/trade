@@ -2400,6 +2400,10 @@ class Pawn extends MobileEntity {
         return PawnSocial.notifyCacheSharing(this, cacheBuilderId)
     }
 
+    checkCivicGroupFormationTrigger() {
+        return PawnSocial.checkCivicGroupFormationTrigger(this)
+    }
+
     // Tactical methods (delegated to PawnTactical module)
     recordTacticalMemory(type, location, description, significance = 0.5) {
         return PawnTactical.recordTacticalMemory(this, type, location, description, significance)
@@ -2417,17 +2421,93 @@ class Pawn extends MobileEntity {
         return PawnTactical.updateTerritoryLandmarks(this)
     }
 
-    assignPatrolRoute(member, waypoints) {
-        return PawnTactical.assignPatrolRoute(this, member, waypoints)
+    assignPatrolRoute(memberOrRouteId, waypointsOrNone, memberOrNone) {
+        if (this.groupState?.role !== 'leader') return false
+
+        let routeId = null
+        let waypoints
+        let member
+
+        if (typeof memberOrRouteId === 'string') {
+            routeId = memberOrRouteId
+            waypoints = waypointsOrNone
+            member = memberOrNone
+        } else {
+            member = memberOrRouteId
+            waypoints = waypointsOrNone
+        }
+
+        // If member is the leader or omitted, assign to all group members
+        const targets = []
+        if (member && member.id !== this.id) {
+            targets.push(member)
+        } else {
+            for (const m of this.getGroupMembers()) {
+                if (m.id !== this.id) targets.push(m)
+            }
+        }
+
+        // Ensure the leader also has the route recorded
+        const finalRouteId = routeId || `route_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+        this.patrolRoutes[finalRouteId] = {
+            waypoints,
+            assignedAt: this.world?.clock?.currentTick ?? 0,
+            active: true,
+            assignedTo: this.id
+        }
+
+        for (const target of targets) {
+            PawnTactical.assignPatrolRoute(this, target, waypoints, finalRouteId)
+        }
+
+        return true
     }
 
-    assignDefensePosition(member, position) {
-        return PawnTactical.assignDefensePosition(this, member, position)
+    assignDefensePosition(memberOrAssignmentId, positionOrNone, memberOrNone) {
+        if (this.groupState?.role !== 'leader') return false
+
+        let assignmentId = null
+        let position
+        let member
+
+        if (typeof memberOrAssignmentId === 'string') {
+            assignmentId = memberOrAssignmentId
+            position = positionOrNone
+            member = memberOrNone
+        } else {
+            member = memberOrAssignmentId
+            position = positionOrNone
+        }
+
+        // If member is the leader or omitted, assign to all group members
+        const targets = []
+        if (member && member.id !== this.id) {
+            targets.push(member)
+        } else {
+            for (const m of this.getGroupMembers()) {
+                if (m.id !== this.id) targets.push(m)
+            }
+        }
+
+        // Ensure the leader also has the assignment recorded
+        const finalAssignmentId = assignmentId || `defense_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+        this.defenseAssignments[finalAssignmentId] = {
+            position,
+            assignedAt: this.world?.clock?.currentTick ?? 0,
+            active: true,
+            assignedTo: this.id
+        }
+
+        for (const target of targets) {
+            PawnTactical.assignDefensePosition(this, target, position, finalAssignmentId)
+        }
+
+        return true
     }
 
     // Security methods (delegated to PawnSecurity module)
-    createSecurityContract(withGroup, type, terms = {}) {
-        return PawnSecurity.createSecurityContract(this, withGroup, type, terms)
+    createSecurityContract(contractIdOrWithGroup, withGroupOrType, typeOrTerms, termsOrNone = {}) {
+        return PawnSecurity.createSecurityContract(this, contractIdOrWithGroup, withGroupOrType, typeOrTerms, termsOrNone)
     }
 
     getActiveSecurityContracts() {
@@ -3843,13 +3923,19 @@ class Pawn extends MobileEntity {
         const tick = this.world?.clock?.currentTick ?? 0
         const members = this.getGroupMembers().filter(m => m.id !== this.id)
 
+        const routeData = {
+            waypoints,
+            assignedAt: tick,
+            active: true,
+            assignedBy: this.id
+        }
+
+        // Store on leader as well as members for serialization and command routing
+        this.patrolRoutes[routeId] = { ...routeData }
+
         for (const member of members) {
-            member.patrolRoutes[routeId] = {
-                waypoints,
-                assignedAt: tick,
-                active: true,
-                assignedBy: this.id
-            }
+            member.patrolRoutes[routeId] = { ...routeData }
+            member.receiveGroupCommand({ type: 'patrol', waypoints, routeId }, this)
         }
 
         this.recordTacticalMemory('route', waypoints[0], `Patrol route ${routeId} assigned`, 0.6)
@@ -3881,14 +3967,20 @@ class Pawn extends MobileEntity {
         const tick = this.world?.clock?.currentTick ?? 0
         const members = this.getGroupMembers().filter(m => m.id !== this.id)
 
+        const assignmentData = {
+            position,
+            assignedAt: tick,
+            defendingGroup: this.groupState?.id,
+            active: true,
+            assignedBy: this.id
+        }
+
+        // Store on leader as well as members for serialization and command routing
+        this.defenseAssignments[assignmentId] = { ...assignmentData }
+
         for (const member of members) {
-            member.defenseAssignments[assignmentId] = {
-                position,
-                assignedAt: tick,
-                defendingGroup: this.groupState?.id,
-                active: true,
-                assignedBy: this.id
-            }
+            member.defenseAssignments[assignmentId] = { ...assignmentData }
+            member.receiveGroupCommand({ type: 'defend', position, assignmentId }, this)
         }
 
         this.recordTacticalMemory('territory', position, `Defense position ${assignmentId} assigned`, 0.7)
@@ -3952,7 +4044,9 @@ class Pawn extends MobileEntity {
 
         // Check if hunt target is still valid
         if (this.huntParty.targetId) {
-            const target = this.world?.entitiesMap?.get(this.huntParty.targetId)
+            // Prefer live entity lookup, but fall back to the stored target reference
+            // so hunts can track targets that are not in the world entitiesMap.
+            const target = this.world?.entitiesMap?.get(this.huntParty.targetId) ?? this.huntParty.target
             if (!target) {
                 // Target no longer exists, end hunt
                 this.endHuntParty(false)
@@ -4352,7 +4446,7 @@ class Pawn extends MobileEntity {
     }
 
     createResourceCache({ x = this.x, y = this.y, purpose = 'general', name = null } = {}) {
-        if (!this.world) return null
+        if (!this.world || typeof this.world.addEntity !== 'function') return null
         const tick = this.world.clock?.currentTick ?? 0
         const id = `cache_${this.id}_${tick}_${Math.random().toString(36).slice(2, 7)}`
         const cache = new ResourceCache(id, name ?? `${this.name} Cache`, x, y, {

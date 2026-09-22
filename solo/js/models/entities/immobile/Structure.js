@@ -1,5 +1,5 @@
 import ImmobileEntity from './ImmobileEntity.js'
-import * as Degradation from '../../core/Degradation.js'
+import * as Degradation from '../../../core/Degradation.js'
 
 class Structure extends ImmobileEntity {
     constructor(id, name, x, y) {
