@@ -145,7 +145,7 @@ describe('Phase 3: Mercantile/Trade Module Structure', () => {
     it('PawnMercantile.js imports PriceRegistry', () => {
         const content = fs.readFileSync(PawnMercantilePath, 'utf-8')
         assert.ok(
-            content.includes("import { recordTrade } from '../core/PriceRegistry.js'"),
+            content.includes("import { recordTrade } from '../../../core/PriceRegistry.js'"),
             'PawnMercantile.js does not import PriceRegistry'
         )
     })
