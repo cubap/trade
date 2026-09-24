@@ -131,6 +131,8 @@ export default function createCameraController(renderer) {
         },
 
         _updateCamera(progress) {
+            // Opening cinematic owns the camera until it finishes (#74)
+            if (renderer._intro?.active && renderer._updateIntroCamera()) return
             if (renderer.followMode && renderer.followedEntity) {
                 renderer.viewX = renderer.followedEntity.x
                 renderer.viewY = renderer.followedEntity.y

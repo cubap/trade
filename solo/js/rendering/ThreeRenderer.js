@@ -5,6 +5,7 @@ import createModelLoaders from './ModelLoader.js'
 import createMaterialFactory from './MaterialFactory.js'
 import createModelBuilders from './ModelBuilders.js'
 import createCameraController from './CameraController3D.js'
+import { createIntroCinematic } from './IntroCinematic.js'
 import createEntityPose from './EntityPose.js'
 import createTerrainGenerator from '../core/TerrainGenerator.js'
 
@@ -179,6 +180,7 @@ class ThreeRenderer {
         Object.assign(this, createMaterialFactory(this))
         Object.assign(this, createModelBuilders(this))
         Object.assign(this, createCameraController(this))
+        Object.assign(this, createIntroCinematic())
         Object.assign(this, createEntityPose(this))
 
         // Head mesh (first-person) — needs _centerModelToOrigin from ModelBuilders
