@@ -18,6 +18,7 @@ import * as PawnLearning from './PawnLearning.js'
 import * as PawnInventory from './PawnInventory.js'
 import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
+import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -756,13 +757,50 @@ class Pawn extends MobileEntity {
         // Observation now requires interaction/training, not mere proximity
     }
 
+    /**
+     * Terrain-aware line of sight (#80). Built once per chunk manager and
+     * memoised per tick: a pawn probes dozens of resources each observation and
+     * the answer only changes when the world does.
+     */
+    lineOfSight() {
+        if (!this.chunkManager) return null
+        if (!this._los || this._los.chunkManager !== this.chunkManager) {
+            const context = createTerrainLosContext(this.chunkManager)
+            this._los = {
+                chunkManager: this.chunkManager,
+                context,
+                cache: context ? createLineOfSightCache(context) : null
+            }
+        }
+        return this._los
+    }
+
+    /**
+     * Can this pawn see (x, y) from where it stands? Fails open when the world
+     * has no terrain data, so a bare World never blinds the simulation.
+     */
+    canSee(x, y, options = {}) {
+        const los = this.lineOfSight()
+        if (!los || !los.cache) return true
+        los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
+        return los.cache.check({ x: this.x, y: this.y }, { x, y }, options).visible
+    }
+
     observeNearbyResources(radius = 50) {
         // Remember resources in perception range
         if (!this.chunkManager) return
         const pawnChunkX = Math.floor(this.x / this.chunkManager.chunkSize)
         const pawnChunkY = Math.floor(this.y / this.chunkManager.chunkSize)
-        
+
+        const los = this.lineOfSight()
+        if (los?.cache) los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
+        const observer = { x: this.x, y: this.y }
+
         let observed = 0
+        let blocked = 0
+        let lastBlock = null
+        let tightestRange = null
+
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
                 const chunk = this.chunkManager.getChunk(pawnChunkX + dx, pawnChunkY + dy)
@@ -772,6 +810,18 @@ class Pawn extends MobileEntity {
                         // Check for harvestable tag OR gather method
                         const isHarvestable = this.hasTag(entity, 'harvestable') || typeof entity.gather === 'function'
                         if (dist <= radius && isHarvestable) {
+                            if (entity === this) continue
+                            const sight = los?.cache
+                                ? los.cache.check(observer, { x: entity.x, y: entity.y }, { baseRange: radius })
+                                : { visible: true }
+                            if (Number.isFinite(sight.rangeUsed) && (tightestRange === null || sight.rangeUsed < tightestRange)) {
+                                tightestRange = sight.rangeUsed
+                            }
+                            if (!sight.visible) {
+                                blocked++
+                                lastBlock = sight
+                                continue
+                            }
                             this.rememberResource(entity)
                             observed++
                         }
@@ -779,10 +829,26 @@ class Pawn extends MobileEntity {
                 }
             }
         }
-        
+
+        // Exposed for the UI: what this pawn's vision actually reached, and how
+        // much of the neighbourhood was hidden rather than merely absent.
+        this.vision = {
+            tick: this.world?.clock?.currentTick ?? 0,
+            baseRange: radius,
+            rangeUsed: tightestRange ?? radius,
+            observed,
+            blocked
+        }
+
         if (observed > 0 && Math.random() < 0.1) {
             // Occasional logging (10% chance to avoid spam)
             console.log(`${this.name} observed ${observed} harvestable resources`)
+        }
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        if (blocked > 0 && lastBlock && tick - (this._lastVisionThoughtTick ?? -Infinity) > 240) {
+            this._lastVisionThoughtTick = tick
+            this.addThought?.(`I can't make out everything from here — ${describeBlocker(lastBlock)}.`, 'visibility')
         }
     }
 
