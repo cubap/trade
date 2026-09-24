@@ -55,10 +55,9 @@ npm run start:client
 ### Testing
 Tests use Node.js built-in test runner (not Jest):
 ```bash
-node --test test/*.test.js
+npm test                                    # test/ + solo/test/
+node --test test/vendor-three.test.js       # a single file
 ```
-
-Note: `npm test` is currently configured to exit with error. Use the command above to run tests.
 
 ## Project Structure
 
@@ -207,7 +206,7 @@ test('GET / should return server status', async () => {
 
 ### Running Tests
 ```bash
-node --test test/*.test.js
+npm test
 ```
 
 ## Important Behavioral Notes
