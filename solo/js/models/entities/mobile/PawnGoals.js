@@ -1,7 +1,21 @@
 import { decomposeGoal, isGoalReachable } from './GoalPlanner.js'
+import {
+    PLANNING_MIN_FOR_ROUTES,
+    createMovementPlan,
+    currentWaypoint,
+    advanceWaypoint,
+    planComplete,
+    replanIfNeeded
+} from './MovementPlan.js'
 import Structure from '../immobile/Structure.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnLearning from './PawnLearning.js'
+
+// Goal commitment tuning (#82): routine goals become harder to preempt the
+// longer the pawn has invested in them. Needs priority ranges 1-4 (4 = critical).
+const COMMITMENT_STEP_TICKS = 60 // invested ticks per +1 preemption cost
+const COMMITMENT_MAX_COST = 1 // cost cap; critical needs (p4) can always preempt
+const GOAL_SWITCH_LOG_CAP = 12
 
 class PawnGoals {
     constructor(pawn) {
@@ -10,6 +24,68 @@ class PawnGoals {
         this.goalQueue = []
         this.completedGoals = []
         this.deferredGoals = [] // Goals on hold due to missing prerequisites
+        this.goalSwitchLog = [] // recent abandon/preempt events for debugging the UI
+    }
+
+    currentTick() {
+        return this.pawn.world?.clock?.currentTick ?? 0
+    }
+
+    /**
+     * Ticks the pawn has already invested in a goal (0 when unknown).
+     */
+    getGoalInvestment(goal) {
+        if (!goal || goal.startedAtTick == null) return 0
+        return Math.max(0, this.currentTick() - goal.startedAtTick)
+    }
+
+    /**
+     * Preemption cost for the current goal: 0 for fresh/emergency/command goals,
+     * scaling with invested time for routine committed goals.
+     */
+    getCommitmentCost(goal = this.currentGoal) {
+        if (!goal) return 0
+        if (goal.groupCommand) return 0
+        if (goal.preemptible === true) return 0
+        const invested = this.getGoalInvestment(goal)
+        let cost = Math.min(COMMITMENT_MAX_COST, Math.floor(invested / COMMITMENT_STEP_TICKS))
+        // #81: a pawn mid-route has made a plan; plans are harder to abandon.
+        if (this.pawn.movementPlan && this.pawn.movementPlan.goal === goal) cost += 1
+        return cost
+    }
+
+    logGoalSwitch(fromGoal, toGoal, reason) {
+        this.goalSwitchLog.push({
+            from: fromGoal?.type ?? null,
+            fromDescription: fromGoal?.description ?? null,
+            to: toGoal?.type ?? null,
+            reason,
+            investedTicks: this.getGoalInvestment(fromGoal),
+            atTick: this.currentTick()
+        })
+        if (this.goalSwitchLog.length > GOAL_SWITCH_LOG_CAP) {
+            this.goalSwitchLog.shift()
+        }
+    }
+
+    /**
+     * Debug view of commitment state, used by the quest panel and tests.
+     */
+    getGoalCommitmentDebug() {
+        const goal = this.currentGoal
+        if (!goal) return { active: false }
+        const invested = this.getGoalInvestment(goal)
+        return {
+            active: true,
+            type: goal.type,
+            description: goal.description,
+            priority: goal.priority ?? 1,
+            preemptible: goal.preemptible !== false,
+            investedTicks: invested,
+            commitmentCost: this.getCommitmentCost(),
+            hasMovementPlan: !!(this.pawn.movementPlan && this.pawn.movementPlan.goal === goal),
+            recentSwitches: this.goalSwitchLog.slice(-5)
+        }
     }
     
     evaluateAndSetGoals() {
@@ -21,6 +97,7 @@ class PawnGoals {
             const emergencyGoals = this.generateGoalsForNeed(topNeed.need, Math.max(topNeed.priority ?? 1, 3))
             if (emergencyGoals.length > 0) {
                 if (this.currentGoal) {
+                    this.logGoalSwitch(this.currentGoal, emergencyGoals[0], `preempted_for_${topNeed.need}`)
                     this.deferredGoals.push({
                         ...this.currentGoal,
                         deferredReason: `preempted_for_${topNeed.need}`,
@@ -160,7 +237,6 @@ class PawnGoals {
         if (!this.currentGoal || !topNeed) return false
         const emergencyNeeds = new Set(['hunger', 'thirst', 'energy'])
         if (!emergencyNeeds.has(topNeed.need)) return false
-        if ((topNeed.priority ?? 0) < 3) return false
 
         const survivalGoalTypes = new Set([
             'find_food',
@@ -173,7 +249,12 @@ class PawnGoals {
 
         if (survivalGoalTypes.has(this.currentGoal.type)) return false
         if (this.currentGoal.groupCommand) return false
-        return true
+
+        // Base threshold is priority 3 (urgent); committed goals raise it so only
+        // critical (4) needs interrupt goals the pawn has worked on for a while.
+        // Capped at 4: starvation always wins over someone else's schedule.
+        const requiredPriority = Math.min(4, 3 + this.getCommitmentCost())
+        return (topNeed.priority ?? 0) >= requiredPriority
     }
     
     generateGoalsForNeed(need, priority) {
@@ -467,6 +548,7 @@ class PawnGoals {
         
         if (!reachability.reachable) {
             console.log(`${this.pawn.name} deferring goal "${goal.description}": ${reachability.reason}`)
+            this.logGoalSwitch(goal, null, `deferred:${reachability.reason}`)
             
             // Handle unreachable goals
             if (reachability.needsExploration) {
@@ -515,6 +597,13 @@ class PawnGoals {
     
     startGoal(goal) {
         console.log(`${this.pawn.name} starting goal: ${goal.description}`)
+        this.pawn.movementPlan = null // routes belong to the goal that made them
+        if (goal.startedAtTick == null) goal.startedAtTick = this.currentTick()
+        // High-priority and command goals stay freely preemptible; routine goals
+        // earn commitment (see getCommitmentCost / #82).
+        if (goal.preemptible == null) {
+            goal.preemptible = (goal.priority ?? 1) >= 3 || !!goal.groupCommand
+        }
         this.pawn.behaviorState = this.getBehaviorForGoal(goal)
         
         // Set target based on goal
@@ -608,9 +697,56 @@ class PawnGoals {
         // Pick a random location to explore
         const angle = Math.random() * Math.PI * 2
         const distance = 100 + Math.random() * 200
-        
-        this.pawn.nextTargetX = this.pawn.x + Math.cos(angle) * distance
-        this.pawn.nextTargetY = this.pawn.y + Math.sin(angle) * distance
+        const destX = this.pawn.x + Math.cos(angle) * distance
+        const destY = this.pawn.y + Math.sin(angle) * distance
+
+        // #81: developed planners convert wandering into waypoint routes.
+        const planning = this.pawn.getSkill ? this.pawn.getSkill('planning') : 0
+        if (planning >= PLANNING_MIN_FOR_ROUTES) {
+            const plan = createMovementPlan(this.pawn, destX, destY, this.currentGoal, this.currentTick())
+            this.pawn.movementPlan = plan
+            const wp = currentWaypoint(plan)
+            this.pawn.nextTargetX = wp.x
+            this.pawn.nextTargetY = wp.y
+            return
+        }
+
+        this.pawn.nextTargetX = destX
+        this.pawn.nextTargetY = destY
+    }
+
+    /**
+     * #81: called when the pawn reaches its current movement target. With an
+     * active plan it advances to the next waypoint (or completes the route);
+     * otherwise it falls back to picking a fresh exploration target.
+     */
+    advanceExplorationTarget() {
+        const plan = this.pawn.movementPlan
+        if (!plan || (this.currentGoal && plan.goal !== this.currentGoal)) {
+            this.pawn.movementPlan = null
+            this.selectExplorationTarget()
+            return
+        }
+
+        if (advanceWaypoint(plan, this.pawn.x, this.pawn.y)) {
+            const wp = currentWaypoint(plan)
+            this.pawn.nextTargetX = wp.x
+            this.pawn.nextTargetY = wp.y
+            return
+        }
+
+        if (!planComplete(plan, this.pawn.x, this.pawn.y)) {
+            // Last leg done: head for the destination itself.
+            this.pawn.nextTargetX = plan.destination.x
+            this.pawn.nextTargetY = plan.destination.y
+            return
+        }
+
+        // Route finished: reward planning, then start the next outing.
+        this.pawn.useSkill?.('planning', 0.12)
+        this.pawn.setRecentAction?.(`Completed a planned route (${plan.waypoints.length + 1} legs)`)
+        this.pawn.movementPlan = null
+        this.selectExplorationTarget()
     }
     
     updateGoalProgress() {
@@ -738,6 +874,8 @@ class PawnGoals {
         // Store completed goal
         this.completedGoals.push({
             ...goal,
+            endReason: 'completed',
+            investedTicks: this.getGoalInvestment(goal),
             completedAt: this.pawn.world.clock.currentTick
         })
         
@@ -1487,6 +1625,13 @@ class PawnGoals {
                 if (!this.pawn.nextTargetX || !this.pawn.nextTargetY) {
                     this.selectExplorationTarget()
                 }
+
+                // #81: periodic en-route re-evaluation, interval scales with planning.
+                if (replanIfNeeded(this.pawn.movementPlan, this.pawn, this.currentTick())) {
+                    const wp = currentWaypoint(this.pawn.movementPlan)
+                    this.pawn.nextTargetX = wp.x
+                    this.pawn.nextTargetY = wp.y
+                }
                 
                 // Check if we're close to exploration target
                 const dx = this.pawn.x - this.pawn.nextTargetX
@@ -1494,8 +1639,8 @@ class PawnGoals {
                 const dist = Math.sqrt(dx * dx + dy * dy)
                 
                 if (dist < 20) {
-                    // Pick new exploration target
-                    this.selectExplorationTarget()
+                    // Advance along the plan or pick a new exploration target
+                    this.advanceExplorationTarget()
                 }
             }
         }
@@ -1590,8 +1735,8 @@ class PawnGoals {
                 const dist = Math.sqrt(dx * dx + dy * dy)
                 
                 if (dist < 20) {
-                    // Reached exploration point, pick new target
-                    this.selectExplorationTarget()
+                    // Reached exploration point, advance plan or pick new target
+                    this.advanceExplorationTarget()
                 }
             }
         }

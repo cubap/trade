@@ -427,6 +427,14 @@ async function spawnPlayerPawnAndStart(name, biases, skipSlowStart = false) {
         }
     )
 
+    // Cinematic opening (#74): high orbit dropping onto the pawn, then
+    // first-person. Skipped for test mode, ?intro=0, and reduced motion.
+    const introParams = new URLSearchParams(location.search)
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches
+    if (!skipSlowStart && introParams.get('intro') !== '0' && !reducedMotion) {
+        renderer.startIntroCinematic?.(player)
+    }
+
     startMainLoop()
 }
 

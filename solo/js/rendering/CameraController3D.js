@@ -1,5 +1,6 @@
 import * as THREE from 'three'
-import { GLTFLoader } from '/node_modules/three/examples/jsm/loaders/GLTFLoader.js'
+import { GLTFLoader } from '/vendor/three/examples/jsm/loaders/GLTFLoader.js'
+import { cameraFloorY, smoothLookY } from './CameraGround.js'
 
 /**
  * 3D camera controller — first-person tracking, overseer camera, head mesh.
@@ -130,6 +131,8 @@ export default function createCameraController(renderer) {
         },
 
         _updateCamera(progress) {
+            // Opening cinematic owns the camera until it finishes (#74)
+            if (renderer._intro?.active && renderer._updateIntroCamera()) return
             if (renderer.followMode && renderer.followedEntity) {
                 renderer.viewX = renderer.followedEntity.x
                 renderer.viewY = renderer.followedEntity.y
@@ -189,13 +192,29 @@ export default function createCameraController(renderer) {
                     camHeight,
                     pawn.y - renderer._tmpYawDir.z * behindDistance
                 )
+
+                // Never let the camera target sink under the terrain between
+                // it and the pawn (#79) — highest sample along the segment wins.
+                const sampleGround = (x, z) => renderer._getGroundHeightAt(x, z)
+                const targetFloor = cameraFloorY(sampleGround, renderer._tmpTargetEye.x, renderer._tmpTargetEye.z, pawn.x, pawn.y)
+                if (targetFloor != null && renderer._tmpTargetEye.y < targetFloor) {
+                    renderer._tmpTargetEye.y = targetFloor
+                }
+
                 renderer._smoothedFirstPersonEye.lerp(renderer._tmpTargetEye, 0.08)
+                const eyeFloor = cameraFloorY(sampleGround, renderer._smoothedFirstPersonEye.x, renderer._smoothedFirstPersonEye.z, pawn.x, pawn.y, 2)
+                if (eyeFloor != null && renderer._smoothedFirstPersonEye.y < eyeFloor) {
+                    renderer._smoothedFirstPersonEye.y = eyeFloor
+                }
                 renderer._smoothedFirstPersonDir.lerp(renderer._tmpYawDir, 0.08).normalize()
 
                 const lookDistance = renderer.cameraTuning.lookDistance
+                // Decouple horizon from instantaneous terrain: camera follows
+                // elevation, but the look height is smoothed much harder (#79).
+                renderer._smoothedLookY = smoothLookY(renderer._smoothedLookY, pawnHeadY + renderer.cameraTuning.lookHeight)
                 renderer._tmpLookTarget.set(
                     pawn.x + renderer._tmpYawDir.x * lookDistance,
-                    pawnHeadY + renderer.cameraTuning.lookHeight,
+                    renderer._smoothedLookY,
                     pawn.y + renderer._tmpYawDir.z * lookDistance
                 )
 

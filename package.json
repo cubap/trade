@@ -7,7 +7,9 @@
   "scripts": {
     "serve": "node --env-file=.env server.js",
     "start:client": "node --env-file=.env client.js",
-    "test": "node --test test/*.test.js solo/test/*.test.js"
+    "test": "node --test test/*.test.js solo/test/*.test.js",
+    "build:site": "node scripts/build-site.mjs",
+    "vendor:three": "node scripts/sync-vendor-three.mjs"
   },
   "repository": {
     "type": "git",

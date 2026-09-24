@@ -1,6 +1,10 @@
 [build]
-  publish = "."
-  command = "echo 'No build step required for static files'"
+  # Staged by scripts/build-site.mjs (#92): dist/ holds only the client module
+  # graph, the assets it names, and the generated vendor/three copy. Before that
+  # the whole repository was uploaded to the CDN, node_modules, server.js,
+  # models/, config/ and .env included.
+  publish = "dist"
+  command = "npm ci && npm run build:site"
   functions = "netlify/functions"
 
 [build.environment]

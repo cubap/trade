@@ -23,6 +23,16 @@ This deploys the static solo game.
 
 **Root URL automatically redirects to the solo game.**
 
+`netlify.toml` builds the site with `npm ci && npm run build:site` and publishes
+`dist/`, which `scripts/build-site.mjs` stages from the pages' real module graphs
+plus the assets they name (see `--no-prune` if you want every asset) and the
+generated `vendor/three/` copy of three.js. Do not change `publish` back to the
+repository root: that uploads `node_modules`, `server.js`, `models/`, `config/`
+and `.env` to a public CDN, which is what the CodeQL "exposure of private files"
+alert in #86 was about. To check a deploy locally, run
+`node scripts/build-site.mjs --out ../preview` and serve that folder with any
+static file server.
+
 ## Step 3: Enable Multiplayer Features (2 minutes)
 
 In `server.js`, uncomment these lines:

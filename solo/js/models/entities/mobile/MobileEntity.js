@@ -1,4 +1,10 @@
 import Entity from '../../Entity.js'
+import {
+    getTerrainMoveContext,
+    terrainSpeedFactor,
+    impedimentText,
+    clampTargetToPassable
+} from './MovementTerrain.js'
 
 class MobileEntity extends Entity {
     constructor(id, name, x, y) {
@@ -34,8 +40,16 @@ class MobileEntity extends Entity {
             
             // If we haven't reached the target yet
             if (distance > this.distanceThreshold) {
-                // Move by at most speed units toward target
-                const moveDistance = Math.min(distance, this.speed)
+                // Terrain-aware movement cost (#84)
+                const terrain = terrainSpeedFactor(getTerrainMoveContext(this.world, this.x, this.y))
+                if (terrain.factor <= 0) {
+                    this._noteMovementImpediment(terrain.reason)
+                    return this.moving
+                }
+                if (terrain.factor < 1) this._noteMovementImpediment(terrain.reason)
+
+                // Move by at most (speed * factor) units toward target
+                const moveDistance = Math.min(distance, this.speed * terrain.factor)
                 
                 // Avoid division by zero
                 if (distance > 0) {
@@ -87,25 +101,49 @@ class MobileEntity extends Entity {
     setValidatedTarget(x, y) {
         const dx = x - this.x
         const dy = y - this.y
-        const distance = Math.sqrt(dx * dx + dy * dy)
-        
+        let distance = Math.sqrt(dx * dx + dy * dy)
+
         // If the target is too far away, limit it to the move range
         if (distance > this.moveRange) {
             const ratio = this.moveRange / distance
-            this.targetX = this.x + dx * ratio
-            this.targetY = this.y + dy * ratio
-        } else {
-            this.targetX = x
-            this.targetY = y
+            x = this.x + dx * ratio
+            y = this.y + dy * ratio
+            distance = this.moveRange
         }
-        
+
         // Ensure targets are within world bounds
         if (this.world) {
-            this.targetX = Math.max(0, Math.min(this.world.width, this.targetX))
-            this.targetY = Math.max(0, Math.min(this.world.height, this.targetY))
+            x = Math.max(0, Math.min(this.world.width, x))
+            y = Math.max(0, Math.min(this.world.height, y))
         }
-        
+
+        // Never plan a move that ends in impassable terrain (#84)
+        const safe = clampTargetToPassable(this.world, this.x, this.y, x, y)
+        if (safe.clamped) {
+            this._noteMovementImpediment('blocked_path')
+            x = safe.x
+            y = safe.y
+        }
+
+        this.targetX = x
+        this.targetY = y
         this.moving = true
+    }
+
+    /**
+     * Record terrain impediment for UI feedback (#84). Notifies the pawn's
+     * thought stream when the reason changes or after a cooldown.
+     */
+    _noteMovementImpediment(reason) {
+        if (!reason) return
+        const tick = this.world?.tick ?? this.age ?? 0
+        const prev = this._movementImpediment
+        this._movementImpediment = { reason, tick, notifiedAt: prev?.notifiedAt ?? -Infinity }
+        if (prev?.reason !== reason || tick - this._movementImpediment.notifiedAt > 240) {
+            this._movementImpediment.notifiedAt = tick
+            const text = impedimentText(reason)
+            if (text) this.addThought?.(text, 'movement')
+        }
     }
     
     update(tick) {
