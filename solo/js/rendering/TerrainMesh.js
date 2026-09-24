@@ -7,12 +7,67 @@ import * as THREE from 'three'
 export default function createTerrainMesh(renderer) {
     return {
         _getGroundHeightAt(worldX, worldY) {
+            // Sample the rendered mesh so entities sit exactly on the visible
+            // surface; raw generator elevation floats them over coarse cells (#83).
+            const meshHeight = renderer._sampleTerrainMesh(worldX, worldY)
+            if (meshHeight != null) return meshHeight
             const gen = renderer._terrainGenerator
             if (!gen) return 0
             return gen.getElevation(worldX, worldY)
         },
 
+        /**
+         * Triangle-interpolated height on the built terrain mesh at (worldX, worldY).
+         * Returns null when the mesh is unavailable or the point is outside it.
+         */
+        _sampleTerrainMesh(worldX, worldY) {
+            const ground = renderer._ground
+            const attr = ground?.geometry?.attributes?.position
+            const sx = renderer._terrainSegmentsX
+            const sy = renderer._terrainSegmentsY
+            if (!attr || !Number.isFinite(sx) || !Number.isFinite(sy)) return null
+            if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return null
+
+            const w = renderer.world.width
+            const h = renderer.world.height
+            if (worldX < 0 || worldX > w || worldY < 0 || worldY > h) return null
+
+            const dx = w / sx
+            const dz = h / sy
+            const i = Math.min(sx - 1, Math.floor(worldX / dx))
+            const j = Math.min(sy - 1, Math.floor(worldY / dz))
+            const u = (worldX - i * dx) / dx
+            const v = (worldY - j * dz) / dz
+
+            const row = sx + 1
+            const a = (j * row + i) * 3 + 1
+            const b = a + 3 // (i+1, j)
+            const c = a + row * 3 // (i, j+1)
+            const d = c + 3 // (i+1, j+1)
+            const ha = attr.array[a]
+            const hb = attr.array[b]
+            const hc = attr.array[c]
+            const hd = attr.array[d]
+
+            // Matches the quad triangulation in _buildTerrainMesh (diagonal b-c)
+            if (u + v <= 1) {
+                return ha + (hb - ha) * u + (hc - ha) * v
+            }
+            return hb * (1 - v) + hc * (1 - u) + hd * (u + v - 1)
+        },
+
+        /**
+         * World elevation of the water surface defined by the terrain generator.
+         */
+        _waterSurfaceHeight() {
+            const gen = renderer._terrainGenerator
+            if (!gen) return 0
+            return (gen.config?.waterLevel ?? 0) * (gen.config?.maxElevation ?? 0)
+        },
+
         _buildTerrainMesh() {
+            const gen = renderer._terrainGenerator
+            if (!gen) return
             const sx = renderer._terrainSegmentsX
             const sy = renderer._terrainSegmentsY
             const w = renderer.world.width
@@ -33,7 +88,9 @@ export default function createTerrainMesh(renderer) {
                     const idx = j * vertsPerRow + i
                     const worldX = i * dx
                     const worldY = j * dz
-                    const height = renderer._getGroundHeightAt(worldX, worldY)
+                    // Build from the raw generator; _getGroundHeightAt samples
+                    // the finished mesh, which would be circular here.
+                    const height = gen.getElevation(worldX, worldY)
 
                     positions[idx * 3] = worldX
                     positions[idx * 3 + 1] = height

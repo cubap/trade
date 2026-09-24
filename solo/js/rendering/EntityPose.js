@@ -19,6 +19,7 @@ export default function createEntityPose(renderer) {
                     materialColor: entity?.color || '#4da6ff',
                     shaderType: 'water',
                     baseY: 0.03,
+                    waterSurface: true,
                     rotation: { x: -Math.PI / 2, y: 0, z: 0 },
                     lerp: 0.28
                 }
@@ -270,7 +271,9 @@ export default function createEntityPose(renderer) {
             const modelGroundBias = hasModelGroundOffset
                 ? (renderer._ground?.position?.y ?? 0) + 0.02
                 : 0
-            const terrainHeight = renderer._getGroundHeightAt(x, y)
+            const terrainHeight = profile.waterSurface
+                ? Math.max(renderer._getGroundHeightAt(x, y), renderer._waterSurfaceHeight())
+                : renderer._getGroundHeightAt(x, y)
             const baseHeight = terrainHeight + groundedOffset + modelGroundBias + followLift
             renderer._tmpTargetPosition.set(x, baseHeight, y)
 
