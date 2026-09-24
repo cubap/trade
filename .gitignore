@@ -10,6 +10,9 @@ node_modules/
 # Build outputs
 dist/
 build/
+# vendor/three mirrors the three.js package layout, whose entry points live in
+# a build/ directory. Re-include it (the broad rule above would hide it).
+!vendor/three/build/
 
 # Python
 __pycache__/

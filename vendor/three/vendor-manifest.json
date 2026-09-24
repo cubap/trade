@@ -1,0 +1,50 @@
+{
+    "package": "three",
+    "version": "0.183.2",
+    "files": [
+        {
+            "from": "node_modules/three/build/three.core.js",
+            "to": "build/three.core.js"
+        },
+        {
+            "from": "node_modules/three/build/three.module.js",
+            "to": "build/three.module.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/controls/OrbitControls.js",
+            "to": "examples/jsm/controls/OrbitControls.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/curves/NURBSCurve.js",
+            "to": "examples/jsm/curves/NURBSCurve.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/curves/NURBSUtils.js",
+            "to": "examples/jsm/curves/NURBSUtils.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/libs/fflate.module.js",
+            "to": "examples/jsm/libs/fflate.module.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/loaders/FBXLoader.js",
+            "to": "examples/jsm/loaders/FBXLoader.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/loaders/GLTFLoader.js",
+            "to": "examples/jsm/loaders/GLTFLoader.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/loaders/OBJLoader.js",
+            "to": "examples/jsm/loaders/OBJLoader.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/utils/BufferGeometryUtils.js",
+            "to": "examples/jsm/utils/BufferGeometryUtils.js"
+        },
+        {
+            "from": "node_modules/three/examples/jsm/utils/SkeletonUtils.js",
+            "to": "examples/jsm/utils/SkeletonUtils.js"
+        }
+    ]
+}

@@ -21,9 +21,10 @@ app.get('/', (req, res) => {
 })
 
 app.use(express.static('solo'))
-// The solo client's importmap resolves `three` from /node_modules (see
-// solo/index.html), so the repo's node_modules must be servable (#86).
-app.use('/node_modules', express.static(path.join(__dirname, 'node_modules')))
+// The solo client loads three.js as plain ES modules with no bundler, so a
+// small allowlisted copy is committed under vendor/ (see
+// scripts/sync-vendor-three.mjs). node_modules is deliberately NOT served.
+app.use('/vendor', express.static(path.join(__dirname, 'vendor')))
 
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end()
