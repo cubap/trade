@@ -262,6 +262,7 @@ function renderQuest(pawn) {
     const queue = Array.isArray(pawn?.goals?.goalQueue) ? pawn.goals.goalQueue.slice(0, 6) : []
     const unlockedGoals = pawn?.unlocked?.goals?.size ?? 0
     const unlockedRecipes = pawn?.unlocked?.recipes?.size ?? 0
+    const commitment = pawn?.goals?.getGoalCommitmentDebug?.() ?? null
 
     const queueHtml = queue.map(goal =>
         `<div class="panel-quest-queue-item">
@@ -270,10 +271,24 @@ function renderQuest(pawn) {
         </div>`
     ).join('')
 
+    // #82: show commitment state so the active goal reads as stable, not flickering
+    let commitmentHtml = ''
+    if (commitment?.active) {
+        const state = commitment.preemptible
+            ? '<span class="panel-goal-state panel-goal-preemptible">flexible</span>'
+            : `<span class="panel-goal-state panel-goal-committed">committed</span>`
+        const invested = `<span class="panel-goal-invested">${commitment.investedTicks}t</span>`
+        const lastSwitch = commitment.recentSwitches?.length
+            ? `<div class="panel-goal-last-switch">last switch: ${esc(commitment.recentSwitches[commitment.recentSwitches.length - 1].reason)}</div>`
+            : ''
+        commitmentHtml = `<div class="panel-goal-commitment-row">${state}${invested}</div>${lastSwitch}`
+    }
+
     return `
         <div class="panel-section">
             <div class="panel-section-header">Active Goal</div>
             <div class="panel-quest-active">${esc(currentGoal?.description ?? currentGoal?.type ?? 'none')}</div>
+            ${commitmentHtml}
         </div>
         <div class="panel-section">
             <div class="panel-section-header">

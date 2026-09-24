@@ -3,6 +3,12 @@ import Structure from '../immobile/Structure.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnLearning from './PawnLearning.js'
 
+// Goal commitment tuning (#82): routine goals become harder to preempt the
+// longer the pawn has invested in them. Needs priority ranges 1-4 (4 = critical).
+const COMMITMENT_STEP_TICKS = 60 // invested ticks per +1 preemption cost
+const COMMITMENT_MAX_COST = 1 // cost cap; critical needs (p4) can always preempt
+const GOAL_SWITCH_LOG_CAP = 12
+
 class PawnGoals {
     constructor(pawn) {
         this.pawn = pawn
@@ -10,6 +16,64 @@ class PawnGoals {
         this.goalQueue = []
         this.completedGoals = []
         this.deferredGoals = [] // Goals on hold due to missing prerequisites
+        this.goalSwitchLog = [] // recent abandon/preempt events for debugging the UI
+    }
+
+    currentTick() {
+        return this.pawn.world?.clock?.currentTick ?? 0
+    }
+
+    /**
+     * Ticks the pawn has already invested in a goal (0 when unknown).
+     */
+    getGoalInvestment(goal) {
+        if (!goal || goal.startedAtTick == null) return 0
+        return Math.max(0, this.currentTick() - goal.startedAtTick)
+    }
+
+    /**
+     * Preemption cost for the current goal: 0 for fresh/emergency/command goals,
+     * scaling with invested time for routine committed goals.
+     */
+    getCommitmentCost(goal = this.currentGoal) {
+        if (!goal) return 0
+        if (goal.groupCommand) return 0
+        if (goal.preemptible === true) return 0
+        const invested = this.getGoalInvestment(goal)
+        return Math.min(COMMITMENT_MAX_COST, Math.floor(invested / COMMITMENT_STEP_TICKS))
+    }
+
+    logGoalSwitch(fromGoal, toGoal, reason) {
+        this.goalSwitchLog.push({
+            from: fromGoal?.type ?? null,
+            fromDescription: fromGoal?.description ?? null,
+            to: toGoal?.type ?? null,
+            reason,
+            investedTicks: this.getGoalInvestment(fromGoal),
+            atTick: this.currentTick()
+        })
+        if (this.goalSwitchLog.length > GOAL_SWITCH_LOG_CAP) {
+            this.goalSwitchLog.shift()
+        }
+    }
+
+    /**
+     * Debug view of commitment state, used by the quest panel and tests.
+     */
+    getGoalCommitmentDebug() {
+        const goal = this.currentGoal
+        if (!goal) return { active: false }
+        const invested = this.getGoalInvestment(goal)
+        return {
+            active: true,
+            type: goal.type,
+            description: goal.description,
+            priority: goal.priority ?? 1,
+            preemptible: goal.preemptible !== false,
+            investedTicks: invested,
+            commitmentCost: this.getCommitmentCost(),
+            recentSwitches: this.goalSwitchLog.slice(-5)
+        }
     }
     
     evaluateAndSetGoals() {
@@ -21,6 +85,7 @@ class PawnGoals {
             const emergencyGoals = this.generateGoalsForNeed(topNeed.need, Math.max(topNeed.priority ?? 1, 3))
             if (emergencyGoals.length > 0) {
                 if (this.currentGoal) {
+                    this.logGoalSwitch(this.currentGoal, emergencyGoals[0], `preempted_for_${topNeed.need}`)
                     this.deferredGoals.push({
                         ...this.currentGoal,
                         deferredReason: `preempted_for_${topNeed.need}`,
@@ -160,7 +225,6 @@ class PawnGoals {
         if (!this.currentGoal || !topNeed) return false
         const emergencyNeeds = new Set(['hunger', 'thirst', 'energy'])
         if (!emergencyNeeds.has(topNeed.need)) return false
-        if ((topNeed.priority ?? 0) < 3) return false
 
         const survivalGoalTypes = new Set([
             'find_food',
@@ -173,7 +237,11 @@ class PawnGoals {
 
         if (survivalGoalTypes.has(this.currentGoal.type)) return false
         if (this.currentGoal.groupCommand) return false
-        return true
+
+        // Base threshold is priority 3 (urgent); committed goals raise it so only
+        // critical (4) needs interrupt goals the pawn has worked on for a while.
+        const requiredPriority = 3 + this.getCommitmentCost()
+        return (topNeed.priority ?? 0) >= requiredPriority
     }
     
     generateGoalsForNeed(need, priority) {
@@ -467,6 +535,7 @@ class PawnGoals {
         
         if (!reachability.reachable) {
             console.log(`${this.pawn.name} deferring goal "${goal.description}": ${reachability.reason}`)
+            this.logGoalSwitch(goal, null, `deferred:${reachability.reason}`)
             
             // Handle unreachable goals
             if (reachability.needsExploration) {
@@ -515,6 +584,12 @@ class PawnGoals {
     
     startGoal(goal) {
         console.log(`${this.pawn.name} starting goal: ${goal.description}`)
+        if (goal.startedAtTick == null) goal.startedAtTick = this.currentTick()
+        // High-priority and command goals stay freely preemptible; routine goals
+        // earn commitment (see getCommitmentCost / #82).
+        if (goal.preemptible == null) {
+            goal.preemptible = (goal.priority ?? 1) >= 3 || !!goal.groupCommand
+        }
         this.pawn.behaviorState = this.getBehaviorForGoal(goal)
         
         // Set target based on goal
@@ -738,6 +813,8 @@ class PawnGoals {
         // Store completed goal
         this.completedGoals.push({
             ...goal,
+            endReason: 'completed',
+            investedTicks: this.getGoalInvestment(goal),
             completedAt: this.pawn.world.clock.currentTick
         })
         

@@ -296,6 +296,43 @@ button, select {
     font-size: 12px;
 }
 
+.panel-goal-commitment-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 4px;
+    font-size: 11px;
+}
+
+.panel-goal-state {
+    padding: 1px 6px;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-size: 10px;
+}
+
+.panel-goal-preemptible {
+    background: rgba(148, 163, 184, 0.15);
+    color: #94a3b8;
+}
+
+.panel-goal-committed {
+    background: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+}
+
+.panel-goal-invested {
+    color: #64748b;
+}
+
+.panel-goal-last-switch {
+    margin-top: 3px;
+    color: #64748b;
+    font-size: 10px;
+    font-style: italic;
+}
+
 .panel-quest-queue-item {
     display: flex;
     justify-content: space-between;
