@@ -92,7 +92,7 @@ function resolveSpecifier(spec, fromFile, importMap) {
     return { kind: 'bare', file: null, spec }
 }
 
-const pages = findHtmlFiles(soloRoot).filter(f => !f.endsWith('.bak') && !f.endsWith('.bak2'))
+const pages = findHtmlFiles(soloRoot)
 
 test('there are solo pages to check', () => {
     assert.ok(pages.length > 0, 'expected at least one HTML page under solo/')

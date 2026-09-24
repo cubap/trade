@@ -43,7 +43,6 @@ test('solo client files reference /vendor, never /node_modules', () => {
     const offenders = []
     for (const file of walk(path.join(repoRoot, 'solo'))) {
         const ext = path.extname(file).toLowerCase()
-        if (file.endsWith('.bak') || file.endsWith('.bak2')) continue
         if (!['.html', '.js', '.css'].includes(ext)) continue
         const src = fs.readFileSync(file, 'utf8')
         if (src.includes('/node_modules/')) offenders.push(path.relative(repoRoot, file))
@@ -103,6 +102,19 @@ test('vendor/ is generated, not committed', () => {
     assert.strictEqual(tracked.trim(), '', 'vendor/ must stay out of git; it is generated on boot')
     const ignored = execFileSync('git', ['check-ignore', '-q', 'vendor/three/build/three.module.js'], { cwd: repoRoot, encoding: 'utf8' })
     assert.strictEqual(ignored.trim(), '')
+})
+
+test('no .bak copies of client files are tracked', () => {
+    // Dead copies can reintroduce the /node_modules import pattern that #86
+    // removed, which is what git grep -n '/node_modules' used to hit on.
+    let tracked
+    try {
+        tracked = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' })
+    } catch {
+        return // git unavailable in this environment
+    }
+    const baks = tracked.split('\n').filter(f => /\.bak\d*$/.test(f))
+    assert.deepStrictEqual(baks, [])
 })
 
 test('server.js materialises vendor/ at boot so a fresh clone works', () => {
