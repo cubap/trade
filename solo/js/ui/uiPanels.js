@@ -86,6 +86,56 @@ function itemName(item) {
     return item?.name ?? item?.type ?? item?.subtype ?? 'item'
 }
 
+// Escape dynamic strings before injecting them into panel innerHTML
+export function esc(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;')
+}
+
+/**
+ * Direction of a fast-shifting value over a short window.
+ * Returns 1 (rising), -1 (falling) or 0 (steady/unknown). The verdict is held
+ * between anchor samples so trend arrows don't flicker on every repaint.
+ */
+export function computeTrend(key, current, nowMs, samples, { minDelta = 2, windowMs = 1500 } = {}) {
+    const prev = samples.get(key)
+    if (!prev) {
+        samples.set(key, { value: current, at: nowMs, trend: 0 })
+        return 0
+    }
+    if (nowMs - prev.at < windowMs) return prev.trend
+    const delta = current - prev.value
+    const trend = Math.abs(delta) < minDelta ? 0 : (delta > 0 ? 1 : -1)
+    samples.set(key, { value: current, at: nowMs, trend })
+    return trend
+}
+
+const needTrendSamples = new Map()
+
+// Needs are urgency values (higher = worse), so rising is the warning color.
+function trendGlyph(trend) {
+    if (trend > 0) return '<span class="panel-need-trend panel-trend-up" title="Rising">&#9650;</span>'
+    if (trend < 0) return '<span class="panel-need-trend panel-trend-down" title="Falling">&#9660;</span>'
+    return '<span class="panel-need-trend panel-trend-flat" title="Steady">&#8226;</span>'
+}
+
+// Compact horizontal meter for capacity-style values (slots, weight)
+function renderMeter(label, value, max) {
+    const pct = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0
+    const tone = pct >= 90 ? 'panel-meter-critical' : pct >= 70 ? 'panel-meter-high' : ''
+    return `
+        <div class="panel-meter-row">
+            <span class="panel-meter-label">${esc(label)}</span>
+            <div class="panel-meter-bg"><div class="panel-meter-fill ${tone}" style="width: ${pct}%"></div></div>
+            <span class="panel-meter-value">${Math.round(value)}/${Math.round(max)}</span>
+        </div>
+    `
+}
+
 function getPawnNeeds(pawn) {
     const needs = pawn?.needs?.needs
     if (!needs) return []
@@ -102,7 +152,7 @@ function renderInventory(pawn, world) {
 
     // Held items
     const itemsHtml = inventory.slice(0, 24).map((item, i) =>
-        `<div class="panel-item-row"><span class="panel-item-index">${i + 1}.</span><span class="panel-item-name">${itemName(item)}</span></div>`
+        `<div class="panel-item-row"><span class="panel-item-index">${i + 1}.</span><span class="panel-item-name">${esc(itemName(item))}</span></div>`
     ).join('')
 
     // Nearby caches
@@ -116,13 +166,13 @@ function renderInventory(pawn, world) {
         const itemSummary = Object.entries(typeCounts)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 6)
-            .map(([name, count]) => `${name} ×${count}`)
+            .map(([name, count]) => `${esc(name)} ×${count}`)
             .join(', ')
 
         return `
             <div class="panel-cache-row">
                 <div class="panel-cache-header">
-                    <span class="panel-cache-name">${cache.name}</span>
+                    <span class="panel-cache-name">${esc(cache.name)}</span>
                     <span class="panel-cache-distance">${cache.distance}u</span>
                 </div>
                 <div class="panel-cache-items">${itemSummary || 'empty'}</div>
@@ -136,6 +186,8 @@ function renderInventory(pawn, world) {
                 <span>Hands</span>
                 <span class="panel-section-meta">${inventory.length}/${slots} slots · ${Math.round(weight)}/${maxWeight} weight</span>
             </div>
+            ${renderMeter('Slots', inventory.length, slots)}
+            ${renderMeter('Weight', weight, maxWeight)}
             ${itemsHtml || '<div class="panel-empty">Empty hands — nothing carried yet.</div>'}
         </div>
         <div class="panel-section">
@@ -187,14 +239,15 @@ function renderJournal(pawn) {
         loss: '#787878',
     }
 
-    const entriesHtml = thoughts.slice().reverse().map(thought => {
+    // Cap the list so the panel stays responsive; oldest entries are dropped.
+    const entriesHtml = thoughts.slice(-60).reverse().map(thought => {
         const tag = thought?.tag || 'general'
         const accent = tagColors[tag] || '#5ec4c0'
         return `
             <div class="panel-journal-entry" style="border-left-color: ${accent}">
-                <div class="panel-journal-text">${thought?.text || ''}</div>
+                <div class="panel-journal-text">${esc(thought?.text || '')}</div>
                 <div class="panel-journal-meta">
-                    <span class="panel-journal-tag">${tag}</span>
+                    <span class="panel-journal-tag">${esc(tag)}</span>
                     <span class="panel-journal-tick">tick ${thought?.tick ?? '?'}</span>
                 </div>
             </div>
@@ -212,7 +265,7 @@ function renderQuest(pawn) {
 
     const queueHtml = queue.map(goal =>
         `<div class="panel-quest-queue-item">
-            <span class="panel-quest-text">${goal?.description ?? goal?.type ?? 'goal'}</span>
+            <span class="panel-quest-text">${esc(goal?.description ?? goal?.type ?? 'goal')}</span>
             <span class="panel-quest-priority">p${goal?.priority ?? '?'}</span>
         </div>`
     ).join('')
@@ -220,7 +273,7 @@ function renderQuest(pawn) {
     return `
         <div class="panel-section">
             <div class="panel-section-header">Active Goal</div>
-            <div class="panel-quest-active">${currentGoal?.description ?? currentGoal?.type ?? 'none'}</div>
+            <div class="panel-quest-active">${esc(currentGoal?.description ?? currentGoal?.type ?? 'none')}</div>
         </div>
         <div class="panel-section">
             <div class="panel-section-header">
@@ -247,6 +300,7 @@ function renderMap(pawn, world, renderer) {
                 <span class="panel-map-legend-item"><span class="panel-map-dot" style="background:#14b8a6"></span>Bushes</span>
                 <span class="panel-map-legend-item"><span class="panel-map-dot" style="background:#60a5fa"></span>Water</span>
                 <span class="panel-map-legend-item"><span class="panel-map-dot" style="background:#f59e0b"></span>Animals</span>
+                <span class="panel-map-legend-item"><span class="panel-map-dot" style="background:#a78bfa"></span>Caches</span>
                 <span class="panel-map-legend-item"><span class="panel-map-dot" style="background:#f8fafc"></span>Pawns</span>
             </div>`
 }
@@ -282,9 +336,34 @@ function drawMap(canvas, pawn, world) {
         if (entity.type === 'tree') { drawDot(entity.x, entity.y, '#22c55e', 2); continue }
         if (entity.type === 'bush') { drawDot(entity.x, entity.y, '#14b8a6', 2); continue }
         if (entity.subtype === 'water' || entity.tags?.includes?.('water') || entity.tags?.has?.('water')) { drawDot(entity.x, entity.y, '#60a5fa', 2); continue }
+        if (entity.subtype === 'cache' || entity.tags?.includes?.('resource_cache') || entity.tags?.has?.('resource_cache')) { drawDot(entity.x, entity.y, '#a78bfa', 4); continue }
         if (entity.subtype === 'animal') { drawDot(entity.x, entity.y, '#f59e0b', 2); continue }
         if (entity.subtype === 'pawn') { drawDot(entity.x, entity.y, '#f8fafc', 3) }
     }
+
+    // Range rings every 80 world units so distances can be eyeballed
+    ctx.strokeStyle = 'rgba(100, 116, 139, 0.35)'
+    ctx.lineWidth = 1
+    for (let r = 80; r <= radiusWorld; r += 80) {
+        ctx.beginPath()
+        ctx.arc(w * 0.5, h * 0.5, r * scale, 0, Math.PI * 2)
+        ctx.stroke()
+    }
+
+    // Tracked pawn marker at center (ring + dot)
+    ctx.strokeStyle = '#f8fafc'
+    ctx.beginPath()
+    ctx.arc(w * 0.5, h * 0.5, 5, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.fillStyle = '#f8fafc'
+    ctx.fillRect(w * 0.5 - 1.5, h * 0.5 - 1.5, 3, 3)
+
+    // North indicator
+    ctx.fillStyle = 'rgba(248, 250, 252, 0.85)'
+    ctx.font = 'bold 11px Arial'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+    ctx.fillText('N', w * 0.5, 4)
 
     ctx.strokeStyle = '#64748b'
     ctx.strokeRect(0.5, 0.5, w - 1, h - 1)
@@ -304,11 +383,11 @@ function renderTechnology(pawn) {
     const recipes = Array.from(pawn?.unlocked?.recipes ?? []).slice(0, 12)
 
     const skillsHtml = skills.map(([name, value]) =>
-        `<div class="panel-tech-row"><span class="panel-tech-name">${name}</span><span class="panel-tech-value">${value.toFixed(2)}</span></div>`
+        `<div class="panel-tech-row"><span class="panel-tech-name">${esc(name)}</span><span class="panel-tech-value">${value.toFixed(2)}</span></div>`
     ).join('')
 
     const recipesHtml = recipes.map(r =>
-        `<div class="panel-tech-recipe">${r}</div>`
+        `<div class="panel-tech-recipe">${esc(r)}</div>`
     ).join('')
 
     return `
@@ -329,20 +408,20 @@ function renderTechnology(pawn) {
 
 function renderRelationships(pawn) {
     const memberships = Object.entries(pawn?.reputation?.membership ?? {})
-        .map(([group, value]) => `<div class="panel-rel-row"><span>${group}</span><span>${Number(value).toFixed(2)}</span></div>`)
+        .map(([group, value]) => `<div class="panel-rel-row"><span>${esc(group)}</span><span>${Number(value).toFixed(2)}</span></div>`)
         .slice(0, 12)
 
     const trust = Object.entries(pawn?.groupTrust ?? {})
         .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
         .slice(0, 8)
-        .map(([id, value]) => `<div class="panel-rel-row"><span>${id}</span><span>${Number(value).toFixed(2)}</span></div>`)
+        .map(([id, value]) => `<div class="panel-rel-row"><span>${esc(id)}</span><span>${Number(value).toFixed(2)}</span></div>`)
 
     return `
         <div class="panel-section">
             <div class="panel-section-header">Group</div>
             <div class="panel-rel-info">
-                <span>${pawn?.groupState?.id ?? 'none'}</span>
-                <span class="panel-rel-role">${pawn?.groupState?.role ?? 'none'}</span>
+                <span>${esc(pawn?.groupState?.id ?? 'none')}</span>
+                <span class="panel-rel-role">${esc(pawn?.groupState?.role ?? 'none')}</span>
             </div>
         </div>
         ${memberships.length ? `
@@ -369,30 +448,34 @@ function renderCharacter(pawn) {
 
     const name = pawn?.name ?? 'Wanderer'
 
-    const needsHtml = needs.map(([name, value]) => {
+    const nowMs = Date.now()
+    const pawnKey = pawn?.id ?? pawn?.name ?? 'pawn'
+    const needsHtml = needs.map(([needName, value]) => {
         const rounded = Math.round(value)
         const state = rounded >= 75 ? 'critical' : rounded >= 50 ? 'high' : rounded >= 25 ? 'medium' : 'low'
+        const trend = computeTrend(`${pawnKey}:${needName}`, rounded, nowMs, needTrendSamples)
         return `
             <div class="panel-need-row">
-                <span class="panel-need-label">${name}</span>
+                <span class="panel-need-label">${esc(needName)}</span>
                 <div class="panel-need-bar-bg"><div class="panel-need-bar panel-need-${state}" style="width: ${rounded}%"></div></div>
                 <span class="panel-need-value">${rounded}</span>
+                ${trendGlyph(trend)}
             </div>
         `
     }).join('')
 
     const goalHtml = currentGoal
-        ? `<div class="panel-char-goal-current"><span class="panel-char-goal-icon">▶</span><span>${currentGoal.description ?? currentGoal.type ?? 'unknown'}</span></div>`
+        ? `<div class="panel-char-goal-current"><span class="panel-char-goal-icon">▶</span><span>${esc(currentGoal.description ?? currentGoal.type ?? 'unknown')}</span></div>`
         : '<div class="panel-empty">No active goal</div>'
 
     const queueHtml = queue.map((goal, i) =>
-        `<div class="panel-char-queue-item"><span class="panel-char-queue-index">${i + 1}.</span><span>${goal.description ?? goal.type ?? 'goal'}</span></div>`
+        `<div class="panel-char-queue-item"><span class="panel-char-queue-index">${i + 1}.</span><span>${esc(goal.description ?? goal.type ?? 'goal')}</span></div>`
     ).join('')
 
-    const skillsHtml = recentSkills.map(([name, value]) => {
-        const meta = SKILL_META[name]
+    const skillsHtml = recentSkills.map(([skillName, value]) => {
+        const meta = SKILL_META[skillName]
         const color = meta?.categoryColor ?? '#94a3b8'
-        return `<div class="panel-char-skill-row"><span class="panel-char-skill-name" style="color: ${color}">${name}</span><span class="panel-char-skill-value">${value.toFixed(1)}</span></div>`
+        return `<div class="panel-char-skill-row"><span class="panel-char-skill-name" style="color: ${color}">${esc(skillName)}</span><span class="panel-char-skill-value">${value.toFixed(1)}</span></div>`
     }).join('')
 
     const behavior = pawn?.behaviorState ?? 'idle'
@@ -401,14 +484,17 @@ function renderCharacter(pawn) {
     return `
         <div class="panel-section">
             <div class="panel-section-header">Identity</div>
-            <div class="panel-char-name">${name}</div>
+            <div class="panel-char-name">${esc(name)}</div>
         </div>
         <div class="panel-section">
             <div class="panel-section-header">Status</div>
-            <div class="panel-char-status"><span class="panel-char-behavior">${behavior}</span><span class="panel-char-action">${action}</span></div>
+            <div class="panel-char-status"><span class="panel-char-behavior">${esc(behavior)}</span><span class="panel-char-action">${esc(action)}</span></div>
         </div>
         <div class="panel-section">
-            <div class="panel-section-header">Needs</div>
+            <div class="panel-section-header">
+                <span>Needs</span>
+                <span class="panel-section-meta">urgency · ▲ worsening</span>
+            </div>
             ${needsHtml || '<div class="panel-empty">Needs unavailable</div>'}
         </div>
         <div class="panel-section">
@@ -540,53 +626,70 @@ export function setupUiPanels(world, renderer, playerMode, getTrackedPawn, onPan
     let mapCanvas = null
     let closeTimerId = null
 
+    // Panels used to rebuild innerHTML every animation frame, which reset scroll
+    // position, defeated CSS transitions, and burned CPU. Instead: repaint at a
+    // fixed cadence and only touch the DOM when the rendered content changed.
+    const RENDER_INTERVAL_MS = 125
+    const lastRenderedHtml = new Map()
+    let lastRenderAt = 0
+
     function trackedPawn() {
         return getTrackedPawn?.() ?? playerMode?.trackedPawn ?? null
     }
 
-    function renderPanel(id) {
+    function applyHtml(id, body, html, force) {
+        if (!force && lastRenderedHtml.get(id) === html) return
+        lastRenderedHtml.set(id, html)
+        body.innerHTML = html
+    }
+
+    function renderPanel(id, force = false) {
         const entry = panels.get(id)
         if (!entry) return
         const { body } = entry
         const pawn = trackedPawn()
 
-        if (!pawn && id !== 'map') {
-            body.innerHTML = '<div class="panel-empty">No tracked pawn</div>'
+        if (id === 'map') {
+            if (!mapCanvas) {
+                body.innerHTML = renderMap(pawn, world, renderer)
+                mapCanvas = body.querySelector('.panel-map-canvas')
+            }
+            if (mapCanvas) drawMap(mapCanvas, pawn, world)
             return
         }
 
+        if (!pawn) {
+            applyHtml(id, body, '<div class="panel-empty">No tracked pawn</div>', force)
+            return
+        }
+
+        let html
         switch (id) {
             case 'inventory':
-                body.innerHTML = renderInventory(pawn, world)
+                html = renderInventory(pawn, world)
                 break
             case 'journal':
-                body.innerHTML = renderJournal(pawn)
+                html = renderJournal(pawn)
                 break
             case 'quest':
-                body.innerHTML = renderQuest(pawn)
-                break
-            case 'map':
-                if (!mapCanvas) {
-                    body.innerHTML = renderMap(pawn, world, renderer)
-                    mapCanvas = body.querySelector('.panel-map-canvas')
-                }
-                drawMap(mapCanvas, pawn, world)
+                html = renderQuest(pawn)
                 break
             case 'technology':
-                body.innerHTML = renderTechnology(pawn)
+                html = renderTechnology(pawn)
                 break
             case 'relationships':
-                body.innerHTML = renderRelationships(pawn)
+                html = renderRelationships(pawn)
                 break
             case 'character':
-                body.innerHTML = renderCharacter(pawn)
+                html = renderCharacter(pawn)
                 break
             case 'skills':
-                body.innerHTML = renderSkillsTree(pawn)
+                html = renderSkillsTree(pawn)
                 break
             default:
-                body.innerHTML = '<div class="panel-empty">Unknown panel</div>'
+                html = '<div class="panel-empty">Unknown panel</div>'
         }
+        applyHtml(id, body, html, force)
     }
 
     function openPanel(id) {
@@ -616,7 +719,7 @@ export function setupUiPanels(world, renderer, playerMode, getTrackedPawn, onPan
             backdrop.style.opacity = '1'
             backdrop.style.pointerEvents = 'auto'
         })
-        renderPanel(id)
+        renderPanel(id, true)
         onPanelOpen?.(id)
     }
 
@@ -651,8 +754,9 @@ export function setupUiPanels(world, renderer, playerMode, getTrackedPawn, onPan
         return true
     }
 
-    function updateActivePanel() {
-        if (activePanelId) {
+    function updateActivePanel(now) {
+        if (activePanelId && now - lastRenderAt >= RENDER_INTERVAL_MS) {
+            lastRenderAt = now
             renderPanel(activePanelId)
         }
         requestAnimationFrame(updateActivePanel)

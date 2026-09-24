@@ -457,7 +457,7 @@ button, select {
 .panel-need-bar {
     height: 100%;
     border-radius: 3px;
-    transition: width 0.3s ease;
+    transition: width 0.3s ease, background 0.3s ease;
 }
 
 .panel-need-critical {
@@ -478,6 +478,73 @@ button, select {
 
 .panel-need-value {
     width: 24px;
+    text-align: right;
+    color: #94a3b8;
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+/* Trend arrows for fast-shifting need values */
+.panel-need-trend {
+    width: 12px;
+    text-align: center;
+    font-size: 9px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.panel-trend-up {
+    color: #ef4444;
+}
+
+.panel-trend-down {
+    color: #22c55e;
+}
+
+.panel-trend-flat {
+    color: #475569;
+}
+
+/* Compact capacity meters (inventory slots/weight) */
+.panel-meter-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    font-size: 11px;
+}
+
+.panel-meter-label {
+    width: 60px;
+    color: #cbd5e1;
+    flex-shrink: 0;
+}
+
+.panel-meter-bg {
+    flex: 1;
+    height: 6px;
+    background: rgba(100, 116, 139, 0.2);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.panel-meter-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #38bdf8, #0ea5e9);
+    transition: width 0.3s ease, background 0.3s ease;
+}
+
+.panel-meter-high {
+    background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+.panel-meter-critical {
+    background: linear-gradient(90deg, #ef4444, #dc2626);
+}
+
+.panel-meter-value {
+    width: 52px;
     text-align: right;
     color: #94a3b8;
     font-size: 10px;
