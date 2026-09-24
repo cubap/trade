@@ -4,6 +4,7 @@ import cors from 'cors'
 import { createServer } from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { syncThree } from './scripts/sync-vendor-three.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -21,9 +22,19 @@ app.get('/', (req, res) => {
 })
 
 app.use(express.static('solo'))
-// The solo client loads three.js as plain ES modules with no bundler, so a
-// small allowlisted copy is committed under vendor/ (see
-// scripts/sync-vendor-three.mjs). node_modules is deliberately NOT served.
+// The solo client loads three.js as plain ES modules with no bundler. Serving
+// node_modules would expose every installed package (CodeQL
+// js/exposure-of-private-files), so only the allowlisted subset the client
+// imports is materialised into vendor/three - generated on boot, never
+// committed - and that directory is what gets served.
+try {
+  const result = syncThree()
+  if (result.status === 'skipped') {
+    console.warn(`three.js vendor: skipped (${result.reason}); /vendor/three will 404 until three is installed`)
+  }
+} catch (err) {
+  console.warn('three.js vendor sync failed:', err.message)
+}
 app.use('/vendor', express.static(path.join(__dirname, 'vendor')))
 
 app.get('/favicon.ico', (req, res) => {

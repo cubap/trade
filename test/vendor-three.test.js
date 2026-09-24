@@ -1,15 +1,17 @@
 import test, { after } from 'node:test'
 import assert from 'node:assert'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import request from 'supertest'
+import { syncThree } from '../scripts/sync-vendor-three.mjs'
 import { app, server } from '../server.js'
 
 // Guards the #86 boot fix after the CodeQL "Exposure of private files" alert:
-// three.js is served from a small committed vendor/ copy, never from
-// node_modules.
+// three.js is served from a generated vendor/ copy, never from node_modules.
+// Importing server.js above already ran the boot sync, so vendor/ exists here.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const vendorRoot = path.join(repoRoot, 'vendor', 'three')
@@ -88,22 +90,45 @@ test('vendored modules execute under a real ESM loader (closure is complete)', a
     }
 })
 
-test('every vendored file is committed (not hidden by an ignore rule)', () => {
-    // .gitignore carries a broad `build/` rule, which silently swallowed
-    // vendor/three/build/*.js until three.core.js went missing from a checkout.
+test('vendor/ is generated, not committed', () => {
+    // Committing the copy would add ~79k lines of three.js source to the repo,
+    // where scanners report its internals as our own findings (CodeQL flagged
+    // js/insecure-randomness inside three.core.js on the first attempt).
     let tracked
     try {
-        tracked = execFileSync('git', ['ls-files', 'vendor/three'], { cwd: repoRoot, encoding: 'utf8' })
+        tracked = execFileSync('git', ['ls-files', 'vendor'], { cwd: repoRoot, encoding: 'utf8' })
     } catch {
         return // git unavailable in this environment
     }
-    const trackedSet = new Set(tracked.split('\n').filter(Boolean))
-    const manifest = JSON.parse(fs.readFileSync(path.join(vendorRoot, 'vendor-manifest.json'), 'utf8'))
-    const missing = manifest.files
-        .map(e => `vendor/three/${e.to}`)
-        .concat(['vendor/three/vendor-manifest.json'])
-        .filter(p => !trackedSet.has(p))
-    assert.deepStrictEqual(missing, [], `untracked vendor files would break a fresh clone: ${missing.join(', ')}`)
+    assert.strictEqual(tracked.trim(), '', 'vendor/ must stay out of git; it is generated on boot')
+    const ignored = execFileSync('git', ['check-ignore', '-q', 'vendor/three/build/three.module.js'], { cwd: repoRoot, encoding: 'utf8' })
+    assert.strictEqual(ignored.trim(), '')
+})
+
+test('server.js materialises vendor/ at boot so a fresh clone works', () => {
+    const src = fs.readFileSync(path.join(repoRoot, 'server.js'), 'utf8')
+    assert.ok(src.includes('syncThree'), 'boot must generate the vendor copy')
+    assert.ok(src.includes(`'/vendor'`), 'the generated directory must be mounted at /vendor')
+})
+
+test('syncThree generates the full set from nothing', () => {
+    // Proves a fresh clone (vendor/ absent) can boot: write into an empty temp
+    // dir rather than deleting the real one under a running server.
+    const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'trade-vendor-'))
+    try {
+        const result = syncThree({ destRoot: dest, force: true })
+        assert.strictEqual(result.status, 'written')
+        assert.ok(result.files.length >= 11, `expected the full closure, got ${result.files.length}`)
+        for (const rel of result.files) {
+            assert.ok(fs.existsSync(path.join(dest, rel.replace(/^three\//, ''))), `not generated: ${rel}`)
+        }
+        assert.ok(fs.existsSync(path.join(dest, 'vendor-manifest.json')))
+
+        // Second call must be a no-op so boot stays fast.
+        assert.strictEqual(syncThree({ destRoot: dest }).status, 'up-to-date')
+    } finally {
+        fs.rmSync(dest, { recursive: true, force: true })
+    }
 })
 
 test('vendor manifest matches the committed files (and installed sources)', () => {
@@ -116,9 +141,8 @@ test('vendor manifest matches the committed files (and installed sources)', () =
         assert.ok(fs.existsSync(vendored), `missing vendored file ${entry.to}`)
         const src = path.join(repoRoot, entry.from)
         if (fs.existsSync(src)) {
-            // Compare ignoring line-ending differences so a stray core.autcrlf
-            // setting can't masquerade as a stale vendor copy (.gitattributes
-            // pins vendor/** as -text; this is the belt to those braces).
+            // Compare ignoring line-ending differences: core.autocrlf is on in
+            // some environments, and node_modules was written by npm.
             const norm = b => b.toString('utf8').replace(/\r\n/g, '\n')
             assert.ok(
                 norm(fs.readFileSync(vendored)) === norm(fs.readFileSync(src)),

@@ -1,7 +1,0 @@
-# Vendored third-party files must stay byte-for-byte identical to their
-# published sources: test/vendor-three.test.js compares vendor/three/** against
-# node_modules/three/**, so line endings must never be converted on checkout.
-vendor/** -text
-
-# Keep the vendored copies out of language-stat diffs.
-vendor/** linguist-vendored

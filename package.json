@@ -8,8 +8,7 @@
     "serve": "node --env-file=.env server.js",
     "start:client": "node --env-file=.env client.js",
     "test": "node --test test/*.test.js solo/test/*.test.js",
-    "vendor:three": "node scripts/sync-vendor-three.mjs",
-    "postinstall": "node scripts/sync-vendor-three.mjs"
+    "vendor:three": "node scripts/sync-vendor-three.mjs"
   },
   "repository": {
     "type": "git",
