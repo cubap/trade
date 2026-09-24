@@ -21,6 +21,9 @@ app.get('/', (req, res) => {
 })
 
 app.use(express.static('solo'))
+// The solo client's importmap resolves `three` from /node_modules (see
+// solo/index.html), so the repo's node_modules must be servable (#86).
+app.use('/node_modules', express.static(path.join(__dirname, 'node_modules')))
 
 app.get('/favicon.ico', (req, res) => {
   res.status(204).end()
