@@ -1,3 +1,5 @@
+import { sightSummary, classifyPin, describeSight, ringPoints, PIN_STYLES } from '../core/SightRange.js'
+
 class UIRenderer {
     constructor(context, world) {
         this.context = context
@@ -17,6 +19,43 @@ class UIRenderer {
         this.capabilities = null
         this.waypointProvider = null
         this.routeTraceProvider = null
+        this.visionProvider = null
+        this.notice = null
+        this.sightText = ''
+    }
+
+    // --- Vision (#90) ---
+
+    setVisionProvider(provider) {
+        this.visionProvider = typeof provider === 'function' ? provider : null
+    }
+
+    getVisionEntity() {
+        return this.visionProvider?.() ?? null
+    }
+
+    /**
+     * Pin state for an entity from the followed pawn's point of view, or null
+     * when nobody is being followed - spectators and replays keep the old map
+     * that shows the whole world.
+     */
+    pinStyleFor(entity) {
+        const pawn = this.getVisionEntity()
+        if (!pawn) return null
+        return classifyPin(pawn, entity, { tick: this.world?.clock?.currentTick ?? 0 })
+    }
+
+    /**
+     * Brief player-facing message, used when a click lands somewhere the
+     * followed pawn cannot actually see. `now` is injectable for tests.
+     */
+    showNotice(text, durationMs = 4000, now = Date.now()) {
+        if (!text) return
+        this.notice = { text: String(text), until: now + Math.max(0, durationMs) }
+    }
+
+    noticeText(now = Date.now()) {
+        return this.notice && this.notice.until > now ? this.notice.text : ''
     }
 
     setCapabilities(payload) {
@@ -179,6 +218,7 @@ class UIRenderer {
         const config = this.getMinimapRenderConfig(this.minimapMode)
         this.renderMinimapEntities(minimapX, minimapY, minimapSize, config)
         this.renderMinimapOverlays(minimapX, minimapY, minimapSize)
+        this.renderMinimapSightRing(minimapX, minimapY, minimapSize)
 
         if (config.scanRing) {
             const centerX = minimapX + minimapSize / 2
@@ -306,12 +346,51 @@ class UIRenderer {
             if (entity?.type !== 'immobile') continue
             if (!Number.isFinite(entity?.x) || !Number.isFinite(entity?.y)) continue
 
+            // Without a followed pawn this is the old whole-map view; with one,
+            // a pin only means what the pawn's last observation pass says it
+            // means - and something the pawn has never seen is not on the map.
+            const state = this.pinStyleFor(entity)
+            if (state === 'unknown') continue
+
             const px = minimapX + (entity.x / this.world.width) * minimapSize
             const py = minimapY + (entity.y / this.world.height) * minimapSize
-            this.context.fillRect(px - 1, py - 1, 2, 2)
+            if (state === 'hidden') {
+                // Something is there; the pawn cannot tell what. Hollow marker.
+                this.context.strokeStyle = PIN_STYLES.hidden
+                this.context.lineWidth = 1
+                this.context.strokeRect(px - 1.5, py - 1.5, 3, 3)
+            } else {
+                this.context.fillStyle = state ? PIN_STYLES[state] : 'rgba(251, 191, 36, 0.7)'
+                this.context.fillRect(px - 1, py - 1, 2, 2)
+            }
             count += 1
         }
 
+        this.context.restore()
+    }
+
+    /**
+     * The followed pawn's actual sight circle, so "why didn't it see that?"
+     * has a visible answer. The radius is the range the observation pass
+     * really used (#80 shrinks it for forest and ridges), not a constant.
+     */
+    renderMinimapSightRing(minimapX, minimapY, minimapSize) {
+        const pawn = this.getVisionEntity()
+        if (!pawn || !Number.isFinite(pawn.x) || !Number.isFinite(pawn.y)) return
+
+        const summary = sightSummary(pawn, { tick: this.world?.clock?.currentTick ?? 0 })
+        const points = ringPoints(pawn.x, pawn.y, summary.range)
+            .map(p => this.projectToMinimap(p, minimapX, minimapY, minimapSize))
+            .filter(Boolean)
+        if (points.length < 3) return
+
+        this.context.save()
+        this.context.strokeStyle = 'rgba(147, 197, 253, 0.55)'
+        this.context.lineWidth = 1
+        this.context.beginPath()
+        this.context.moveTo(points[0].x, points[0].y)
+        for (const p of points) this.context.lineTo(p.x, p.y)
+        this.context.stroke()
         this.context.restore()
     }
 
@@ -382,15 +461,17 @@ class UIRenderer {
         this.renderCompass()
         this.renderOverrideBadge()
         this.renderCapabilityPanel()
+        this.renderNotice()
     }
 
     renderCapabilityPanel() {
-        if (!this.labelsModeText && !this.mapOverlayText) return
+        const sight = this.sightTextFor()
+        if (!this.labelsModeText && !this.mapOverlayText && !sight) return
 
         const x = 10
         const y = this.overrideBadgeText ? 206 : 170
         const panelWidth = 310
-        const panelHeight = 46
+        const panelHeight = 46 + (sight ? 17 : 0)
 
         this.context.save()
         this.context.fillStyle = 'rgba(15, 23, 42, 0.65)'
@@ -409,6 +490,44 @@ class UIRenderer {
         if (this.mapOverlayText) {
             this.context.fillText(this.mapOverlayText, x + 8, y + 24)
         }
+        if (sight) {
+            this.context.fillText(sight, x + 8, y + 41)
+        }
+        this.context.restore()
+    }
+
+    /**
+     * HUD line describing the followed pawn's sight, e.g.
+     * "sight 160/200m · 3 hidden (a ridge is in the way about 37m out) · 5 in view".
+     */
+    sightTextFor() {
+        const pawn = this.getVisionEntity()
+        this.sightText = pawn
+            ? describeSight(pawn, { tick: this.world?.clock?.currentTick ?? 0 })
+            : ''
+        return this.sightText
+    }
+
+    /**
+     * Transient line at the bottom of the screen - used when a click lands on
+     * something the pawn cannot actually see, so the answer is on screen and
+     * not only in the console.
+     */
+    renderNotice(now = Date.now()) {
+        const text = this.noticeText(now)
+        const canvas = this.context.canvas
+        if (!text || !canvas || !Number.isFinite(canvas.height)) return
+
+        const x = 10
+        const y = canvas.height - 46
+        this.context.save()
+        this.context.fillStyle = 'rgba(15, 23, 42, 0.8)'
+        this.context.fillRect(x, y, Math.min(canvas.width - 20, 420), 24)
+        this.context.fillStyle = '#fca5a5'
+        this.context.font = '12px Arial'
+        this.context.textAlign = 'left'
+        this.context.textBaseline = 'middle'
+        this.context.fillText(text, x + 8, y + 12)
         this.context.restore()
     }
 

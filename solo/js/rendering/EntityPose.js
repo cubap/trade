@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { targetHeightFor } from './ModelScales.js'
 
 /**
  * Entity pose — mesh creation, position/rotation updates, disposal, and render profiles.
@@ -18,6 +19,7 @@ export default function createEntityPose(renderer) {
                     materialColor: entity?.color || '#4da6ff',
                     shaderType: 'water',
                     baseY: 0.03,
+                    waterSurface: true,
                     rotation: { x: -Math.PI / 2, y: 0, z: 0 },
                     lerp: 0.28
                 }
@@ -38,11 +40,13 @@ export default function createEntityPose(renderer) {
 
             const isRock = entity?.subtype === 'rock' || renderer._hasTag(entity, 'rock')
             if (isRock) {
-                const radius = Math.max(1.2, size * (0.75 + unitA * 0.55))
+                const targetHeight = targetHeightFor('rock', unitA, null, size)
+                const radius = Math.max(1.2, targetHeight * 0.5)
                 return {
                     geometry: new THREE.DodecahedronGeometry(radius, 0),
                     materialColor: entity?.color || '#8b7355',
                     useRockModel: !!renderer._rockModelRoot,
+                    targetHeight,
                     modelScale: 0.06 + unitA * 0.05,
                     baseY: radius * 0.68,
                     rotation: { x: (unitA - 0.5) * 0.28, y: unitB * Math.PI * 2, z: (unitB - 0.5) * 0.24 },
@@ -66,7 +70,7 @@ export default function createEntityPose(renderer) {
             }
 
             if (entity?.type === 'grass') {
-                const height = Math.max(0.9, 1.1 + unitA * 1.5)
+                const height = targetHeightFor('grass', unitA)
                 return {
                     geometry: new THREE.ConeGeometry(0.45 + unitB * 0.35, height, 4),
                     materialColor: entity?.color || '#74b94a',
@@ -74,6 +78,7 @@ export default function createEntityPose(renderer) {
                     swayStrength: 0.32 + unitB * 0.14,
                     baseY: height * 0.5,
                     useGrassModel: !!renderer._grassModelRoot,
+                    targetHeight: height,
                     grassTargetHeight: height,
                     rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
                     lerp: 0.2
@@ -93,10 +98,10 @@ export default function createEntityPose(renderer) {
 
             if (entity?.type === 'tree') {
                 const isSapling = entity?.stage === 'sapling'
-                const stageScale = entity?.stage === 'adult' ? 1 : isSapling ? 0.25 : 0.05
-                const baseHeight = Math.max(4, (5 + unitA * 4) * stageScale)
-                const height = isSapling ? baseHeight * 2 : baseHeight
-                const radius = Math.max(0.6, baseHeight * 0.08)
+                // Canonical height includes the growth stage so models AND the
+                // procedural fallback shrink for saplings/sprouts (issue #76).
+                const height = targetHeightFor('tree', unitA, entity?.stage)
+                const radius = Math.max(0.6, height * 0.08)
                 const leafColor = entity?.color || '#5e8f3f'
                 return {
                     geometry: new THREE.CylinderGeometry(radius * 0.75, radius, height, 8),
@@ -106,19 +111,21 @@ export default function createEntityPose(renderer) {
                     shaderType: 'foliage',
                     swayStrength: 0.18 + unitA * 0.08,
                     baseY: height * 0.5,
+                    targetHeight: height,
                     modelScale: (0.6 + unitA * 0.2) * 3,
                     modelScaleY: isSapling ? 0.6 : 1,
                     useTreeModel: !!renderer._treeModelRoot,
                     useSmallTreeVariantModel: false,
                     smallTreeModelScale: 0.5 + unitA * 0.15,
+                    smallTreeTargetHeight: targetHeightFor('smallTree', unitA),
                     rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                     lerp: 0.24
                 }
             }
 
             if (entity?.type === 'bush' || entity?.subtype === 'plant') {
-                const height = Math.max(2, 2.4 + unitA * 4.2)
-                const radius = Math.max(1.2, 1.3 + unitB * 2.2)
+                const height = targetHeightFor('bush', unitA)
+                const radius = Math.max(1.2, height * (0.45 + unitB * 0.35))
                 return {
                     geometry: new THREE.SphereGeometry(radius * 0.8, 10, 8),
                     materialColor: entity?.color || '#6c9a4d',
@@ -130,6 +137,7 @@ export default function createEntityPose(renderer) {
                     useBushVariantModel: false,
                     useBushModel: !!renderer._bushModelRoot,
                     useBushLeafTexture: !!renderer._bushLeafTexture,
+                    targetHeight: height,
                     modelScale: 0.16 + unitA * 0.07,
                     rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
                     lerp: 0.24
@@ -137,12 +145,14 @@ export default function createEntityPose(renderer) {
             }
 
             if (entity?.subtype === 'pawn') {
+                const height = targetHeightFor('pawn', unitA)
                 return {
-                    geometry: new THREE.CylinderGeometry(1.8, 2.3, 7.5, 6),
+                    geometry: new THREE.CylinderGeometry(1.8, 2.3, height, 6),
                     materialColor: entity?.color || '#3498db',
                     usePawnModel: !!renderer._pawnModelRoot,
+                    targetHeight: height,
                     modelScale: 2.5 + unitA * 0.5,
-                    baseY: 3.75,
+                    baseY: height * 0.5,
                     rotation: { x: 0, y: 0, z: 0 },
                     lerp: 0.38
                 }
@@ -150,14 +160,16 @@ export default function createEntityPose(renderer) {
 
             if (entity?.subtype === 'animal' || entity?.type === 'mobile') {
                 const isAnimal = entity?.subtype === 'animal'
+                const height = targetHeightFor('animal', unitA)
                 return {
                     geometry: isAnimal
-                        ? new THREE.ConeGeometry(2.8, 8.2, 6)
+                        ? new THREE.ConeGeometry(2.8, height, 6)
                         : new THREE.OctahedronGeometry(2.5, 0),
                     materialColor: entity?.color || '#c79b5f',
                     useAnimalModel: isAnimal && !!renderer._animalModelRoot,
+                    targetHeight: height,
                     modelScale: 0.22 + unitA * 0.1,
-                    baseY: 4.1,
+                    baseY: isAnimal ? height * 0.5 : 4.1,
                     rotation: { x: 0, y: 0, z: 0 },
                     lerp: 0.34
                 }
@@ -259,7 +271,9 @@ export default function createEntityPose(renderer) {
             const modelGroundBias = hasModelGroundOffset
                 ? (renderer._ground?.position?.y ?? 0) + 0.02
                 : 0
-            const terrainHeight = renderer._getGroundHeightAt(x, y)
+            const terrainHeight = profile.waterSurface
+                ? Math.max(renderer._getGroundHeightAt(x, y), renderer._waterSurfaceHeight())
+                : renderer._getGroundHeightAt(x, y)
             const baseHeight = terrainHeight + groundedOffset + modelGroundBias + followLift
             renderer._tmpTargetPosition.set(x, baseHeight, y)
 

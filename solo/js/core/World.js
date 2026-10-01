@@ -21,6 +21,11 @@ class World {
         return this.chunkManager.syncActiveChunkWindow(this, centerX, centerY, radius)
     }
 
+    /** Simulation clock in ticks; subsystems that age things use this (#77, #84). */
+    get tick() {
+        return this.clock.currentTick
+    }
+
     addEntity(entity) {
         this.entitiesMap.set(entity.id || entity.name, entity)
         entity.world = this  // Set reference to world
@@ -83,7 +88,12 @@ class World {
         }
 
         this.chunkManager.advanceDormantSimulation?.(this, currentTick)
-        
+
+        // Pathways (#77): wear fades lazily on read, so the only bookkeeping is
+        // forgetting ground nobody walks any more. With a 4-day half-life this is
+        // a handful of cells per sweep, not a map scan.
+        if (this.trailField && currentTick % 500 === 0) this.trailField.prune(currentTick)
+
         // Only log occasional ticks to avoid console spam
         if (this.clock.currentTick % 20 === 0) {
             console.log(`Tick: ${this.clock.currentTick}, Entities: ${this.entitiesMap.size}`)

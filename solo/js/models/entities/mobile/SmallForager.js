@@ -9,6 +9,9 @@ class SmallForager extends Animal {
         this.type = 'animal'
         this.subtype = 'forager'
         this.species = props.species || 'squirrel'
+        // #77: prey animals stick to ground they know is walkable, which is
+        // exactly what repeated use makes.
+        this.trailKind = 'forager'
         this.memory = []
         this.lastShelter = null
         this.lastSleep = 0

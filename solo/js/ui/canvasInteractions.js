@@ -17,12 +17,27 @@ export function setupCanvasInteractions(world, renderer, createEntitySummary) {
         const entity = renderer.getEntityAtScreen?.(clickX, clickY)
             ?? findEntityAtPosition(world, worldX, worldY)
         if (entity) {
+            explainIfHidden(renderer, entity, worldX, worldY)
             console.log('Selected Entity:', entity)
             const summary = createEntitySummary(entity)
             console.log('Entity Summary:', summary)
             renderer.highlightEntity(entity, 1000)
         }
     })
+}
+
+/**
+ * #90: clicking a thing is not the same as the pawn seeing the thing. When the
+ * followed pawn cannot see where the player clicked, say so on screen and say
+ * what is in the way, instead of letting it look like the world hid a resource.
+ */
+export function explainIfHidden(renderer, entity, worldX, worldY) {
+    const pawn = renderer?.followedEntity
+    if (!pawn || !entity || pawn === entity || typeof pawn.canSee !== 'function') return false
+    if (pawn.canSee(worldX, worldY)) return false
+    const why = pawn.describeHidden?.(worldX, worldY) || 'nothing is in the way, it is simply too far'
+    renderer.showNotice?.(`${pawn.name ?? 'Your pawn'} cannot see that from here - ${why}.`)
+    return true
 }
 
 export function findEntityAtPosition(world, x, y, threshold = 15) {

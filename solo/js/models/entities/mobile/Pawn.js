@@ -18,12 +18,30 @@ import * as PawnLearning from './PawnLearning.js'
 import * as PawnInventory from './PawnInventory.js'
 import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
+import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
+import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
+import { routeCostTo } from './MovementPlan.js'
+
+// Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
+const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
+const TRAIL_SKILL_MASTERY = 20        // skill at which affinity is complete
+const TRAIL_XP_ORIENTEERING = 0.004   // per followed step
+const TRAIL_XP_TRACKING = 0.006       // per step on ground someone else wore
+// Below this combined share of other species' wear, a corridor is just ground.
+const TRAIL_TRACKING_SHARE = 0.1
+const TRAIL_THOUGHT_COOLDOWN = 320    // ticks between remarks about a path
+const TRAIL_REMARK_WEAR = 6           // how worn it must be to be worth noting
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.subtype = 'pawn'
         this.tags.push('pawn')  // Add pawn-specific tag
+        // Pathways (#77): a person is the heaviest thing on two legs in this
+        // world, so pawns do most of the road-building simply by commuting.
+        this.trailKind = 'pawn'
+        this.trailWeight = 1.25
+        this.trail = { tick: 0, steps: 0, followed: 0, lastGain: 0, wear: 0, underfoot: 0, sinceThought: -1e9 }
         this.color = '#3498db'  // Blue color for pawns
         
         // Walking speed: ~1.4 m/s (average human walking pace)
@@ -756,13 +774,159 @@ class Pawn extends MobileEntity {
         // Observation now requires interaction/training, not mere proximity
     }
 
+    /**
+     * Terrain-aware line of sight (#80). Built once per chunk manager and
+     * memoised per tick: a pawn probes dozens of resources each observation and
+     * the answer only changes when the world does.
+     */
+    lineOfSight() {
+        if (!this.chunkManager) return null
+        if (!this._los || this._los.chunkManager !== this.chunkManager) {
+            const context = createTerrainLosContext(this.chunkManager)
+            this._los = {
+                chunkManager: this.chunkManager,
+                context,
+                cache: context ? createLineOfSightCache(context) : null
+            }
+        }
+        return this._los
+    }
+
+    /**
+     * Can this pawn see (x, y) from where it stands? Fails open when the world
+     * has no terrain data, so a bare World never blinds the simulation.
+     */
+    canSee(x, y, options = {}) {
+        const los = this.lineOfSight()
+        if (!los || !los.cache) return true
+        los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
+        return los.cache.check({ x: this.x, y: this.y }, { x, y }, options).visible
+    }
+
+    /**
+     * #90: the HUD readout for this pawn's sight. Empty string until the first
+     * observation pass, so the row can be skipped rather than showing a zero.
+     */
+    sightReport() {
+        return describeSight(this, { tick: this.world?.clock?.currentTick ?? 0 })
+    }
+
+    /**
+     * "Why can't I see that?" for a spot on the map. Answers from the last
+     * observation pass when it recorded a failure there, and only probes fresh
+     * when the player clicked something the pawn never evaluated - this is for
+     * clicks, never for a draw loop.
+     */
+    describeHidden(x, y) {
+        const entry = hiddenAt(this, x, y)
+        if (entry) return describeHiddenEntry(entry)
+        const los = this.lineOfSight()
+        if (!los?.cache) return ''
+        los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
+        const baseRange = this.vision?.baseRange ?? this.vision?.rangeUsed
+        return describeBlocker(los.cache.check({ x: this.x, y: this.y }, { x, y }, { baseRange }))
+    }
+
+    /**
+     * Pathways (#77): how strongly this pawn prefers worn ground. Even an
+     * untrained pawn half-notices a footpath, but reading the land is a learned
+     * art - orienteering, tracking and cartography all contribute, so the
+     * traveller who pays attention ends up using (and making) better routes.
+     */
+    trailAwareness() {
+        const skill = Math.max(
+            this.getSkill('orienteering'),
+            this.getSkill('tracking'),
+            this.getSkill('cartography')
+        )
+        const trained = Math.min(1, skill / TRAIL_SKILL_MASTERY)
+        return TRAIL_BASE_AFFINITY + (1 - TRAIL_BASE_AFFINITY) * trained
+    }
+
+    // Refresh affinity from skills on the way into the shared steering helper.
+    _steerAlongTrails(dirX, dirY) {
+        this.trailAffinity = this.trailAwareness()
+        return super._steerAlongTrails(dirX, dirY)
+    }
+
+    _depositFootfall(fromX, fromY) {
+        if (this.trail) this.trail.steps++
+        return super._depositFootfall(fromX, fromY)
+    }
+
+    /**
+     * Called by MobileEntity for every step that was pulled toward a trail.
+     * Counts usage for the UI/test surface, pays the relevant skills, and lets
+     * the pawn remark on a path it recognises.
+     */
+    onTrailFollowed(bias) {
+        const tick = this._trailTick()
+        const stats = this.trail ?? (this.trail = {
+            tick: 0,
+            steps: 0,
+            followed: 0,
+            lastGain: 0,
+            wear: 0,
+            underfoot: 0,
+            sinceThought: -1e9
+        })
+        stats.tick = tick
+        stats.followed++
+        stats.lastGain = bias.gain
+        stats.wear = bias.intensity
+
+        // Following someone else's route is how tracking and orientation improve.
+        this.useSkill('orienteering', TRAIL_XP_ORIENTEERING)
+        const field = this.world?.trailField
+        // Read the ground being turned toward, not the ground underfoot - the
+        // whole point of a trail is that it is a little way ahead.
+        const where = bias.at ?? { x: this.x, y: this.y }
+        if (field) {
+            const deer = field.trackShare(where.x, where.y, 'forager', tick)
+            const predator = field.trackShare(where.x, where.y, 'predator', tick)
+            // Distinguishing whose tracks these are is the actual skill, so it is
+            // paid for reading a *mixed* corridor rather than one's own footsteps.
+            if (deer + predator > TRAIL_TRACKING_SHARE) this.useSkill('tracking', TRAIL_XP_TRACKING)
+        }
+        stats.ahead = field ? field.intensityAt(where.x, where.y, tick) : 0
+        stats.underfoot = field ? field.intensityAt(this.x, this.y, tick) : 0
+
+        if (bias.intensity > TRAIL_REMARK_WEAR && tick - stats.sinceThought > TRAIL_THOUGHT_COOLDOWN) {
+            stats.sinceThought = tick
+            this.addThought?.(`Someone has been this way before me${this._trailOwnerRemark(field, where, tick)}.`, 'movement')
+        }
+    }
+
+    _trailOwnerRemark(field, where, tick) {
+        if (!field) return ''
+        const tracks = field.tracksAt(where.x, where.y, tick)
+        const top = tracks.find(t => t.intensity >= 1)
+        if (!top) return ''
+        if (top.kind === 'pawn') return ' — other folk walk here'
+        if (top.kind === 'predator') return ' — and not all of it safe'
+        if (top.kind === 'forager') return ' — deer ground, mostly'
+        return ''
+    }
+
     observeNearbyResources(radius = 50) {
         // Remember resources in perception range
         if (!this.chunkManager) return
         const pawnChunkX = Math.floor(this.x / this.chunkManager.chunkSize)
         const pawnChunkY = Math.floor(this.y / this.chunkManager.chunkSize)
-        
+
+        const los = this.lineOfSight()
+        if (los?.cache) los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
+        const observer = { x: this.x, y: this.y }
+
         let observed = 0
+        let blocked = 0
+        let lastBlock = null
+        let tightestRange = null
+        // Where the view actually failed, so the map can say "hidden" instead of
+        // "there is nothing there" (#90). Capped: a pawn in a gully can be blind
+        // to dozens of twigs and the UI only ever shows a handful.
+        const hidden = []
+
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
                 const chunk = this.chunkManager.getChunk(pawnChunkX + dx, pawnChunkY + dy)
@@ -772,6 +936,30 @@ class Pawn extends MobileEntity {
                         // Check for harvestable tag OR gather method
                         const isHarvestable = this.hasTag(entity, 'harvestable') || typeof entity.gather === 'function'
                         if (dist <= radius && isHarvestable) {
+                            if (entity === this) continue
+                            const sight = los?.cache
+                                ? los.cache.check(observer, { x: entity.x, y: entity.y }, { baseRange: radius })
+                                : { visible: true }
+                            if (Number.isFinite(sight.rangeUsed) && (tightestRange === null || sight.rangeUsed < tightestRange)) {
+                                tightestRange = sight.rangeUsed
+                            }
+                            if (!sight.visible) {
+                                blocked++
+                                lastBlock = sight
+                                if (hidden.length < VISION_HIDDEN_CAP) {
+                                    hidden.push({
+                                        id: entity.id ?? null,
+                                        type: entity.subtype || entity.type || null,
+                                        x: entity.x,
+                                        y: entity.y,
+                                        reason: sight.reason ?? null,
+                                        distance: sight.distance ?? null,
+                                        blockedAt: sight.blocker?.distanceFromObserver ?? null,
+                                        why: describeBlocker(sight)
+                                    })
+                                }
+                                continue
+                            }
                             this.rememberResource(entity)
                             observed++
                         }
@@ -779,10 +967,27 @@ class Pawn extends MobileEntity {
                 }
             }
         }
-        
+
+        // Exposed for the UI: what this pawn's vision actually reached, and how
+        // much of the neighbourhood was hidden rather than merely absent.
+        this.vision = {
+            tick: this.world?.clock?.currentTick ?? 0,
+            baseRange: radius,
+            rangeUsed: tightestRange ?? radius,
+            observed,
+            blocked,
+            hidden
+        }
+
         if (observed > 0 && Math.random() < 0.1) {
             // Occasional logging (10% chance to avoid spam)
             console.log(`${this.name} observed ${observed} harvestable resources`)
+        }
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        if (blocked > 0 && lastBlock && tick - (this._lastVisionThoughtTick ?? -Infinity) > 240) {
+            this._lastVisionThoughtTick = tick
+            this.addThought?.(`I can't make out everything from here — ${describeBlocker(lastBlock)}.`, 'visibility')
         }
     }
 
@@ -1898,16 +2103,19 @@ class Pawn extends MobileEntity {
             let selected = memories[0]
 
             if (usesOptimizedRoute) {
-                selected = [...memories].sort((a, b) => {
-                    const distA = Math.sqrt((a.x - currentX) ** 2 + (a.y - currentY) ** 2)
-                    const distB = Math.sqrt((b.x - currentX) ** 2 + (b.y - currentY) ** 2)
-                    const routeObservationWeight = routeSkill >= 8 ? 12 : 6
-                    const observedSignalA = ((a.observedSuccessCount ?? 0) * routeObservationWeight) - ((a.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
-                    const observedSignalB = ((b.observedSuccessCount ?? 0) * routeObservationWeight) - ((b.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
-                    const scoreA = distA - ((a.confidence ?? 0.5) * 40) - ((a.clusterCount ?? 1) * 10) - observedSignalA
-                    const scoreB = distB - ((b.confidence ?? 0.5) * 40) - ((b.clusterCount ?? 1) * 10) - observedSignalB
-                    return scoreA - scoreB
-                })[0]
+                const routeObservationWeight = routeSkill >= 8 ? 12 : 6
+                // #94: "how far" is what the ground *costs* to cross, not the
+                // straight line. routeCostTo returns the Euclidean distance when
+                // nothing is worn or this pawn cannot read wear, so the ranking
+                // here is unchanged except where a path genuinely saves walking.
+                // Costs are measured once per stop, not once per comparison.
+                selected = memories
+                    .map((memory) => {
+                        const cost = routeCostTo(this, currentX, currentY, memory.x, memory.y)
+                        const observed = ((memory.observedSuccessCount ?? 0) * routeObservationWeight) - ((memory.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
+                        return { memory, score: cost - ((memory.confidence ?? 0.5) * 40) - ((memory.clusterCount ?? 1) * 10) - observed }
+                    })
+                    .sort((a, b) => a.score - b.score)[0].memory
             }
 
             route.push({

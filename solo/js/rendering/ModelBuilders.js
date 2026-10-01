@@ -24,6 +24,17 @@ export default function createModelBuilders(renderer) {
             return -bounds.min.y
         },
 
+        // Uniformly rescales a model (at its current scale) so its bounding
+        // height matches the canonical target from ModelScales.js (issue #76).
+        _normalizeModelToHeight(model, targetHeight) {
+            if (!Number.isFinite(targetHeight) || targetHeight <= 0) return
+            model.updateMatrixWorld(true)
+            const box = new THREE.Box3().setFromObject(model)
+            const height = box.max.y - box.min.y
+            if (!Number.isFinite(height) || height <= 0) return
+            model.scale.multiplyScalar(targetHeight / height)
+        },
+
         _getNodeCenterX(node) {
             const box = new THREE.Box3().setFromObject(node)
             if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return 0
@@ -159,6 +170,7 @@ export default function createModelBuilders(renderer) {
             const scale = profile.modelScale ?? 0.2
             const scaleY = scale * (profile.modelScaleY ?? 1)
             model.scale.set(scale, scaleY, scale)
+            renderer._normalizeModelToHeight(model, profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
@@ -173,6 +185,7 @@ export default function createModelBuilders(renderer) {
             const model = source.clone(true)
             const scale = profile.modelScale ?? 0.08
             model.scale.setScalar(scale)
+            renderer._normalizeModelToHeight(model, profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
@@ -216,6 +229,7 @@ export default function createModelBuilders(renderer) {
             const model = renderer._bushModelRoot.clone(true)
             const scale = profile.modelScale ?? 0.18
             model.scale.setScalar(scale)
+            renderer._normalizeModelToHeight(model, profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
@@ -240,6 +254,7 @@ export default function createModelBuilders(renderer) {
             const scale = profile.smallTreeModelScale ?? profile.modelScale ?? 0.2
             const scaleY = scale * (profile.modelScaleY ?? 1)
             model.scale.set(scale, scaleY, scale)
+            renderer._normalizeModelToHeight(model, profile.smallTreeTargetHeight ?? profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
@@ -257,6 +272,7 @@ export default function createModelBuilders(renderer) {
             const model = source.clone(true)
             const scale = profile.modelScale ?? 0.18
             model.scale.setScalar(scale)
+            renderer._normalizeModelToHeight(model, profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
@@ -298,6 +314,9 @@ export default function createModelBuilders(renderer) {
             group.userData.profile = profile
             group.userData.motionInitialized = false
             group.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+            if (Number.isFinite(profile.targetHeight) && profile.targetHeight > 0) {
+                group.scale.setScalar(profile.targetHeight / leafHeight)
+            }
             group.userData.groundOffset = 0
             return group
         },
@@ -358,6 +377,8 @@ export default function createModelBuilders(renderer) {
                 : 1
             const scale = baseScale * deerScaleMultiplier
             model.scale.setScalar(scale)
+            // Canonical height (ModelScales) supersedes the median/deer heuristics
+            renderer._normalizeModelToHeight(model, profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.userData.animalLabel = `${speciesName} -> ${mappedName} (#${variantIndex + 1})`
@@ -381,6 +402,7 @@ export default function createModelBuilders(renderer) {
             const model = renderer._pawnModelRoot.clone(true)
             const scale = profile.modelScale ?? 8
             model.scale.setScalar(scale)
+            renderer._normalizeModelToHeight(model, profile.targetHeight)
             model.userData.profile = profile
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)

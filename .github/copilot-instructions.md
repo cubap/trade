@@ -33,6 +33,13 @@ Trade is a game about learning trades, trading stories, and executing trades. It
 npm install
 ```
 
+The solo client loads three.js as plain ES modules (no bundler). `server.js`
+generates the served subset into `vendor/three/` on boot from the installed
+`three` package; `vendor/` is gitignored. Run `npm run vendor:three` to refresh
+it by hand (e.g. after bumping the `three` version). Never add a static route to
+`node_modules` - only the allowlisted `vendor/three/` copy is served, and
+`test/vendor-three.test.js` enforces that.
+
 ### Running the Application
 ```bash
 # Start the multiplayer server
@@ -48,10 +55,9 @@ npm run start:client
 ### Testing
 Tests use Node.js built-in test runner (not Jest):
 ```bash
-node --test test/*.test.js
+npm test                                    # test/ + solo/test/
+node --test test/vendor-three.test.js       # a single file
 ```
-
-Note: `npm test` is currently configured to exit with error. Use the command above to run tests.
 
 ## Project Structure
 
@@ -200,7 +206,7 @@ test('GET / should return server status', async () => {
 
 ### Running Tests
 ```bash
-node --test test/*.test.js
+npm test
 ```
 
 ## Important Behavioral Notes
