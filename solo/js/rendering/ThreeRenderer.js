@@ -149,11 +149,23 @@ class ThreeRenderer {
         this._grassModelRoot = null
         this._grassModelMeta = null
         this._grassModelFailed = false
+        this._stickModelRoot = null
+        this._stickModelVariants = []
+        this._stickModelFailed = false
+        this._fiberModelRoot = null
+        this._fiberModelVariants = []
+        this._fiberModelFailed = false
+        this._foodModelRoot = null
+        this._foodModelVariants = []
+        this._foodModelFailed = false
+        this._coverModelRoot = null
+        this._coverModelVariants = []
+        this._coverModelFailed = false
         this._animalModelRoot = null
         this._animalModelFailed = false
         this._animalModelVariants = []
         this._animalVariantMeta = []
-        this._animalPackOrder = ['elephant', 'deer', 'bear', 'dog', 'cat', 'horse', 'lion', 'giraffe']
+        this._animalPackOrder = ['forager', 'predator']
         this._pawnModelRoot = null
         this._pawnModelFailed = false
         this._pawnTexture = null
@@ -232,6 +244,10 @@ class ThreeRenderer {
         this._loadRockModel()
         this._loadGrassModel()
         this._loadPartsForSaleModel()
+        this._loadStickModel()
+        this._loadFiberPlantModel()
+        this._loadFoodModel()
+        this._loadCoverModel()
         this._loadAnimalModel()
         this._loadOpenGameArtSkybox()
         this._loadPawnModel()

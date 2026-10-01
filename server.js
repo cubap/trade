@@ -20,6 +20,12 @@ app.get('/', (req, res) => {
   res.send('Server is running')
 })
 
+// The solo page's import map resolves "three" from /node_modules
+app.use('/node_modules', express.static('node_modules'))
+
+// Client code references assets as /solo/... (repo-root style); serve them both ways
+app.use('/solo', express.static('solo'))
+
 app.use(express.static('solo'))
 
 app.get('/favicon.ico', (req, res) => {

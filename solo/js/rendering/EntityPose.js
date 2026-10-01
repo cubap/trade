@@ -5,6 +5,14 @@ import * as THREE from 'three'
  */
 export default function createEntityPose(renderer) {
     return {
+        /** Cover/shelter entities that use the cover GLB pack; flora and buildings match other profiles first. */
+        _isCoverEntity(entity) {
+            if (!entity) return false
+            if (entity.type === 'tree' || entity.type === 'bush' || entity.subtype === 'plant') return false
+            if (entity.subtype === 'cover') return true
+            return renderer._hasTag(entity, 'cover') && !renderer._hasTag(entity, 'structure')
+        },
+
         _getEntityRenderProfile(entity) {
             const unitA = renderer._hashUnit(entity?.id, 'a')
             const unitB = renderer._hashUnit(entity?.id, 'b')
@@ -30,6 +38,8 @@ export default function createEntityPose(renderer) {
                 return {
                     geometry: new THREE.BoxGeometry(length, thickness, thickness * 1.2),
                     materialColor: entity?.color || '#8b5a2b',
+                    useStickModel: !!renderer._stickModelRoot,
+                    modelScale: 0.9 + unitA * 0.4,
                     baseY: 0.06 + thickness * 0.5,
                     rotation: { x: (unitA - 0.5) * 0.16, y: unitB * Math.PI * 2, z: (unitB - 0.5) * 0.12 },
                     lerp: 0.26
@@ -59,6 +69,8 @@ export default function createEntityPose(renderer) {
                     materialColor: entity?.color || '#9acd32',
                     shaderType: 'foliage',
                     swayStrength: 0.4 + unitA * 0.22,
+                    useFiberModel: !!renderer._fiberModelRoot,
+                    modelScale: 0.8 + unitA * 0.5,
                     baseY: height * 0.5,
                     rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                     lerp: 0.26
@@ -85,6 +97,8 @@ export default function createEntityPose(renderer) {
                 return {
                     geometry: new THREE.OctahedronGeometry(radius, 0),
                     materialColor: entity?.color || '#7cfc00',
+                    useFoodModel: !!renderer._foodModelRoot,
+                    modelScale: 1.0 + unitA * 0.5,
                     baseY: radius,
                     rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                     lerp: 0.22
@@ -106,7 +120,7 @@ export default function createEntityPose(renderer) {
                     shaderType: 'foliage',
                     swayStrength: 0.18 + unitA * 0.08,
                     baseY: height * 0.5,
-                    modelScale: (0.6 + unitA * 0.2) * 3,
+                    modelScale: 1.3 + unitA * 0.45,
                     modelScaleY: isSapling ? 0.6 : 1,
                     useTreeModel: !!renderer._treeModelRoot,
                     useSmallTreeVariantModel: false,
@@ -127,10 +141,10 @@ export default function createEntityPose(renderer) {
                     baseY: radius * 0.88,
                     bushHeight: height,
                     bushRadius: radius,
-                    useBushVariantModel: false,
+                    useBushVariantModel: !!renderer._partsForSaleBushVariants.length,
                     useBushModel: !!renderer._bushModelRoot,
                     useBushLeafTexture: !!renderer._bushLeafTexture,
-                    modelScale: 0.16 + unitA * 0.07,
+                    modelScale: 0.3 + unitA * 0.3,
                     rotation: { x: 0, y: unitA * Math.PI * 2, z: 0 },
                     lerp: 0.24
                 }
@@ -160,6 +174,19 @@ export default function createEntityPose(renderer) {
                     baseY: 4.1,
                     rotation: { x: 0, y: 0, z: 0 },
                     lerp: 0.34
+                }
+            }
+
+            // Cover/shelter: check after structures so buildings keep their own look
+            if (renderer._isCoverEntity(entity)) {
+                return {
+                    geometry: new THREE.BoxGeometry(5, 5, 5),
+                    materialColor: entity?.color || '#5a7247',
+                    useCoverModel: !!renderer._coverModelRoot,
+                    modelScale: 1.2 + unitA * 0.6,
+                    baseY: 2.5,
+                    rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
+                    lerp: 0.24
                 }
             }
 
@@ -193,6 +220,22 @@ export default function createEntityPose(renderer) {
                 const model = renderer._buildRockModelInstance(entity, profile)
                 renderer.scene.add(model)
                 return model
+            }
+            if (profile.useStickModel && renderer._stickModelRoot) {
+                const model = renderer._buildStickModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
+            }
+            if (profile.useFiberModel && renderer._fiberModelRoot) {
+                const model = renderer._buildFiberPlantModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
+            }
+            if (profile.useFoodModel && renderer._foodModelRoot) {
+                const model = renderer._buildFoodModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
+            }
+            if (profile.useCoverModel && renderer._coverModelRoot) {
+                const model = renderer._buildCoverModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
             }
             if (profile.useBushVariantModel && renderer._partsForSaleBushVariants.length) {
                 const model = renderer._buildBushVariantModelInstance(entity, profile)
@@ -261,7 +304,8 @@ export default function createEntityPose(renderer) {
                 : 0
             const terrainHeight = renderer._getGroundHeightAt(x, y)
             const baseHeight = terrainHeight + groundedOffset + modelGroundBias + followLift
-            renderer._tmpTargetPosition.set(x, baseHeight, y)
+            const poseOffset = mesh.userData.poseOffset
+            renderer._tmpTargetPosition.set(x + (poseOffset?.x ?? 0), baseHeight, y + (poseOffset?.z ?? 0))
 
             if (!mesh.userData.motionInitialized) {
                 mesh.position.copy(renderer._tmpTargetPosition)
@@ -273,7 +317,8 @@ export default function createEntityPose(renderer) {
 
             if (entity.subtype === 'animal') {
                 const angle = Math.atan2(entity.y - prevY, entity.x - prevX)
-                const targetYaw = -angle + Math.PI / 2
+                // Placeholder animal GLBs face +X, so yaw is the raw heading (a +Z-facing model would need +PI/2)
+                const targetYaw = -angle
                 mesh.rotation.y = renderer._easeAngle(mesh.rotation.y, targetYaw, mesh.userData, 'turnVelocity')
             }
 
@@ -398,6 +443,34 @@ export default function createEntityPose(renderer) {
             if (!renderer._grassModelRoot) return
             for (const [id, entity] of renderer._entityById.entries()) {
                 if (entity?.type !== 'grass') continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshStickMeshes() {
+            if (!renderer._stickModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (entity?.subtype !== 'stick' && !renderer._hasTag(entity, 'stick')) continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshFiberMeshes() {
+            if (!renderer._fiberModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (entity?.subtype !== 'fiber_plant' && !renderer._hasTag(entity, 'fiber')) continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshFoodMeshes() {
+            if (!renderer._foodModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (entity?.subtype !== 'food' && !renderer._hasTag(entity, 'food')) continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshCoverMeshes() {
+            if (!renderer._coverModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (!renderer._isCoverEntity(entity)) continue
                 renderer._disposeMesh(id)
             }
         },
