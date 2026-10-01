@@ -469,9 +469,15 @@ test('emergence: repeated trips between two places narrow into one path', () => 
     const early = newCellsPerTrip.slice(0, 3).reduce((a, b) => a + b, 0)
     const late = newCellsPerTrip.slice(-3).reduce((a, b) => a + b, 0)
     assert.ok(late < early, `expected the route to narrow: ${early} then ${late} new cells`)
+    assert.ok(early >= 30, `the first trips should be scattering: ${early} new cells`)
+    assert.ok(late * 2 <= early, `expected narrowing to at least halve: ${early} then ${late}`)
     const worn = field.activeCells(TRAIL_FOLLOW_THRESHOLD)
     assert.ok(worn.length > 0)
-    assert.ok(worn[0].intensity > TRAIL_FOLLOW_THRESHOLD * 4, 'the corridor should be well beaten in')
+    assert.ok(
+        worn[0].intensity > TRAIL_MAX_INTENSITY * 0.5,
+        `the corridor should be well beaten in, got ${worn[0].intensity}`
+    )
+    assert.ok(field.stats(world.tick).deposits > 100, 'every footfall is accounted for')
 })
 
 test('emergence: an abandoned route grows back over', () => {
