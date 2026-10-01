@@ -3,12 +3,23 @@
 
 import Animal from './Animal.js'
 
+// #77 ambushing is only worth the wait on ground prey has already voted for.
+const AMBUSH_WEAR = 6          // cell wear required before lying in wait
+const AMBUSH_PREY_SHARE = 0.15 // and how much of that wear must belong to prey
+const AMBUSH_WAIT = 40         // ticks to hold before trying the next corridor
+const AMBUSH_STRIKE = 6        // prey this close is worth springing at
+
 class SmallPredator extends Animal {
     constructor(props = {}) {
         super(props.id, props.name || 'Predator', props.x ?? 0, props.y ?? 0)
         this.type = 'animal'
         this.subtype = 'predator'
         this.species = props.species || 'fox'
+        // #77: predators read trails deliberately - a corridor is where prey
+        // has already proven the ground is worth crossing.
+        this.trailKind = 'predator'
+        this.trailAffinity = 0.9
+        this.trailWeight = 0.5
         this.memory = []
         this.lastShelter = null
         this.lastSleep = 0
@@ -34,12 +45,22 @@ class SmallPredator extends Animal {
             { priority: 30, trigger: this.readyToReproduce, action: this.reproduce },
             { priority: 20, trigger: this.isRivalNearby, action: this.fight }
         ]
-        this.huntState = 'track' // track, chase, sneak, charge, pounce
+        this.huntState = 'track' // track, chase, sneak, charge, pounce, ambush
         this.huntTarget = null
         this.scentAge = 0
+        // #77: ambush timing. lastAmbush starts far in the past so a predator
+        // that has never tried it is free to.
+        this.ambushUntil = 0
+        this.lastAmbush = -1e9
     }
 
     update(tick, world = this.world) {
+        // A predator already lying in wait is doing the most valuable thing it
+        // knows, so it skips the schedule until the trail goes cold.
+        if (this.huntState === 'ambush') {
+            this.ambush(world)
+            return
+        }
         for (const instinct of this.instincts.sort((a, b) => b.priority - a.priority)) {
             if (instinct.trigger.call(this, world)) {
                 instinct.action.call(this, world)
@@ -50,6 +71,41 @@ class SmallPredator extends Animal {
         const scheduled = this.dailyQueue.find(q => q.hour === hour24)
         if (scheduled && typeof this[scheduled.action] === 'function') {
             this[scheduled.action](world)
+        }
+    }
+
+    // ---------------------------------------------------------------- trails
+    // #77: a corridor is a place prey has already proven worth crossing. Rather
+    // than spiral blindly looking for a scent, a hungry predator that is standing
+    // on a worn path with prey on it stops and waits for dinner to walk by.
+
+    /** Is the ground under us a corridor worth ambushing on? */
+    isOnPreyTrail(world = this.world) {
+        const field = world?.trailField
+        if (!field) return false
+        const tick = this._trailTick()
+        if (field.intensityAt(this.x, this.y, tick) < AMBUSH_WEAR) return false
+        return field.trackShare(this.x, this.y, 'forager', tick) >= AMBUSH_PREY_SHARE
+    }
+
+    /** Hold on a prey corridor, springing at anything that comes close. */
+    ambush(world = this.world) {
+        const tick = this._trailTick()
+        const prey = world?.queryEntitiesInRadius?.(this.x, this.y, AMBUSH_STRIKE)
+            ?.filter(e => e.type === 'animal' && e.subtype === 'forager' && e !== this) ?? []
+        if (prey.length > 0) {
+            this.huntTarget = prey.reduce((a, b) => this.distanceTo(a) < this.distanceTo(b) ? a : b)
+            this.huntState = 'charge'
+            this.ambushUntil = 0
+            return
+        }
+        // Standing still costs little, which is the whole advantage of a path.
+        this.fatigue = Math.max(0, this.fatigue - 0.5)
+        this.targetX = this.x
+        this.targetY = this.y
+        if (tick >= this.ambushUntil) {
+            this.huntState = 'track'
+            this.ambushUntil = 0
         }
     }
 
@@ -183,6 +239,14 @@ class SmallPredator extends Animal {
             this.scentAge = 0
             this.huntState = 'chase'
         } else {
+            // Before resorting to a blind spiral, check the ground: a worn
+            // corridor with prey on it is worth waiting on instead.
+            if (this.canAmbush(world)) {
+                this.huntState = 'ambush'
+                this.ambushUntil = this._trailTick() + AMBUSH_WAIT
+                this.lastAmbush = this.ambushUntil
+                return
+            }
             // Spiral search
             const angle = Math.random() * Math.PI * 2
             const dist = 10 + Math.random() * 10
@@ -190,6 +254,12 @@ class SmallPredator extends Animal {
             this.targetY = Math.round(this.y + Math.sin(angle) * dist)
             this.scentAge++
         }
+    }
+
+    /** Ambushing is a bet on traffic, so it is not re-tried on the same spot. */
+    canAmbush(world = this.world) {
+        if (!this.isOnPreyTrail(world)) return false
+        return this._trailTick() - this.lastAmbush > AMBUSH_WAIT * 4
     }
 
     chase(world) {

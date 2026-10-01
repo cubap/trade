@@ -1,0 +1,389 @@
+/**
+ * TrailField.js — pathways (#77).
+ *
+ * A sparse, decaying grid of *footfall*: every step a mobile entity takes wears
+ * the ground a little, wear fades when nothing walks there, and enough wear in
+ * a line is a trail. Nothing here knows about entities, terrain or rendering:
+ * it is a scalar field plus a steering helper, which is what makes the
+ * emergent part of the issue ("pawns create footpaths through repeated travel")
+ * testable without a browser.
+ *
+ * The loop that produces footpaths:
+ *
+ *   deposit()      walking entities add wear to the cell under them
+ *   fade()         unused wear decays exponentially (half-life in ticks)
+ *   followBias()   an entity about to step asks "which way is more worn?" and
+ *                  turns a little toward it, scaled by its own trail affinity
+ *
+ * Because the bias points at *existing* wear, the second walker makes the
+ * corridor more attractive for the third: repeated travel between the same two
+ * places narrows into a single path instead of a trampled band.
+ *
+ * Decay is lazy. A cell stores its intensity plus the tick it was last written,
+ * and reads compute `intensity * 0.5 ** (age / halfLife)` without mutating
+ * anything, so there is no per-tick sweep over the map. Memory is bounded by
+ * the walkable area / cellSize² (a 2000×2000 map caps out near 62k cells, and
+ * only ground that is actually walked allocates), with prune() available for a
+ * host that wants the memory back after a long session.
+ *
+ * Import-free on purpose, like LineOfSight.js and MovementTerrain.js: this runs
+ * under `node --test`, in the browser, and in a headless simulation.
+ */
+
+// World units per trail cell. Half a pawn's stride, small enough that a path
+// reads as a line rather than a blob at the camera distances the solo game uses.
+export const TRAIL_CELL_SIZE = 8
+
+// Ticks for wear to halve. One in-game day is 120 ticks (500ms), so this is
+// ~4 days: a deer run stays imprinted overnight, a one-off wander fades within
+// a week of game time.
+export const TRAIL_DECAY_HALF_LIFE = 480
+
+// Worn ground saturates. Without a cap the busiest crossing would be
+// infinitely attractive and no new corridor could ever compete with it.
+export const TRAIL_MAX_INTENSITY = 48
+
+// Wear added per unit travelled (before an entity's own trail weight).
+export const TRAIL_FOOTFALL = 1
+
+// A trail must beat the ground straight ahead by this much before it is worth
+// turning for. Stops noise from the walker's own wake from bending its route.
+export const TRAIL_FOLLOW_THRESHOLD = 0.5
+
+// Units ahead of the entity where wear is sampled.
+export const TRAIL_LOOKAHEAD = 24
+
+// Total sweep (radians) searched either side of the current heading, and how
+// many probes into it. ~115 degrees in 8 steps each way.
+export const TRAIL_FOLLOW_ARC = Math.PI * 0.64
+export const TRAIL_FOLLOW_SAMPLES = 8
+
+// Largest heading change a single step will accept, at affinity 1. Small
+// enough that following a trail is a gentle curve, not a snap onto it.
+export const TRAIL_MAX_TURN = 0.16
+
+// Below this, a cell is not worth reading.
+export const TRAIL_EPSILON = 1 / 1024
+
+const LN2 = Math.LN2
+
+function finite(value, fallback = 0) {
+    return Number.isFinite(value) ? value : fallback
+}
+
+function shortestAngle(from, to) {
+    let d = (to - from) % (Math.PI * 2)
+    if (d > Math.PI) d -= Math.PI * 2
+    if (d < -Math.PI) d += Math.PI * 2
+    return d
+}
+
+class TrailField {
+    /**
+     * @param {{cellSize?: number, halfLife?: number, maxIntensity?: number, tick?: number}} options
+     */
+    constructor(options = {}) {
+        this.cellSize = finite(options.cellSize, TRAIL_CELL_SIZE) || TRAIL_CELL_SIZE
+        this.halfLife = finite(options.halfLife, TRAIL_DECAY_HALF_LIFE) || TRAIL_DECAY_HALF_LIFE
+        this.maxIntensity = finite(options.maxIntensity, TRAIL_MAX_INTENSITY) || TRAIL_MAX_INTENSITY
+        this.tick = Math.floor(finite(options.tick, 0))
+        /** @type {Map<string, {x: number, y: number, intensity: number, last: number, born: number, kinds: Object|null}>} */
+        this.cells = new Map()
+        this.deposits = 0
+        this.peak = 0
+    }
+
+    /** Cell coordinates for a world position. */
+    cellOf(x, y) {
+        return {
+            cx: Math.floor(finite(x) / this.cellSize),
+            cy: Math.floor(finite(y) / this.cellSize)
+        }
+    }
+
+    keyFor(x, y) {
+        const { cx, cy } = this.cellOf(x, y)
+        // String key rather than cx * K + cy so negative coordinates and large
+        // maps cannot collide.
+        return `${cx}:${cy}`
+    }
+
+    /** Centre of the cell containing (x, y), in world units. */
+    cellCenter(x, y) {
+        const { cx, cy } = this.cellOf(x, y)
+        return { x: (cx + 0.5) * this.cellSize, y: (cy + 0.5) * this.cellSize }
+    }
+
+    /** Exponential decay of `value` over `age` ticks. */
+    fade(value, age) {
+        if (!(value > 0) || !(age > 0)) return value
+        return value * Math.exp(-(age * LN2) / this.halfLife)
+    }
+
+    /**
+     * Wear at a world position, evaluated at `tick` (default: the field's
+     * current tick). Non-destructive — nothing is written on read.
+     */
+    intensityAt(x, y, tick = this.tick) {
+        const cell = this.cells.get(this.keyFor(x, y))
+        if (!cell) return 0
+        return Math.max(0, this.fade(cell.intensity, Math.floor(tick) - cell.last))
+    }
+
+    /**
+     * Add footfall. `kind` (an entity subtype such as 'pawn' or 'predator')
+     * optionally attributes part of the wear, which is what lets a tracker read
+     * *whose* path this is later on.
+     * @returns {number} the cell's wear after the deposit
+     */
+    deposit(x, y, amount = TRAIL_FOOTFALL, tick = this.tick, kind = null) {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return 0
+        const add = finite(amount)
+        if (!(add > 0)) return 0
+
+        const now = Math.floor(finite(tick, this.tick))
+        const { cx, cy } = this.cellOf(x, y)
+        const key = `${cx}:${cy}`
+        let cell = this.cells.get(key)
+        if (!cell) {
+            cell = { cx, cy, x, y, intensity: 0, last: now, born: now, kinds: null }
+            this.cells.set(key, cell)
+        } else {
+            const age = now - cell.last
+            if (age > 0) {
+                // Fold the cell forward before writing so every stored value
+                // shares one timestamp (cell.last): reads and kind lookups then
+                // decay together and stay consistent.
+                cell.intensity = this.fade(cell.intensity, age)
+                if (cell.kinds) {
+                    for (const k of Object.keys(cell.kinds)) cell.kinds[k] = this.fade(cell.kinds[k], age)
+                }
+                cell.last = now
+            }
+        }
+
+        cell.intensity = Math.min(this.maxIntensity, cell.intensity + add)
+        if (kind) {
+            if (!cell.kinds) cell.kinds = {}
+            cell.kinds[kind] = Math.min(this.maxIntensity, finite(cell.kinds[kind]) + add)
+        }
+        if (cell.intensity > this.peak) this.peak = cell.intensity
+        this.deposits++
+        if (now > this.tick) this.tick = now
+        return cell.intensity
+    }
+
+    /** Wear attributed to `kind` at a position (0 when untracked/unknown). */
+    trackAt(x, y, kind, tick = this.tick) {
+        const cell = this.cells.get(this.keyFor(x, y))
+        const value = cell?.kinds?.[kind]
+        if (!value) return 0
+        return Math.max(0, this.fade(value, Math.floor(tick) - cell.last))
+    }
+
+    /** Attributed wear at a position, strongest first. */
+    tracksAt(x, y, tick = this.tick) {
+        const cell = this.cells.get(this.keyFor(x, y))
+        if (!cell?.kinds) return []
+        const age = Math.floor(tick) - cell.last
+        return Object.keys(cell.kinds)
+            .map(kind => ({ kind, intensity: Math.max(0, this.fade(cell.kinds[kind], age)) }))
+            .filter(entry => entry.intensity > TRAIL_EPSILON)
+            .sort((a, b) => b.intensity - a.intensity)
+    }
+
+    /** Share of a cell's wear left by one kind, 0..1 — "is this a deer path?" */
+    trackShare(x, y, kind, tick = this.tick) {
+        const total = this.intensityAt(x, y, tick)
+        if (!(total > 0)) return 0
+        return Math.min(1, this.trackAt(x, y, kind, tick) / total)
+    }
+
+    /**
+     * How much of the current heading is explained by worn ground nearby — the
+     * "I can see a path here" read used by perception, UI and tests.
+     */
+    corridorAt(x, y, options = {}) {
+        const tick = finite(options.tick, this.tick)
+        const lookahead = finite(options.lookahead, TRAIL_LOOKAHEAD)
+        let best = this.intensityAt(x, y, tick)
+        let along = best
+        for (const sign of [-1, 1]) {
+            const d = this.intensityAt(x + sign * lookahead, y, tick)
+            const e = this.intensityAt(x, y + sign * lookahead, tick)
+            best = Math.max(best, d, e)
+        }
+        along = this.intensityAt(x + (options.dirX || 0) * lookahead, y + (options.dirY || 0) * lookahead, tick)
+        return { strength: best, ahead: along, worn: best > (options.threshold ?? TRAIL_FOLLOW_THRESHOLD) }
+    }
+
+    /**
+     * Nudge a heading toward the most worn ground inside the lookahead arc.
+     *
+     * Returns the (possibly rotated) unit direction plus how much wear it bought
+     * (`gain`) and the turn actually applied. `turn` is capped by TRAIL_MAX_TURN
+     * times `affinity`, so an entity that has not learned to read the land is
+     * barely pulled, and a turn is never bigger than one gentle step.
+     *
+     * @param {number} x @param {number} y current position
+     * @param {number} dirX @param {number} dirY intended heading (need not be unit)
+     * @param {{affinity?: number, tick?: number, lookahead?: number, arc?: number,
+     *          samples?: number, threshold?: number, maxTurn?: number}} options
+     */
+    followBias(x, y, dirX, dirY, options = {}) {
+        const rawX = finite(dirX, 0)
+        const rawY = finite(dirY, 0)
+        const len = Math.hypot(rawX, rawY)
+        const ux = len > 0 ? rawX / len : 0
+        const uy = len > 0 ? rawY / len : 0
+        const straight = { dirX: ux, dirY: uy, turn: 0, gain: 0, intensity: 0 }
+        const affinity = finite(options.affinity, 1)
+        if (!(affinity > 0) || len === 0) return straight
+
+        const tick = finite(options.tick, this.tick)
+        const lookahead = finite(options.lookahead, TRAIL_LOOKAHEAD)
+        const arc = finite(options.arc, TRAIL_FOLLOW_ARC)
+        const samples = Math.max(1, Math.floor(finite(options.samples, TRAIL_FOLLOW_SAMPLES)))
+        const threshold = finite(options.threshold, TRAIL_FOLLOW_THRESHOLD)
+        const base = Math.atan2(uy, ux)
+        // Two radii: a nearby trail should catch you even when it starts short
+        // of the full lookahead, and a far one still wins if it is stronger.
+        const radii = [lookahead, lookahead * 0.5]
+        const score = angle => {
+            const cx = Math.cos(angle)
+            const sy = Math.sin(angle)
+            let best = 0
+            let at = null
+            for (const r of radii) {
+                const v = this.intensityAt(x + cx * r, y + sy * r, tick)
+                if (v > best) {
+                    best = v
+                    at = { x: x + cx * r, y: y + sy * r }
+                }
+            }
+            return { value: best, at }
+        }
+
+        const ahead = score(base)
+        let bestAngle = base
+        let best = ahead.value
+        let bestAt = ahead.at
+        for (let i = 1; i <= samples; i++) {
+            const off = (i / (samples + 1)) * arc
+            for (const sign of [-1, 1]) {
+                const angle = base + sign * off
+                const probe = score(angle)
+                if (probe.value > best) {
+                    best = probe.value
+                    bestAngle = angle
+                    bestAt = probe.at
+                }
+            }
+        }
+
+        const gain = best - ahead.value
+        if (!(gain > threshold)) return { ...straight, intensity: best, at: bestAt }
+
+        // Pull harder when the trail is obviously better, so a real footpath
+        // captures a walker instead of merely tempting it.
+        const pull = Math.min(1, gain / (threshold * 3))
+        const cap = finite(options.maxTurn, TRAIL_MAX_TURN) * affinity * (0.4 + 0.6 * pull)
+        const turn = Math.max(-cap, Math.min(cap, shortestAngle(base, bestAngle)))
+        const angle = base + turn
+        return {
+            dirX: Math.cos(angle),
+            dirY: Math.sin(angle),
+            turn,
+            gain,
+            intensity: best,
+            // Where the worn ground actually is, so a reader can identify it.
+            at: bestAt
+        }
+    }
+
+    /** Drop cells that have decayed into nothing. Returns how many went. */
+    prune(tick = this.tick, epsilon = TRAIL_EPSILON) {
+        let removed = 0
+        for (const [key, cell] of this.cells) {
+            if (this.fade(cell.intensity, Math.floor(tick) - cell.last) <= epsilon) {
+                this.cells.delete(key)
+                removed++
+            }
+        }
+        return removed
+    }
+
+    /** Cells above a wear level, strongest first — used by rendering and tests. */
+    activeCells(threshold = TRAIL_FOLLOW_THRESHOLD, tick = this.tick) {
+        const out = []
+        for (const cell of this.cells.values()) {
+            const intensity = this.fade(cell.intensity, Math.floor(tick) - cell.last)
+            if (intensity > threshold) out.push({ cx: cell.cx ?? cell.x, cy: cell.cy ?? cell.y, intensity })
+        }
+        return out.sort((a, b) => b.intensity - a.intensity)
+    }
+
+    stats(tick = this.tick) {
+        let sum = 0
+        let worn = 0
+        let peak = 0
+        for (const cell of this.cells.values()) {
+            const intensity = this.fade(cell.intensity, Math.floor(tick) - cell.last)
+            if (intensity <= TRAIL_EPSILON) continue
+            sum += intensity
+            if (intensity > TRAIL_FOLLOW_THRESHOLD) worn++
+            if (intensity > peak) peak = intensity
+        }
+        return {
+            cells: this.cells.size,
+            wornCells: worn,
+            totalWear: sum,
+            meanWear: worn ? sum / Math.max(1, this.cells.size) : 0,
+            peak,
+            deposits: this.deposits
+        }
+    }
+
+    /** Plain-object snapshot; the shape is stable for save/load and debugging. */
+    toJSON(tick = this.tick) {
+        return {
+            cellSize: this.cellSize,
+            halfLife: this.halfLife,
+            tick,
+            stats: this.stats(tick),
+            cells: [...this.cells.values()].map(cell => ({
+                key: this.keyFor(cell.x, cell.y),
+                intensity: this.fade(cell.intensity, Math.floor(tick) - cell.last),
+                born: cell.born,
+                kinds: cell.kinds ? { ...cell.kinds } : null
+            }))
+        }
+    }
+}
+
+/**
+ * The world's trail field, created on first use and attached to the world so
+ * every walker shares one ground. Pass `create: false` to read without
+ * allocating (perception, rendering, tests).
+ */
+export function trailFieldFor(world, options = {}) {
+    if (!world || typeof world !== 'object') return null
+    if (!world.trailField) {
+        if (options.create === false) return null
+        world.trailField = new TrailField({
+            ...options,
+            tick: world.tick ?? world.clock?.currentTick ?? 0
+        })
+    }
+    return world.trailField
+}
+
+/** Replace a world's trail field (long sessions, tests, new maps). */
+export function resetTrailField(world, options = {}) {
+    if (!world || typeof world !== 'object') return null
+    world.trailField = new TrailField(options)
+    return world.trailField
+}
+
+export { TrailField }
+export default TrailField

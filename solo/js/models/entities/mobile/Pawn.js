@@ -20,11 +20,26 @@ import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
 import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
 
+// Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
+const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
+const TRAIL_SKILL_MASTERY = 20        // skill at which affinity is complete
+const TRAIL_XP_ORIENTEERING = 0.004   // per followed step
+const TRAIL_XP_TRACKING = 0.006       // per step on ground someone else wore
+// Below this combined share of other species' wear, a corridor is just ground.
+const TRAIL_TRACKING_SHARE = 0.1
+const TRAIL_THOUGHT_COOLDOWN = 320    // ticks between remarks about a path
+const TRAIL_REMARK_WEAR = 6           // how worn it must be to be worth noting
+
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
         super(id, name, x, y)
         this.subtype = 'pawn'
         this.tags.push('pawn')  // Add pawn-specific tag
+        // Pathways (#77): a person is the heaviest thing on two legs in this
+        // world, so pawns do most of the road-building simply by commuting.
+        this.trailKind = 'pawn'
+        this.trailWeight = 1.25
+        this.trail = { tick: 0, steps: 0, followed: 0, lastGain: 0, wear: 0, underfoot: 0, sinceThought: -1e9 }
         this.color = '#3498db'  // Blue color for pawns
         
         // Walking speed: ~1.4 m/s (average human walking pace)
@@ -784,6 +799,87 @@ class Pawn extends MobileEntity {
         if (!los || !los.cache) return true
         los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
         return los.cache.check({ x: this.x, y: this.y }, { x, y }, options).visible
+    }
+
+    /**
+     * Pathways (#77): how strongly this pawn prefers worn ground. Even an
+     * untrained pawn half-notices a footpath, but reading the land is a learned
+     * art - orienteering, tracking and cartography all contribute, so the
+     * traveller who pays attention ends up using (and making) better routes.
+     */
+    trailAwareness() {
+        const skill = Math.max(
+            this.getSkill('orienteering'),
+            this.getSkill('tracking'),
+            this.getSkill('cartography')
+        )
+        const trained = Math.min(1, skill / TRAIL_SKILL_MASTERY)
+        return TRAIL_BASE_AFFINITY + (1 - TRAIL_BASE_AFFINITY) * trained
+    }
+
+    // Refresh affinity from skills on the way into the shared steering helper.
+    _steerAlongTrails(dirX, dirY) {
+        this.trailAffinity = this.trailAwareness()
+        return super._steerAlongTrails(dirX, dirY)
+    }
+
+    _depositFootfall(fromX, fromY) {
+        if (this.trail) this.trail.steps++
+        return super._depositFootfall(fromX, fromY)
+    }
+
+    /**
+     * Called by MobileEntity for every step that was pulled toward a trail.
+     * Counts usage for the UI/test surface, pays the relevant skills, and lets
+     * the pawn remark on a path it recognises.
+     */
+    onTrailFollowed(bias) {
+        const tick = this._trailTick()
+        const stats = this.trail ?? (this.trail = {
+            tick: 0,
+            steps: 0,
+            followed: 0,
+            lastGain: 0,
+            wear: 0,
+            underfoot: 0,
+            sinceThought: -1e9
+        })
+        stats.tick = tick
+        stats.followed++
+        stats.lastGain = bias.gain
+        stats.wear = bias.intensity
+
+        // Following someone else's route is how tracking and orientation improve.
+        this.useSkill('orienteering', TRAIL_XP_ORIENTEERING)
+        const field = this.world?.trailField
+        // Read the ground being turned toward, not the ground underfoot - the
+        // whole point of a trail is that it is a little way ahead.
+        const where = bias.at ?? { x: this.x, y: this.y }
+        if (field) {
+            const deer = field.trackShare(where.x, where.y, 'forager', tick)
+            const predator = field.trackShare(where.x, where.y, 'predator', tick)
+            // Distinguishing whose tracks these are is the actual skill, so it is
+            // paid for reading a *mixed* corridor rather than one's own footsteps.
+            if (deer + predator > TRAIL_TRACKING_SHARE) this.useSkill('tracking', TRAIL_XP_TRACKING)
+        }
+        stats.ahead = field ? field.intensityAt(where.x, where.y, tick) : 0
+        stats.underfoot = field ? field.intensityAt(this.x, this.y, tick) : 0
+
+        if (bias.intensity > TRAIL_REMARK_WEAR && tick - stats.sinceThought > TRAIL_THOUGHT_COOLDOWN) {
+            stats.sinceThought = tick
+            this.addThought?.(`Someone has been this way before me${this._trailOwnerRemark(field, where, tick)}.`, 'movement')
+        }
+    }
+
+    _trailOwnerRemark(field, where, tick) {
+        if (!field) return ''
+        const tracks = field.tracksAt(where.x, where.y, tick)
+        const top = tracks.find(t => t.intensity >= 1)
+        if (!top) return ''
+        if (top.kind === 'pawn') return ' — other folk walk here'
+        if (top.kind === 'predator') return ' — and not all of it safe'
+        if (top.kind === 'forager') return ' — deer ground, mostly'
+        return ''
     }
 
     observeNearbyResources(radius = 50) {
