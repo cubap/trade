@@ -2,6 +2,7 @@ import CameraController from './CameraController.js'
 import PerceptionRenderer from './PerceptionRenderer.js'
 import EntityRenderer from './EntityRenderer.js'
 import UIRenderer from './UIRenderer.js'
+import { sightSummary, ringPoints } from '../core/SightRange.js'
 
 class CanvasRenderer {
     constructor(world, canvasId) {
@@ -47,6 +48,8 @@ class CanvasRenderer {
         
         // Pass zoom level getter to UI renderer for conditional rendering
         this.uiRenderer.setZoomLevelGetter(() => this.camera.zoomLevel)
+        // The map describes what the followed pawn knows, not what exists (#90).
+        this.uiRenderer.setVisionProvider(() => this.camera.followedEntity)
         
         // Entity highlighting
         this.highlightedEntity = null
@@ -145,6 +148,36 @@ class CanvasRenderer {
         this.uiRenderer.setRouteTraceProvider?.(provider)
     }
 
+    /**
+     * The followed pawn's actual horizon, stroked in world space while
+     * perception mode is on (#90). Radius is the range its last observation
+     * pass really used, so the circle tightens in forest and behind ridges.
+     */
+    renderSightRing() {
+        const pawn = this.camera.followedEntity
+        if (!this.perception.perceptionMode || !pawn) return
+
+        const summary = sightSummary(pawn, { tick: this.world?.clock?.currentTick ?? 0 })
+        const points = ringPoints(pawn.x, pawn.y, summary.range)
+        if (points.length < 3) return
+
+        const zoom = this.camera?.zoomLevel || this.zoomLevel || 1
+        this.context.save()
+        this.context.strokeStyle = summary.dimmed ? 'rgba(248, 113, 113, 0.55)' : 'rgba(147, 197, 253, 0.5)'
+        this.context.lineWidth = 2 / zoom
+        if (summary.dimmed) this.context.setLineDash?.([6 / zoom, 4 / zoom])
+        this.context.beginPath()
+        this.context.moveTo(points[0].x, points[0].y)
+        for (const point of points) this.context.lineTo(point.x, point.y)
+        this.context.stroke()
+        this.context.restore()
+    }
+
+    /** Short-lived on-screen message, e.g. why a click hit nothing visible. */
+    showNotice(text, durationMs = 4000) {
+        this.uiRenderer.showNotice?.(text, durationMs)
+    }
+
     _applyCapabilityState() {
         if (!this.capabilities?.modules) return
 
@@ -237,7 +270,11 @@ class CanvasRenderer {
                 this.context.globalAlpha = 1.0
             }
         }
-        
+
+        // Horizon for the pawn being followed, inside the camera transform so it
+        // scales with the world like everything else.
+        this.renderSightRing()
+
         // Restore context state
         this.context.restore()
         

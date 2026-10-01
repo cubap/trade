@@ -8,6 +8,10 @@ import createCameraController from './CameraController3D.js'
 import { createIntroCinematic } from './IntroCinematic.js'
 import createEntityPose from './EntityPose.js'
 import createTerrainGenerator from '../core/TerrainGenerator.js'
+import { sightSummary, ringPoints } from '../core/SightRange.js'
+
+/** Vertices in the perception-mode horizon ring. */
+const SIGHT_RING_SEGMENTS = 64
 
 class ThreeRenderer {
     constructor(world, canvasId) {
@@ -384,6 +388,57 @@ class ThreeRenderer {
         this._routeTraceProvider = provider
     }
 
+    /**
+     * Ground-hugging horizon for the followed pawn, shown while perception mode
+     * is on. Built from SightRange.ringPoints so the 2D and 3D views agree, and
+     * re-fitted to the terrain each frame because the radius is the range the
+     * pawn's last pass actually used, not a constant (#90).
+     */
+    _ensureSightRing() {
+        if (this._sightRing) return this._sightRing
+        const points = ringPoints(0, 0, 1, SIGHT_RING_SEGMENTS)
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points.length * 3), 3))
+        const material = new THREE.LineBasicMaterial({
+            color: 0x93c5fd,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false
+        })
+        this._sightRing = new THREE.Line(geometry, material)
+        this._sightRing.frustumCulled = false
+        this._sightRing.visible = false
+        this.scene.add(this._sightRing)
+        return this._sightRing
+    }
+
+    _updateSightRing() {
+        const pawn = this.followedEntity
+        const active = this.perceptionMode && pawn
+            && Number.isFinite(pawn.x) && Number.isFinite(pawn.y)
+        if (!active) {
+            if (this._sightRing) this._sightRing.visible = false
+            return
+        }
+
+        const summary = sightSummary(pawn, { tick: this.world?.clock?.currentTick ?? 0 })
+        const points = ringPoints(pawn.x, pawn.y, summary.range, SIGHT_RING_SEGMENTS)
+        const ring = this._ensureSightRing()
+        const attribute = ring.geometry.getAttribute('position')
+        if (attribute.count !== points.length) return
+
+        const elev = this.world?.chunkManager?.getElevationAt
+        for (let i = 0; i < points.length; i++) {
+            const point = points[i]
+            // Lifted clear of the terrain so the line does not z-fight with it.
+            const ground = elev ? this.world.chunkManager.getElevationAt(point.x, point.y) : 0
+            attribute.setXYZ(i, point.x, (Number.isFinite(ground) ? ground : 0) + 0.8, point.y)
+        }
+        attribute.needsUpdate = true
+        ring.material.color.set(summary.dimmed ? 0xf87171 : 0x93c5fd)
+        ring.visible = true
+    }
+
     // --- Visual tuning ---
     getVisualTuning() {
         return { ...this._visualTuning }
@@ -567,6 +622,8 @@ class ThreeRenderer {
             if (visibleIds.has(id)) continue
             this._disposeMesh(id)
         }
+
+        this._updateSightRing()
 
         this.webglRenderer.render(this.scene, this._camera3d)
         this._renderAnimalLabels(entitiesToRender)

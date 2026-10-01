@@ -19,6 +19,7 @@ import * as PawnInventory from './PawnInventory.js'
 import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
 import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
+import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
 
 // Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
 const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
@@ -802,6 +803,30 @@ class Pawn extends MobileEntity {
     }
 
     /**
+     * #90: the HUD readout for this pawn's sight. Empty string until the first
+     * observation pass, so the row can be skipped rather than showing a zero.
+     */
+    sightReport() {
+        return describeSight(this, { tick: this.world?.clock?.currentTick ?? 0 })
+    }
+
+    /**
+     * "Why can't I see that?" for a spot on the map. Answers from the last
+     * observation pass when it recorded a failure there, and only probes fresh
+     * when the player clicked something the pawn never evaluated - this is for
+     * clicks, never for a draw loop.
+     */
+    describeHidden(x, y) {
+        const entry = hiddenAt(this, x, y)
+        if (entry) return describeHiddenEntry(entry)
+        const los = this.lineOfSight()
+        if (!los?.cache) return ''
+        los.cache.beginTick(this.world?.clock?.currentTick ?? 0)
+        const baseRange = this.vision?.baseRange ?? this.vision?.rangeUsed
+        return describeBlocker(los.cache.check({ x: this.x, y: this.y }, { x, y }, { baseRange }))
+    }
+
+    /**
      * Pathways (#77): how strongly this pawn prefers worn ground. Even an
      * untrained pawn half-notices a footpath, but reading the land is a learned
      * art - orienteering, tracking and cartography all contribute, so the
@@ -896,6 +921,10 @@ class Pawn extends MobileEntity {
         let blocked = 0
         let lastBlock = null
         let tightestRange = null
+        // Where the view actually failed, so the map can say "hidden" instead of
+        // "there is nothing there" (#90). Capped: a pawn in a gully can be blind
+        // to dozens of twigs and the UI only ever shows a handful.
+        const hidden = []
 
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
@@ -916,6 +945,18 @@ class Pawn extends MobileEntity {
                             if (!sight.visible) {
                                 blocked++
                                 lastBlock = sight
+                                if (hidden.length < VISION_HIDDEN_CAP) {
+                                    hidden.push({
+                                        id: entity.id ?? null,
+                                        type: entity.subtype || entity.type || null,
+                                        x: entity.x,
+                                        y: entity.y,
+                                        reason: sight.reason ?? null,
+                                        distance: sight.distance ?? null,
+                                        blockedAt: sight.blocker?.distanceFromObserver ?? null,
+                                        why: describeBlocker(sight)
+                                    })
+                                }
                                 continue
                             }
                             this.rememberResource(entity)
@@ -933,7 +974,8 @@ class Pawn extends MobileEntity {
             baseRange: radius,
             rangeUsed: tightestRange ?? radius,
             observed,
-            blocked
+            blocked,
+            hidden
         }
 
         if (observed > 0 && Math.random() < 0.1) {
