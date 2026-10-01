@@ -20,6 +20,7 @@ import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
 import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
 import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
+import { routeCostTo } from './MovementPlan.js'
 
 // Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
 const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
@@ -2102,16 +2103,19 @@ class Pawn extends MobileEntity {
             let selected = memories[0]
 
             if (usesOptimizedRoute) {
-                selected = [...memories].sort((a, b) => {
-                    const distA = Math.sqrt((a.x - currentX) ** 2 + (a.y - currentY) ** 2)
-                    const distB = Math.sqrt((b.x - currentX) ** 2 + (b.y - currentY) ** 2)
-                    const routeObservationWeight = routeSkill >= 8 ? 12 : 6
-                    const observedSignalA = ((a.observedSuccessCount ?? 0) * routeObservationWeight) - ((a.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
-                    const observedSignalB = ((b.observedSuccessCount ?? 0) * routeObservationWeight) - ((b.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
-                    const scoreA = distA - ((a.confidence ?? 0.5) * 40) - ((a.clusterCount ?? 1) * 10) - observedSignalA
-                    const scoreB = distB - ((b.confidence ?? 0.5) * 40) - ((b.clusterCount ?? 1) * 10) - observedSignalB
-                    return scoreA - scoreB
-                })[0]
+                const routeObservationWeight = routeSkill >= 8 ? 12 : 6
+                // #94: "how far" is what the ground *costs* to cross, not the
+                // straight line. routeCostTo returns the Euclidean distance when
+                // nothing is worn or this pawn cannot read wear, so the ranking
+                // here is unchanged except where a path genuinely saves walking.
+                // Costs are measured once per stop, not once per comparison.
+                selected = memories
+                    .map((memory) => {
+                        const cost = routeCostTo(this, currentX, currentY, memory.x, memory.y)
+                        const observed = ((memory.observedSuccessCount ?? 0) * routeObservationWeight) - ((memory.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
+                        return { memory, score: cost - ((memory.confidence ?? 0.5) * 40) - ((memory.clusterCount ?? 1) * 10) - observed }
+                    })
+                    .sort((a, b) => a.score - b.score)[0].memory
             }
 
             route.push({

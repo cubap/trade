@@ -259,3 +259,29 @@ export function sortByRouteCost(pawn, list, options = {}) {
         .sort((a, b) => a.cost - b.cost)
         .map(entry => entry.item)
 }
+
+/**
+ * Cost of a single leg for this pawn, in units of walking, from an arbitrary
+ * point rather than the pawn's position. This is the primitive callers need
+ * when they are costing a *multi-stop* run (Pawn.planGatheringRoute scores
+ * each next stop from wherever the previous one landed), which sortByRouteCost
+ * - anchored at the pawn - cannot express.
+ *
+ * Same degeneracy rule: no field, nobody trained to read it, or nothing worn
+ * underfoot returns the plain Euclidean distance.
+ */
+export function routeCostTo(pawn, fromX, fromY, toX, toY, options = {}) {
+    const x0 = Number.isFinite(fromX) ? fromX : 0
+    const y0 = Number.isFinite(fromY) ? fromY : 0
+    const x1 = Number.isFinite(toX) ? toX : 0
+    const y1 = Number.isFinite(toY) ? toY : 0
+    const straight = Math.hypot(x1 - x0, y1 - y0)
+    if (!Number.isFinite(straight) || straight <= 0) return Number.isFinite(straight) ? straight : 0
+    const field = options.field !== undefined ? options.field : trailFieldFor(pawn?.world, { create: false })
+    if (!field || typeof field.pathCost !== 'function' || field.cells?.size === 0) return straight
+    const bias = options.bias !== undefined ? options.bias : trailPlanningBias(pawn)
+    const discount = TRAIL_COST_DISCOUNT * Math.max(0, Math.min(1, bias))
+    if (discount <= 0) return straight
+    const tick = options.tick ?? pawn?.world?.clock?.currentTick ?? pawn?.world?.tick ?? 0
+    return field.pathCost(x0, y0, x1, y1, { tick, discount })
+}

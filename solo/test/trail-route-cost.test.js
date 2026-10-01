@@ -21,6 +21,7 @@ import {
     createMovementPlan,
     measureRoute,
     replanIfNeeded,
+    routeCostTo,
     sortByRouteCost,
     trailPlanningBias,
     TRAIL_PLANNING_SKILL_MASTERY,
@@ -285,4 +286,77 @@ test('a world nobody has walked still has no trails to plan around', () => {
     assert.equal(plan.trailBias, 0)
     assert.equal(plan.trailSavings, 0)
     assert.ok(Number.isFinite(plan.travelTimeTicks) && plan.travelTimeTicks > 0)
+})
+
+// --- the multi-stop gathering run (#94's destination choice, one stop at a time)
+
+test('routeCostTo: costs a leg from anywhere, and degenerates to distance', () => {
+    const field = road(400)
+    const trained = walker({ orienteering: TRAIL_PLANNING_SKILL_MASTERY, field })
+    const dull = walker({ field })
+    const bare = walker({ orienteering: TRAIL_PLANNING_SKILL_MASTERY })
+
+    assert.equal(routeCostTo(bare, 0, 0, 300, 400), 500, 'no ground to read is a straight line')
+    assert.equal(routeCostTo(dull, 0, 0, 400, 0), 400, 'cannot read the ground, cannot use it')
+    const worn = routeCostTo(trained, 0, 0, 400, 0)
+    assert.ok(worn < 400, `a road should cost less than the road's own length, got ${worn}`)
+    assert.ok(worn >= 400 * (1 - TRAIL_COST_DISCOUNT), 'and never less than the discount allows')
+})
+
+test('routeCostTo: zero-length legs cost nothing, junk coordinates read as the origin', () => {
+    const trained = walker({ tracking: TRAIL_PLANNING_SKILL_MASTERY, field: road(100) })
+    assert.equal(routeCostTo(trained, 50, 0, 50, 0), 0)
+    // Same clamp sortByRouteCost applies: an unusable coordinate is placed at
+    // (0,0) rather than poisoning a whole ordering with NaN.
+    assert.equal(routeCostTo(trained, 0, 0, NaN, 0), 0)
+})
+
+test('a gathering run will walk farther to stay on the road', () => {
+    const pawn = makePawn('p-road-hauler', { orienteering: TRAIL_PLANNING_SKILL_MASTERY })
+    pawn.useSkill('routePlanning', 6)
+    const field = trailFieldFor(pawn.world)
+    // A saturated path running east out of the pawn's feet.
+    for (let x = pawn.x; x <= pawn.x + 400; x += TRAIL_CELL_SIZE) {
+        field.deposit(x, pawn.y, TRAIL_MAX_INTENSITY, 0, 'pawn')
+    }
+    // Off-road is nearer as the crow flies; on-road is nearer as the crow walks.
+    const nearButRough = { x: pawn.x + 90, y: pawn.y + 190 }
+    const farButFast = { x: pawn.x + 240, y: pawn.y }
+    for (const spot of [nearButRough, farButFast]) {
+        pawn.rememberResource({ type: 'rock', x: spot.x, y: spot.y })
+    }
+    for (const memory of pawn.resourceMemory) {
+        memory.confidence = 0.8
+        memory.clusterCount = 1
+        memory.observedSuccessCount = 0
+        memory.observedFailCount = 0
+    }
+    assert.equal(pawn.resourceMemory.length, 2, 'both rocks stayed separate memories')
+
+    const route = pawn.planGatheringRoute([{ type: 'rock', count: 1 }])
+    assert.equal(route.length, 1)
+    assert.deepEqual(route[0].location, farButFast, 'the rock down the road should beat the rock across country')
+})
+
+test('a pawn that cannot read the ground still gathers by straight lines', () => {
+    const pawn = makePawn('p-blueter', {})
+    pawn.useSkill('routePlanning', 6)
+    const field = trailFieldFor(pawn.world)
+    for (let x = pawn.x; x <= pawn.x + 400; x += TRAIL_CELL_SIZE) {
+        field.deposit(x, pawn.y, TRAIL_MAX_INTENSITY, 0, 'pawn')
+    }
+    const nearButRough = { x: pawn.x + 90, y: pawn.y + 190 }
+    const farButFast = { x: pawn.x + 240, y: pawn.y }
+    for (const spot of [nearButRough, farButFast]) {
+        pawn.rememberResource({ type: 'rock', x: spot.x, y: spot.y })
+    }
+    for (const memory of pawn.resourceMemory) {
+        memory.confidence = 0.8
+        memory.clusterCount = 1
+        memory.observedSuccessCount = 0
+        memory.observedFailCount = 0
+    }
+
+    const route = pawn.planGatheringRoute([{ type: 'rock', count: 1 }])
+    assert.deepEqual(route[0].location, nearButRough, 'untrained: the same choice #94 would have made')
 })
