@@ -347,6 +347,9 @@ export default function createEntityPose(renderer) {
                         }
                     )
                 }
+
+                // Head turns toward attention independently of the body — visible from behind
+                renderer._updatePawnHeadLook(entity, mesh)
             }
 
             const isHighlighted = entity === renderer.highlightedEntity && Date.now() < renderer.highlightEndTime
@@ -404,6 +407,60 @@ export default function createEntityPose(renderer) {
             }
             if (!goal?.targetId || !renderer.world?.entitiesMap) return null
             return renderer.world.entitiesMap.get(goal.targetId) ?? null
+        },
+
+        /** Absolute world yaw of what the pawn is paying attention to, or null. */
+        _getPawnAttentionYaw(pawn) {
+            const interactionYaw = renderer._getPawnInteractionYaw(pawn)
+            if (Number.isFinite(interactionYaw)) return interactionYaw
+
+            const candidates = [pawn?.currentTarget, renderer._resolveGoalEntityTarget(pawn?.goals?.currentGoal)]
+            for (const target of candidates) {
+                if (!target || target.id === pawn?.id) continue
+                if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) continue
+                const dx = target.x - pawn.x
+                const dy = target.y - pawn.y
+                if (Math.hypot(dx, dy) > 0.01) {
+                    return -Math.atan2(dy, dx) + Math.PI / 2
+                }
+            }
+            return null
+        },
+
+        /**
+         * Yaw the pawn's head node toward its attention (interaction partner, goal or
+         * resource target). With no target, the head scans side to side so pawns
+         * visibly "look around" without moving the body or camera.
+         */
+        _updatePawnHeadLook(pawn, mesh) {
+            const head = mesh.userData.headNode
+            if (!head) return
+            const bodyYaw = mesh.rotation.y
+            const attentionYaw = renderer._getPawnAttentionYaw(pawn)
+
+            let targetYaw
+            if (Number.isFinite(attentionYaw)) {
+                targetYaw = Math.atan2(
+                    Math.sin(attentionYaw - bodyYaw),
+                    Math.cos(attentionYaw - bodyYaw)
+                )
+            } else {
+                const t = renderer._timeUniform?.value ?? 0
+                const seed = renderer._hashUnit(pawn?.id, 'head-scan') * Math.PI * 2
+                const prevX = Number.isFinite(pawn?.prevX) ? pawn.prevX : pawn.x
+                const prevY = Number.isFinite(pawn?.prevY) ? pawn.prevY : pawn.y
+                const isMoving = Math.hypot((pawn.x ?? 0) - prevX, (pawn.y ?? 0) - prevY) > 0.06
+                targetYaw = Math.sin(t * 0.6 + seed) * (isMoving ? 0.32 : 0.55)
+            }
+
+            const clamped = Math.max(-1.25, Math.min(1.25, targetYaw))
+            const eased = renderer._easeAngle(
+                head.userData.headYaw ?? 0, clamped, head.userData, 'headYawVelocity',
+                { response: 0.25, damping: 0.82, maxSpeed: 0.35, snapThreshold: 0.004, stopVelocity: 0.003 }
+            )
+            head.userData.headYaw = eased
+            head.rotation.y = eased
+            head.rotation.z = -eased * 0.10
         },
 
         _disposeMesh(id) {

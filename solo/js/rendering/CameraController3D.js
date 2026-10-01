@@ -41,6 +41,9 @@ export default function createCameraController(renderer) {
                     })
                     renderer._centerModelToOrigin(model)
                     headGroup.add(model)
+                    let headNode = null
+                    model.traverse((node) => { if (!headNode && node.name === 'pawn_head') headNode = node })
+                    renderer._headMeshHeadNode = headNode
                     renderer._headMeshLoaded = true
                 },
                 undefined,
@@ -118,6 +121,30 @@ export default function createCameraController(renderer) {
                 renderer._smoothedPawnRotY += (targetRotY - renderer._smoothedPawnRotY) * 0.15
                 head.rotation.y = renderer._smoothedPawnRotY
 
+                // The pawn's head turns toward attention while the camera stays on course
+                const headNode = renderer._headMeshHeadNode
+                if (headNode) {
+                    const attentionYaw = renderer._getPawnAttentionYaw(pawn)
+                    let headTargetYaw
+                    if (Number.isFinite(attentionYaw)) {
+                        headTargetYaw = Math.atan2(
+                            Math.sin(attentionYaw - head.rotation.y),
+                            Math.cos(attentionYaw - head.rotation.y)
+                        )
+                    } else {
+                        const seed = renderer._hashUnit(pawn?.id, 'head-scan') * Math.PI * 2
+                        headTargetYaw = Math.sin(renderer._timeUniform.value * 0.6 + seed) * 0.4
+                    }
+                    const clamped = Math.max(-1.25, Math.min(1.25, headTargetYaw))
+                    const eased = renderer._easeAngle(
+                        headNode.userData.headYaw ?? 0, clamped, headNode.userData, 'headYawVelocity',
+                        { response: 0.25, damping: 0.82, maxSpeed: 0.35, snapThreshold: 0.004, stopVelocity: 0.003 }
+                    )
+                    headNode.userData.headYaw = eased
+                    headNode.rotation.y = eased
+                    headNode.rotation.z = -eased * 0.10
+                }
+
                 const pX = Number.isFinite(pawn.prevX) ? pawn.prevX : pawn.x
                 const pY = Number.isFinite(pawn.prevY) ? pawn.prevY : pawn.y
                 const isWalking = ((pawn.x - pX) ** 2 + (pawn.y - pY) ** 2) > 0.0001
@@ -166,7 +193,8 @@ export default function createCameraController(renderer) {
                 }
 
                 const isStudying = pawn.behaviorState === 'studying' || pawn.behaviorState === 'resting'
-                const attnWeight = isStudying ? 0.85 : (isMoving ? 0.35 : 0.6)
+                // Kept low: the head node (not the camera) is the primary attention indicator
+                const attnWeight = isStudying ? 0.55 : (isMoving ? 0.15 : 0.35)
                 renderer._tmpBlendDir
                     .addScaledVector(renderer._tmpTravelDir, 1 - attnWeight)
                     .addScaledVector(renderer._tmpAttnDir, attnWeight)

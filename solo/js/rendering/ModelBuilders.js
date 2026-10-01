@@ -524,6 +524,10 @@ export default function createModelBuilders(renderer) {
                 })
             })
             model.userData.groundOffset = renderer._captureGroundOffset(model)
+            // Capture the head node (if the GLB has one) so pose updates can yaw it independently
+            let headNode = null
+            model.traverse((node) => { if (!headNode && node.name === 'pawn_head') headNode = node })
+            model.userData.headNode = headNode
             return model
         }
     }
