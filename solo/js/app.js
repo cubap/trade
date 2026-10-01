@@ -11,6 +11,7 @@ import WaterGenerator from './core/WaterGenerator.js'
 import RECIPES from './models/crafting/Recipes.js'
 import { injectRecipes } from './models/entities/mobile/GoalPlanner.js'
 import PlayerMode from './core/PlayerMode.js'
+import { trailDebugFromParams } from './core/TrailPaint.js'
 import ProgressionController from './core/ProgressionController.js'
 import { setupInteractionPanel } from './ui/interactionPanel.js'
 import { setupFeedbackChannelUI } from './ui/feedbackChannelUI.js'
@@ -48,6 +49,11 @@ world.renderChunkRadius = renderChunkRadius
 let activeRendererKey = getRendererKeyFromHash()
 let { key: resolvedRendererKey, instance: activeRenderer } = createRenderer(world, 'game-canvas', activeRendererKey)
 activeRendererKey = resolvedRendererKey
+ 
+// ?trails=1 shows the raw wear grid (#93). Renderers stay URL-agnostic so they
+// can be constructed headlessly; the flag is injected here.
+const trailDebug = trailDebugFromParams(runtimeParams)
+activeRenderer.trailDebug = trailDebug
 
 const renderer = new Proxy({}, {
     get(_target, prop) {
@@ -95,6 +101,7 @@ function hotSwapRendererFromHash() {
     activeRenderer.destroy?.()
     activeRenderer = nextRenderer
     activeRendererKey = nextKey
+    nextRenderer.trailDebug = trailDebug
 
     if (perceptionEnabled && !activeRenderer.perceptionMode) {
         activeRenderer.togglePerceptionMode?.()

@@ -323,6 +323,64 @@ class TrailField {
         return out.sort((a, b) => b.intensity - a.intensity)
     }
 
+    /**
+     * Worn cells whose centre falls inside a world-space rectangle, strongest
+     * first. This is the render feed for #93: a view only ever needs the ground
+     * it can see, and a 25000-unit world with a few hundred worn cells should
+     * not have to be traversed whole to find them.
+     *
+     * Cost is proportional to *worn* ground (the cell map is sparse), not to the
+     * rect, so a bare world allocates nothing. Callers on a hot path should
+     * throttle: `paintSignature` in TrailPaint.js tells you whether anything
+     * actually changed since the last read.
+     *
+     * @param {number} x0 @param {number} y0 @param {number} x1 @param {number} y1
+     *   world units; corners may be given in either order
+     * @param {{threshold?: number, tick?: number}} options wear floor and the
+     *   tick to evaluate decay at
+     * @returns {Array<{cx: number, cy: number, x: number, y: number, intensity: number, kind: string|null}>}
+     *   `x`/`y` are the cell centre; `kind` is whichever walker's footfall
+     *   dominates the cell, or null when the cell is unattributed
+     */
+    cellsInRect(x0, y0, x1, y1, options = {}) {
+        const threshold = finite(options.threshold, TRAIL_EPSILON)
+        const tick = Math.floor(finite(options.tick, this.tick))
+        const size = this.cellSize
+
+        let left = finite(x0)
+        let right = finite(x1, left)
+        let top = finite(y0)
+        let bottom = finite(y1, top)
+        if (right < left) { const swap = left; left = right; right = swap }
+        if (bottom < top) { const swap = top; top = bottom; bottom = swap }
+
+        const out = []
+        for (const cell of this.cells.values()) {
+            const cx = cell.cx ?? Math.floor(finite(cell.x) / size)
+            const cy = cell.cy ?? Math.floor(finite(cell.y) / size)
+            const x = (cx + 0.5) * size
+            const y = (cy + 0.5) * size
+            if (x < left || x > right || y < top || y > bottom) continue
+
+            const age = tick - cell.last
+            const intensity = this.fade(cell.intensity, age)
+            if (!(intensity > threshold)) continue
+
+            // Dominant attribution, decayed by the same age as the cell so the
+            // colour and the wear cannot disagree.
+            let kind = null
+            if (cell.kinds) {
+                let best = 0
+                for (const k of Object.keys(cell.kinds)) {
+                    const value = this.fade(finite(cell.kinds[k]), age)
+                    if (value > best) { best = value; kind = k }
+                }
+            }
+            out.push({ cx, cy, x, y, intensity, kind })
+        }
+        return out.sort((a, b) => b.intensity - a.intensity)
+    }
+
     stats(tick = this.tick) {
         let sum = 0
         let worn = 0
@@ -342,6 +400,30 @@ class TrailField {
             peak,
             deposits: this.deposits
         }
+    }
+
+    /**
+     * Total remaining wear attributed to each walker, strongest first. This is
+     * what a tracking UI reads ("these paths are mostly deer"), and what
+     * TrailPaint's readout shows.
+     * @returns {Array<{kind: string, intensity: number, cells: number}>}
+     */
+    kindsInUse(tick = this.tick) {
+        const now = Math.floor(finite(tick, this.tick))
+        const totals = new Map()
+        for (const cell of this.cells.values()) {
+            if (!cell.kinds) continue
+            const age = now - cell.last
+            for (const k of Object.keys(cell.kinds)) {
+                const value = this.fade(finite(cell.kinds[k]), age)
+                if (!(value > TRAIL_EPSILON)) continue
+                const entry = totals.get(k) || { kind: k, intensity: 0, cells: 0 }
+                entry.intensity += value
+                entry.cells++
+                totals.set(k, entry)
+            }
+        }
+        return [...totals.values()].sort((a, b) => b.intensity - a.intensity)
     }
 
     /** Plain-object snapshot; the shape is stable for save/load and debugging. */

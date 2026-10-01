@@ -3,6 +3,8 @@ import PerceptionRenderer from './PerceptionRenderer.js'
 import EntityRenderer from './EntityRenderer.js'
 import UIRenderer from './UIRenderer.js'
 import { sightSummary, ringPoints } from '../core/SightRange.js'
+import { trailFieldFor } from '../core/TrailField.js'
+import { trailPaintFor, paintSignature } from '../core/TrailPaint.js'
 
 class CanvasRenderer {
     constructor(world, canvasId) {
@@ -58,6 +60,13 @@ class CanvasRenderer {
         this._lastLoggedTick = -1
         this.capabilities = null
         this.perceptionPolicy = 'phase_aware'
+
+        // Worn ground (#93). The paint feed is cached against paintSignature so
+        // an idle world does one string compare per frame, not a field walk.
+        this.trailsVisible = true
+        this.trailDebug = false
+        this._trailSignature = ''
+        this._trailCells = []
     }
 
     setupResizeHandler() {
@@ -173,6 +182,60 @@ class CanvasRenderer {
         this.context.restore()
     }
 
+    /**
+     * Worn ground, drawn under the entities (#93). Only the cells the viewport
+     * can see are requested, and the feed is only rebuilt when something
+     * actually changed - see TrailPaint.js for why this is a paint list rather
+     * than a tint on the terrain.
+     *
+     * `trailDebug` (set from `?trails=1` in app.js) draws the raw 8-unit cell
+     * grid with one tint per walker instead of dirt, which is also what a
+     * tracking UI would read.
+     */
+    renderTrails() {
+        if (this.trailsVisible === false) return
+        const field = trailFieldFor(this.world, { create: false })
+        if (!field) return
+
+        const tick = this.world?.clock?.currentTick ?? 0
+        const zoom = this.camera?.zoomLevel || 1
+        const halfW = (this.canvas.width / 2) / zoom
+        const halfH = (this.canvas.height / 2) / zoom
+        const rect = {
+            x0: this.camera.viewX - halfW,
+            y0: this.camera.viewY - halfH,
+            x1: this.camera.viewX + halfW,
+            y1: this.camera.viewY + halfH
+        }
+
+        const debug = !!this.trailDebug
+        const signature = paintSignature({ field, rect, tick, debug })
+        if (signature !== this._trailSignature) {
+            this._trailSignature = signature
+            this._trailCells = trailPaintFor({ field, rect, tick, debug }).cells
+        }
+        if (this._trailCells.length === 0) return
+
+        const context = this.context
+        context.save()
+        for (const cell of this._trailCells) {
+            const half = cell.size / 2
+            context.globalAlpha = cell.alpha
+            context.fillStyle = cell.color
+            context.fillRect(cell.x - half, cell.y - half, cell.size, cell.size)
+            if (debug) {
+                // Cell bounds in the same tint, so a reader can count cells and
+                // see which ones share a walker.
+                context.globalAlpha = Math.min(0.9, cell.alpha + 0.3)
+                context.strokeStyle = cell.color
+                context.lineWidth = 1 / zoom
+                context.strokeRect(cell.cx * field.cellSize, cell.cy * field.cellSize, field.cellSize, field.cellSize)
+            }
+        }
+        context.restore()
+        context.globalAlpha = 1
+    }
+
     /** Short-lived on-screen message, e.g. why a click hit nothing visible. */
     showNotice(text, durationMs = 4000) {
         this.uiRenderer.showNotice?.(text, durationMs)
@@ -228,6 +291,9 @@ class CanvasRenderer {
         if (this.uiRenderer.showChunks) {
             this.uiRenderer.renderChunks()
         }
+        
+        // Worn ground sits between the terrain and everything on it (#93)
+        this.renderTrails()
         
         // Get entities to render based on perception mode
         const entitiesToRender = this.perception.getEntitiesToRender(this.camera.followedEntity)
