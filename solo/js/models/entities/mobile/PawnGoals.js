@@ -5,7 +5,8 @@ import {
     currentWaypoint,
     advanceWaypoint,
     planComplete,
-    replanIfNeeded
+    replanIfNeeded,
+    sortByRouteCost
 } from './MovementPlan.js'
 import Structure from '../immobile/Structure.js'
 import * as PawnMercantile from './PawnMercantile.js'
@@ -655,6 +656,19 @@ class PawnGoals {
         return behaviorMap[goal.type] || 'idle'
     }
     
+    /**
+     * #94: put a candidate list into nearest-first order by what it costs to
+     * *walk* there instead of crow-flies distance. In place, like the distance
+     * sort it replaces. With no trail field, or a pawn with no
+     * orienteering/tracking/cartography, cost is exactly Euclidean distance
+     * and the order is the one the old sort produced.
+     */
+    routeOrder(list) {
+        if (!Array.isArray(list)) return list
+        sortByRouteCost(this.pawn, list).forEach((item, i) => { list[i] = item })
+        return list
+    }
+
     findTargetForGoal(goal) {
         if (goal.targetTags) {
             // Find resources with specific tags
@@ -666,12 +680,8 @@ class PawnGoals {
             })
             
             if (targets.length > 0) {
-                // Find closest target
-                targets.sort((a, b) => {
-                    const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
-                    const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
-                    return distA - distB
-                })
+                // Closest target, by what it costs to walk there (#94)
+                this.routeOrder(targets)
                 
                 this.pawn.nextTargetX = targets[0].x
                 this.pawn.nextTargetY = targets[0].y
@@ -1377,11 +1387,8 @@ class PawnGoals {
                 return
             }
 
-            candidates.sort((a, b) => {
-                const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
-                const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
-                return distA - distB
-            })
+            // Closest candidate, by what it costs to walk there (#94)
+            this.routeOrder(candidates)
 
             const resource = candidates[0]
             const dx = resource.x - this.pawn.x
@@ -1455,12 +1462,8 @@ class PawnGoals {
                     })
                     
                     if (nearby.length > 0) {
-                        // Find closest resource
-                        nearby.sort((a, b) => {
-                            const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
-                            const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
-                            return distA - distB
-                        })
+                        // Closest resource, by what it costs to walk there (#94)
+                        this.routeOrder(nearby)
                         
                         const resource = nearby[0]
                         const rdx = this.pawn.x - resource.x
@@ -1660,12 +1663,8 @@ class PawnGoals {
             }
             
             if (harvestable.length > 0) {
-                // Find closest harvestable
-                harvestable.sort((a, b) => {
-                    const distA = Math.sqrt((a.x - this.pawn.x) ** 2 + (a.y - this.pawn.y) ** 2)
-                    const distB = Math.sqrt((b.x - this.pawn.x) ** 2 + (b.y - this.pawn.y) ** 2)
-                    return distA - distB
-                })
+                // Closest harvestable, by what it costs to walk there (#94)
+                this.routeOrder(harvestable)
                 
                 const resource = harvestable[0]
                 const dx = this.pawn.x - resource.x

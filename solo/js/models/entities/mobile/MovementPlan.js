@@ -1,10 +1,17 @@
 import { clampTargetToPassable } from './MovementTerrain.js'
+import { trailFieldFor, TRAIL_COST_DISCOUNT } from '../../../core/TrailField.js'
 
 // Movement planning (#81): the `planning` skill turns directionless wandering
 // into intentional routes. Low planning keeps the old "pick a vector and go"
 // behaviour; once planning is developed the pawn builds waypoint routes to its
 // destination, follows them leg by leg, re-evaluates only on a skill-scaled
 // interval, and is harder to divert while a plan is active.
+//
+// #94 adds the ground to that picture: a route is *costed* rather than
+// measured, so legs sitting on worn corridors are cheaper, waypoints snap onto
+// known paths, and destination choice ("two equal berries, one of them down
+// the road") follows. #77's followBias() bends one step at a time; this is the
+// plan that decides before the step.
 
 export const PLANNING_MIN_FOR_ROUTES = 0.3
 
@@ -13,6 +20,41 @@ export const WAYPOINT_TOLERANCE = 20
 
 // Rough speed used for travel-time estimates (world units per tick).
 const ESTIMATE_SPEED = 1.5
+
+/**
+ * #94: how far off the direct line a waypoint may be dragged onto worn ground.
+ * Bounded on purpose - an unbounded "always use the path" makes every planner
+ * on the map converge onto one corridor, which is the opposite of the
+ * emergence #77's tests depend on.
+ */
+export const TRAIL_WAYPOINT_SNAP = 40
+
+/** ...and never more than this fraction of the leg length. */
+export const TRAIL_WAYPOINT_SNAP_RATIO = 0.25
+
+/**
+ * #94: skill at which a pawn reads the land well enough to plan with it.
+ * Mirrors #77's mastery constant in Pawn.js; duplicated rather than imported
+ * because MovementPlan must not depend on the entity classes.
+ */
+export const TRAIL_PLANNING_SKILL_MASTERY = 20
+
+/**
+ * #94: how strongly this pawn plans its routes around worn ground, 0..1. Zero
+ * for an untrained traveller, which is what keeps a fresh pawn's behaviour
+ * identical to the pre-#94 planner - it cannot budget for paths it cannot
+ * read. Gated by the skills #77 pays for trail use, not by `planning`.
+ */
+export function trailPlanningBias(pawn) {
+    if (typeof pawn?.getSkill !== 'function') return 0
+    const skill = Math.max(
+        pawn.getSkill('orienteering') || 0,
+        pawn.getSkill('tracking') || 0,
+        pawn.getSkill('cartography') || 0
+    )
+    if (!(skill > 0)) return 0
+    return Math.min(1, skill / TRAIL_PLANNING_SKILL_MASTERY)
+}
 
 /**
  * Planning-skill-derived route parameters. Higher planning means longer legs
@@ -39,7 +81,14 @@ export function createMovementPlan(pawn, destX, destY, goal, tick) {
     const targetX = clamped.x
     const targetY = clamped.y
 
-    const waypoints = buildWaypoints(pawn.x, pawn.y, targetX, targetY, params.legLength)
+    // #94: read the ground, never create it. A world nobody has walked has no
+    // field and plans exactly as it did before.
+    const field = trailFieldFor(pawn.world, { create: false })
+    const bias = field ? trailPlanningBias(pawn) : 0
+    const routeOptions = { field, bias, tick }
+
+    const waypoints = buildWaypoints(pawn.x, pawn.y, targetX, targetY, params.legLength, routeOptions)
+    const route = measureRoute(pawn.x, pawn.y, waypoints, targetX, targetY, routeOptions)
 
     return {
         goal: goal ?? null,
@@ -48,40 +97,86 @@ export function createMovementPlan(pawn, destX, destY, goal, tick) {
         index: 0,
         createdTick: tick ?? 0,
         replanAt: (tick ?? 0) + params.replanInterval,
-        travelTimeTicks: estimateTravelTime(pawn.x, pawn.y, waypoints, targetX, targetY),
-        planningAtCreation: planning
+        travelTimeTicks: estimateTravelTime(pawn.x, pawn.y, waypoints, targetX, targetY, routeOptions),
+        planningAtCreation: planning,
+        // #94 telemetry: units of walking the worn ground saved over the
+        // straight-line cost, and how many legs were placed on a path.
+        trailSavings: route.savings,
+        trailLegs: waypoints.filter(wp => wp.onTrail).length,
+        trailBias: bias
     }
 }
 
 /**
  * Intermediate waypoints along the straight line, spaced ~legLength apart.
  * The final destination is not included (it is tracked separately).
+ *
+ * With `field` and a non-zero `bias` (#94) each waypoint is nudged onto the
+ * strongest worn ground within a bounded radius of its straight-line slot: a
+ * path worth taking is one you barely leave the line for.
  */
-export function buildWaypoints(fromX, fromY, toX, toY, legLength) {
+export function buildWaypoints(fromX, fromY, toX, toY, legLength, options = {}) {
     const dx = toX - fromX
     const dy = toY - fromY
     const dist = Math.hypot(dx, dy)
     // Intermediate legs only; the destination is tracked separately.
     const legs = Math.max(0, Math.ceil(dist / legLength) - 1)
+    const field = options.field ?? null
+    const bias = Math.max(0, Math.min(1, options.bias ?? 0))
+    const snap = field && bias > 0
+        ? Math.min(TRAIL_WAYPOINT_SNAP, (legLength || 0) * TRAIL_WAYPOINT_SNAP_RATIO) * bias
+        : 0
     const waypoints = []
     for (let i = 1; i <= legs; i++) {
         const t = (i * legLength) / dist
-        waypoints.push({ x: fromX + dx * t, y: fromY + dy * t })
+        const nominal = { x: fromX + dx * t, y: fromY + dy * t }
+        if (snap > 0) {
+            const worn = field.wearNear(nominal.x, nominal.y, { radius: snap, tick: options.tick })
+            // The search radius is capped at a fraction of the leg length and
+            // every waypoint sits a whole leg ahead of the walker, so a snapped
+            // point is still ahead: paths are used, not chased. That cap is
+            // also what stops every planner on the map converging onto a
+            // single corridor.
+            if (worn) {
+                nominal.x = worn.x
+                nominal.y = worn.y
+                nominal.onTrail = true
+                nominal.wear = worn.intensity
+                nominal.kind = worn.kind ?? null
+            }
+        }
+        waypoints.push(nominal)
     }
     return waypoints
 }
 
-function estimateTravelTime(fromX, fromY, waypoints, toX, toY) {
-    let dist = 0
-    let x = fromX
-    let y = fromY
-    for (const wp of waypoints) {
-        dist += Math.hypot(wp.x - x, wp.y - y)
-        x = wp.x
-        y = wp.y
+/**
+ * #94: distance and trail-aware cost of a whole route (start, waypoints,
+ * destination). Cost equals distance whenever there is no field, no skill to
+ * read it with, or nothing worn underfoot, so an estimate built before #94 is
+ * still an estimate built after it.
+ */
+export function measureRoute(fromX, fromY, waypoints, toX, toY, options = {}) {
+    const points = [{ x: fromX, y: fromY }, ...(Array.isArray(waypoints) ? waypoints : []), { x: toX, y: toY }]
+    const distance = points.slice(1).reduce((sum, p, i) => {
+        const prev = points[i]
+        return sum + Math.hypot(p.x - prev.x, p.y - prev.y)
+    }, 0)
+    const field = options.field
+    const bias = Math.max(0, Math.min(1, options.bias ?? 0))
+    if (!field || typeof field.routeCost !== 'function' || bias <= 0) {
+        return { distance, cost: distance, savings: 0 }
     }
-    dist += Math.hypot(toX - x, toY - y)
-    return Math.round(dist / ESTIMATE_SPEED)
+    const route = field.routeCost(points, {
+        tick: options.tick,
+        discount: TRAIL_COST_DISCOUNT * bias
+    })
+    return { distance, cost: route.cost, savings: route.savings }
+}
+
+function estimateTravelTime(fromX, fromY, waypoints, toX, toY, options = {}) {
+    const { cost } = measureRoute(fromX, fromY, waypoints, toX, toY, options)
+    return Math.round(cost / ESTIMATE_SPEED)
 }
 
 /**
@@ -124,8 +219,43 @@ export function replanIfNeeded(plan, pawn, tick) {
     if (!plan || tick < plan.replanAt) return false
     const planning = pawn.getSkill ? pawn.getSkill('planning') : 0
     const params = planningParams(planning)
-    plan.waypoints = buildWaypoints(pawn.x, pawn.y, plan.destination.x, plan.destination.y, params.legLength)
+    const field = trailFieldFor(pawn.world, { create: false })
+    const bias = field ? trailPlanningBias(pawn) : 0
+    const routeOptions = { field, bias, tick }
+    plan.waypoints = buildWaypoints(pawn.x, pawn.y, plan.destination.x, plan.destination.y, params.legLength, routeOptions)
     plan.index = 0
     plan.replanAt = tick + params.replanInterval
+    // Skills improve while walking, so a route can learn to use the ground it
+    // is wearing down; keep the plan's own numbers in step with its legs.
+    plan.trailBias = bias
+    plan.trailLegs = plan.waypoints.filter(wp => wp.onTrail).length
+    plan.travelTimeTicks = estimateTravelTime(pawn.x, pawn.y, plan.waypoints, plan.destination.x, plan.destination.y, routeOptions)
     return true
+}
+
+/**
+ * #94: order destinations by how expensive they are to *get to*, not how far
+ * away they are. This is the destination half of the ticket: with two equally
+ * valid berries, the one down the path wins.
+ *
+ * With no field, or an untrained pawn, the cost degenerates to Euclidean
+ * distance and the ordering is exactly the nearest-first sort this replaced.
+ * Costs are computed once per candidate rather than once per comparison.
+ */
+export function sortByRouteCost(pawn, list, options = {}) {
+    const items = Array.isArray(list) ? list.slice() : []
+    if (items.length < 2) return items
+    const px = Number.isFinite(pawn?.x) ? pawn.x : 0
+    const py = Number.isFinite(pawn?.y) ? pawn.y : 0
+    const field = options.field !== undefined ? options.field : trailFieldFor(pawn?.world, { create: false })
+    const bias = options.bias !== undefined ? options.bias : trailPlanningBias(pawn)
+    const tick = options.tick ?? pawn?.world?.clock?.currentTick ?? pawn?.world?.tick ?? 0
+    const discount = TRAIL_COST_DISCOUNT * Math.max(0, Math.min(1, bias))
+    const costed = field && discount > 0 && typeof field.pathCost === 'function'
+        ? (item) => field.pathCost(px, py, item.x, item.y, { tick, discount })
+        : (item) => Math.hypot((Number.isFinite(item?.x) ? item.x : 0) - px, (Number.isFinite(item?.y) ? item.y : 0) - py)
+    return items
+        .map(item => ({ item, cost: costed(item) }))
+        .sort((a, b) => a.cost - b.cost)
+        .map(entry => entry.item)
 }

@@ -65,6 +65,20 @@ export const TRAIL_MAX_TURN = 0.16
 // Below this, a cell is not worth reading.
 export const TRAIL_EPSILON = 1 / 1024
 
+/**
+ * #94: how much of a leg's cost fully worn ground takes off. A road is not
+ * free to walk, it is about a third less tiring than scrub. Any larger and
+ * every planner on the map beelines for the single best corridor; the number
+ * has to stay small enough that destination choice still depends on distance.
+ */
+export const TRAIL_COST_DISCOUNT = 0.35
+
+/** Sample spacing for cost estimates, in world units. */
+export const TRAIL_COST_SAMPLE = 8
+
+/** Longest leg we will integrate. This ranks destinations; it does not trace them. */
+export const TRAIL_COST_MAX_SAMPLES = 64
+
 const LN2 = Math.LN2
 
 function finite(value, fallback = 0) {
@@ -379,6 +393,94 @@ class TrailField {
             out.push({ cx, cy, x, y, intensity, kind })
         }
         return out.sort((a, b) => b.intensity - a.intensity)
+    }
+
+    /**
+     * Travel cost of a straight leg given the ground under it (#94). This is
+     * the planner's question - "which destination is cheaper?" - as opposed to
+     * followBias()'s reflex, "which way should this step turn?".
+     *
+     * Returns plain Euclidean distance whenever nothing worn lies along the
+     * leg, so an untouched world costs exactly what it cost before this
+     * existed and every existing distance comparison keeps its ordering.
+     *
+     * @param {number} x0 @param {number} y0 @param {number} x1 @param {number} y1
+     * @param {{tick?: number, discount?: number, threshold?: number}} options
+     *   `discount` is the fraction of the leg the walker is willing to save at
+     *   full saturation (0 disables the estimate entirely); `threshold` is the
+     *   wear floor below which ground is scrub, not path.
+     * @returns {number} cost in units of walking, never greater than the distance
+     */
+    pathCost(x0, y0, x1, y1, options = {}) {
+        const ax = finite(x0), ay = finite(y0)
+        const bx = finite(x1), by = finite(y1)
+        const distance = Math.hypot(bx - ax, by - ay)
+        if (!(distance > 0)) return 0
+
+        const discount = Math.min(0.9, Math.max(0, finite(options.discount, TRAIL_COST_DISCOUNT)))
+        if (discount <= 0 || this.cells.size === 0) return distance
+
+        const threshold = finite(options.threshold, TRAIL_FOLLOW_THRESHOLD)
+        const tick = Math.floor(finite(options.tick, this.tick))
+        const cap = this.maxIntensity > 0 ? this.maxIntensity : TRAIL_MAX_INTENSITY
+        const samples = Math.min(
+            TRAIL_COST_MAX_SAMPLES,
+            Math.max(2, Math.round(distance / TRAIL_COST_SAMPLE))
+        )
+
+        let worn = 0
+        for (let i = 0; i < samples; i++) {
+            const t = (i + 0.5) / samples
+            const intensity = this.intensityAt(ax + (bx - ax) * t, ay + (by - ay) * t, tick)
+            if (intensity > threshold) worn += Math.min(1, intensity / cap)
+        }
+        return distance * (1 - discount * (worn / samples))
+    }
+
+    /**
+     * Cost of a whole polyline route (#94), leg by leg, plus the distance and
+     * the units of walking the worn ground saved. `points` is the traveller's
+     * position followed by its waypoints and destination; anything unparseable
+     * is dropped rather than thrown, because this is called during planning.
+     *
+     * @param {Array<{x: number, y: number}>} points
+     * @param {{tick?: number, discount?: number, threshold?: number}} options
+     * @returns {{cost: number, distance: number, savings: number}}
+     */
+    routeCost(points, options = {}) {
+        const list = Array.isArray(points)
+            ? points.filter(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+            : []
+        let cost = 0
+        let distance = 0
+        for (let i = 1; i < list.length; i++) {
+            const prev = list[i - 1]
+            const next = list[i]
+            distance += Math.hypot(next.x - prev.x, next.y - prev.y)
+            cost += this.pathCost(prev.x, prev.y, next.x, next.y, options)
+        }
+        return { cost, distance, savings: Math.max(0, distance - cost) }
+    }
+
+    /**
+     * The strongest worn ground within `radius` of a spot (#94). Answers with
+     * a cell centre, so a planner steers toward ground that actually exists
+     * instead of a coordinate between cells. Null when the neighbourhood is
+     * unworn, which is the common case and must stay cheap.
+     */
+    wearNear(x, y, options = {}) {
+        const px = finite(x), py = finite(y)
+        const radius = finite(options.radius, this.cellSize * 3)
+        if (!(radius > 0)) return null
+        const cells = this.cellsInRect(px - radius, py - radius, px + radius, py + radius, {
+            threshold: finite(options.threshold, TRAIL_FOLLOW_THRESHOLD),
+            tick: options.tick
+        })
+        // cellsInRect is strongest-first, so the first hit is the best hit.
+        for (const cell of cells) {
+            if (Math.hypot(cell.x - px, cell.y - py) <= radius) return cell
+        }
+        return null
     }
 
     stats(tick = this.tick) {
