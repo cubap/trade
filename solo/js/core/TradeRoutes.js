@@ -7,6 +7,11 @@
 
 import { getPrice } from './PriceRegistry.js'
 
+/** True for a real, usable duration; a trip nobody timed must not poison the average. */
+function positive(value) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
 /**
  * Create a new trade route between two locations.
  * 
@@ -14,9 +19,14 @@ import { getPrice } from './PriceRegistry.js'
  * @param {string} fromLocation - Origin location identifier
  * @param {string} toLocation - Destination location identifier
  * @param {number} tick - Current world tick
+ * @param {Object} [options] - #95 measurements taken from the ground itself:
+ *   {fromPoint, toPoint, geometry, distance, coverage, travelTime, value}.
+ *   A route is no longer only a pair of names: it carries the polyline it
+ *   walks, so a renderer, a cost estimate, or a merchant deciding whether the
+ *   trip is worth it can use it without asking the sim anything.
  * @returns {Object} The created route object
  */
-export function createRoute(routes, fromLocation, toLocation, tick) {
+export function createRoute(routes, fromLocation, toLocation, tick, options = {}) {
     if (!routes.list) routes.list = []
 
     const routeId = `route_${fromLocation}_${toLocation}_${Date.now()}`
@@ -26,13 +36,33 @@ export function createRoute(routes, fromLocation, toLocation, tick) {
         to: toLocation,
         trips: 1,
         lastTrip: tick,
-        totalValue: 0,
-        averageTravelTime: 0,
-        safetyScore: 1.0
+        totalValue: options.value || 0,
+        averageTravelTime: positive(options.travelTime) ? options.travelTime : 0,
+        safetyScore: 1.0,
+        // #95: geometry, null when the route was made from names alone.
+        fromPoint: options.fromPoint ?? null,
+        toPoint: options.toPoint ?? null,
+        geometry: Array.isArray(options.geometry) && options.geometry.length ? options.geometry : null,
+        distance: options.distance ?? null,
+        coverage: options.coverage ?? null
     }
 
     routes.list.push(route)
     return route
+}
+
+/**
+ * Find the route between two places, in either direction (#95).
+ *
+ * A road runs both ways, and a return trip should maintain the entry the
+ * outbound trip made rather than start a rival one.
+ * @param {Object} routes - Trade routes collection
+ * @param {string} a - One location identifier
+ * @param {string} b - The other
+ * @returns {Object|null}
+ */
+export function findRoute(routes, a, b) {
+    return routes.list?.find(r => (r.from === a && r.to === b) || (r.from === b && r.to === a)) ?? null
 }
 
 /**
@@ -44,20 +74,33 @@ export function createRoute(routes, fromLocation, toLocation, tick) {
  * @param {number} value - Value of goods traded on this trip
  * @param {number} travelTime - Time taken for this trip in ticks
  * @param {number} tick - Current world tick
+ * @param {Object} [options] - #95 measurements for this trip, same shape as
+ *   createRoute's. A trip is how a road is kept: the entry refreshes whatever
+ *   the walker actually measured this time round, so the table follows the
+ *   ground instead of freezing the first survey.
+ * @returns {Object|null} The route maintained, or null when none matched
  */
-export function recordTrip(routes, fromLocation, toLocation, value, travelTime, tick) {
-    const route = routes.list?.find(r =>
-        r.from === fromLocation && r.to === toLocation
-    )
+export function recordTrip(routes, fromLocation, toLocation, value, travelTime, tick, options = {}) {
+    const route = findRoute(routes, fromLocation, toLocation)
 
-    if (!route) return
+    if (!route) return null
 
     route.trips++
     route.lastTrip = tick
     route.totalValue += value
 
     // Running average of travel time
-    route.averageTravelTime = ((route.averageTravelTime * (route.trips - 1)) + travelTime) / route.trips
+    if (positive(travelTime)) {
+        route.averageTravelTime = ((route.averageTravelTime * (route.trips - 1)) + travelTime) / route.trips
+    }
+
+    if (options.fromPoint) route.fromPoint = options.fromPoint
+    if (options.toPoint) route.toPoint = options.toPoint
+    if (Array.isArray(options.geometry) && options.geometry.length) route.geometry = options.geometry
+    if (options.distance != null) route.distance = options.distance
+    if (options.coverage != null) route.coverage = options.coverage
+
+    return route
 }
 
 /**

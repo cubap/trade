@@ -89,9 +89,10 @@ export function getResourceRichness(pawn, radius = 100) {
 
 /**
  * Canonize encampment landmark when communal storage is created.
- * Makes the settlement discoverable to new pawns.
+ * Makes the settlement discoverable to new pawns, and opens its roads (#95).
  * @param {Pawn} pawn
  * @param {ResourceCache} cache
+ * @returns {number|undefined} roads opened, undefined when nothing was canonized
  */
 export function canonizeEncampment(pawn, cache) {
     if (!pawn.encampmentLandmark || !cache) return
@@ -117,6 +118,51 @@ export function canonizeEncampment(pawn, cache) {
     }
 
     pawn.addThought('Our encampment is now a recognized settlement.', 'civic')
+
+    // #95: a recognized settlement metalls the paths its people already walk.
+    const roads = openSettlementRoads(pawn)
+    if (roads > 0) {
+        recordCivicContribution(pawn, 'build', roads)
+    }
+    return roads
+}
+
+/**
+ * Open the roads of a settlement (#95): from every member's feet to the
+ * encampment itself.
+ *
+ * Nothing here gets built on virgin ground. TrailField.promoteCorridor refuses
+ * a corridor nobody wears, so this is recognition rather than construction -
+ * which is exactly what the ticket asks for: the road appears where the
+ * traffic already goes, and a settlement of people who wander nowhere gets no
+ * roads at all. A member competent at cartography lays the straight surveyed
+ * line instead, so the civic act also pays the craft.
+ * @param {Pawn} pawn - a member of the settlement
+ * @returns {number} how many roads were opened
+ */
+export function openSettlementRoads(pawn) {
+    const landmark = pawn?.encampmentLandmark
+    if (!landmark || typeof pawn.openRoadTo !== 'function') return 0
+
+    const folk = [pawn]
+    for (const memberId of landmark.groupMembers ?? []) {
+        const member = pawn.world?.entitiesMap?.get(memberId)
+        if (member && member !== pawn && typeof member.openRoadTo === 'function') {
+            folk.push(member)
+        }
+    }
+
+    let roads = 0
+    for (const walker of folk) {
+        if (walker.openRoadTo(landmark.x, landmark.y, { surveyed: true }).ok) roads++
+    }
+    if (roads > 0) {
+        pawn.addThought(
+            roads > 1 ? `${roads} roads lead into our settlement.` : 'Our place has a road to it now.',
+            'civic'
+        )
+    }
+    return roads
 }
 
 /**

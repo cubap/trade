@@ -57,6 +57,24 @@ export function trailPlanningBias(pawn) {
 }
 
 /**
+ * #95: cartography at which a pawn will lay a straight surveyed line across
+ * country it has never worn, instead of metalling the footpath under its feet.
+ * Half the mastery needed merely to *use* worn ground: anyone can walk a path,
+ * improving on it is the craft.
+ */
+export const TRAIL_SURVEY_SKILL = TRAIL_PLANNING_SKILL_MASTERY / 2
+
+/**
+ * True when this pawn is a surveyor good enough to build rather than recognise
+ * (#95). Deliberately cartography alone - tracking and orienteering tell you
+ * where people have been, which is the opposite of a surveyed line.
+ */
+export function canSurveyRoutes(pawn) {
+    if (typeof pawn?.getSkill !== 'function') return false
+    return (pawn.getSkill('cartography') || 0) >= TRAIL_SURVEY_SKILL
+}
+
+/**
  * Planning-skill-derived route parameters. Higher planning means longer legs
  * (bigger-picture routes) and less frequent re-evaluation (more resolve).
  */

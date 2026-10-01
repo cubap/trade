@@ -586,6 +586,12 @@ class TrailField {
         const surveyed = options.surveyed === true
         const minCoverage = finite(options.minCoverage, TRAIL_ROAD_MIN_COVERAGE)
 
+        // A road has to go somewhere. Without this the surveyed bypass would
+        // "pave" a dot under the feet of anyone asking, which the civic road
+        // opening does for whoever is standing on the settlement already.
+        if (!(corridor.length > 0)) {
+            return { ok: false, reason: 'nowhere', ...corridor }
+        }
         if (!surveyed && corridor.coverage < minCoverage) {
             return { ok: false, reason: 'unworn', ...corridor }
         }

@@ -1973,6 +1973,8 @@ class PawnGoals {
             if (dist > 10) {
                 this.pawn.nextTargetX = partner.x
                 this.pawn.nextTargetY = partner.y
+                // #95: the journey is what makes the road, so time it.
+                this.pawn.beginTradeTrip?.(partner)
             } else {
                 // Close enough to trade
                 const surplus = PawnMercantile.getSurplusItems(this.pawn)
@@ -2001,6 +2003,9 @@ class PawnGoals {
 
                 if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
                     this.pawn.gainSkill('bartering', 1)
+                    // #95: the trip that just happened maintains the road and
+                    // the route table entry for it.
+                    this.pawn.noteTradeRoute?.(partner)
                     this.completeCurrentGoal()
                 }
             }

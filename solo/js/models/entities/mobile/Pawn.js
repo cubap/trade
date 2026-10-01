@@ -20,15 +20,21 @@ import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
 import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
 import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
-import { routeCostTo } from './MovementPlan.js'
+import { routeCostTo, canSurveyRoutes } from './MovementPlan.js'
+import { trailFieldFor } from '../../../core/TrailField.js'
+import { createRoute, findRoute, recordTrip } from '../../../core/TradeRoutes.js'
 
 // Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
 const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
 const TRAIL_SKILL_MASTERY = 20        // skill at which affinity is complete
 const TRAIL_XP_ORIENTEERING = 0.004   // per followed step
 const TRAIL_XP_TRACKING = 0.006       // per step on ground someone else wore
+const TRAIL_XP_ROAD = 0.25            // per road opened (#95, a rare act)
 // Below this combined share of other species' wear, a corridor is just ground.
 const TRAIL_TRACKING_SHARE = 0.1
+// A trading trip longer than this was not a journey to a market and back; it
+// says nothing about how long the road takes (#95).
+const TRADE_ROUTE_MAX_TRIP_TICKS = 600
 const TRAIL_THOUGHT_COOLDOWN = 320    // ticks between remarks about a path
 const TRAIL_REMARK_WEAR = 6           // how worn it must be to be worth noting
 
@@ -843,6 +849,99 @@ class Pawn extends MobileEntity {
         return TRAIL_BASE_AFFINITY + (1 - TRAIL_BASE_AFFINITY) * trained
     }
 
+    /**
+     * Roads (#95): formalise the worn ground between here and (x, y).
+     *
+     * Anyone walking can *recognise* a road: the corridor is metalled only
+     * where traffic already wore it, and the request is refused on virgin
+     * ground. A pawn with the surveying craft may instead lay the straight
+     * line, which is better forever rather than cheapest today. Either way the
+     * only thing written is wear (TrailField.promoteCorridor), so decay keeps
+     * the road honest: an abandoned road fades.
+     * @returns {{ok: boolean, reason: string, points: Array, length: number, coverage: number}}
+     */
+    openRoadTo(x, y, options = {}) {
+        const field = trailFieldFor(this.world, { create: false })
+        if (!field) return { ok: false, reason: 'no ground', points: [], length: 0, coverage: 0 }
+
+        // Underfoot by default; a merchant passes the place the journey started
+        // from, since that is the corridor its walking actually wore.
+        const fromX = Number.isFinite(options.fromX) ? options.fromX : this.x
+        const fromY = Number.isFinite(options.fromY) ? options.fromY : this.y
+        const surveyed = options.surveyed === true && canSurveyRoutes(this)
+        const road = field.promoteCorridor(fromX, fromY, x, y, {
+            tick: this._trailTick(),
+            kind: 'road',
+            surveyed,
+            wear: options.wear,
+            minCoverage: options.minCoverage
+        })
+        if (!road.ok) return road
+
+        this.roadsOpened = (this.roadsOpened || 0) + 1
+        this.useSkill(surveyed ? 'cartography' : 'orienteering', TRAIL_XP_ROAD)
+        return road
+    }
+
+    /**
+     * Routes (#95): start the clock when a merchant sets out for a partner, so
+     * the route table can hold a measured travel time instead of a guess. Only
+     * the departure is recorded; refreshing it mid-journey would reset the
+     * measurement the arrival is supposed to read.
+     */
+    beginTradeTrip(partner) {
+        if (!partner || this.tradeTrip) return
+        this.tradeTrip = {
+            partner: partner.id ?? null,
+            fromX: this.x,
+            fromY: this.y,
+            startTick: this._trailTick()
+        }
+    }
+
+    /**
+     * Routes (#95): a finished barter is the event that makes a road. The way
+     * between the two homes goes into the world's route table with its
+     * polyline rather than only its names, and the wear along it is topped up,
+     * so the corridor traffic uses survives decay while a footpath nobody
+     * walks fades away.
+     * @param {Pawn} other - the partner just traded with
+     * @returns {{road: Object, route: Object|null}|null} nothing if there was
+     *   no world to hold the route, or no road and no pair of places to name it
+     */
+    noteTradeRoute(other) {
+        if (!other || other === this || !this.world) return null
+
+        const trip = this.tradeTrip
+        this.tradeTrip = null
+        const tick = this._trailTick()
+        const road = this.openRoadTo(other.x, other.y, { fromX: trip?.fromX, fromY: trip?.fromY })
+        if (trip && trip.partner !== (other.id ?? null)) return { road, route: null }
+
+        const elapsed = trip ? tick - trip.startTick : null
+        const travelTime = elapsed > 0 && elapsed <= TRADE_ROUTE_MAX_TRIP_TICKS ? elapsed : null
+
+        const here = this.getHomeLandmark()?.name ?? null
+        const there = other.getHomeLandmark()?.name ?? null
+        if (!here || !there || here === there) return { road, route: null }
+
+        // Both ends write the same entry: a road runs both ways.
+        const [a, b] = here < there ? [here, there] : [there, here]
+        const routes = this.world.tradeRoutes ?? (this.world.tradeRoutes = { list: [] })
+        const measured = {
+            fromPoint: { x: trip?.fromX ?? this.x, y: trip?.fromY ?? this.y },
+            toPoint: { x: other.x, y: other.y },
+            geometry: road.ok ? road.points : null,
+            distance: road.ok ? road.length : null,
+            coverage: road.ok ? road.coverage : null
+        }
+        const existing = findRoute(routes, a, b)
+        const route = existing
+            ? recordTrip(routes, a, b, 0, travelTime, tick, measured)
+            : createRoute(routes, a, b, tick, { travelTime, ...measured })
+        return { road, route }
+    }
+
     // Refresh affinity from skills on the way into the shared steering helper.
     _steerAlongTrails(dirX, dirY) {
         this.trailAffinity = this.trailAwareness()
@@ -1475,6 +1574,35 @@ class Pawn extends MobileEntity {
     // Memory delegation to PawnMemory module
     rememberLandmark(landmark) {
         return PawnMemory.rememberLandmark(this, landmark)
+    }
+
+    /**
+     * The shelter this pawn thinks of as home, if it remembers one. Civic and
+     * mercantile code names places with this, so a route reads "Ash Hollow to
+     * Riverbend" rather than two entity ids.
+     * @returns {Object|null}
+     */
+    getHomeLandmark() {
+        return PawnMemory.getHomeLandmark(this)
+    }
+
+    /**
+     * Everything within `radius` world units of here, self excluded. Follows the
+     * same entitiesMap scan as getNearbyPawns: the civic score and the market
+     * both ask what stands around a settlement, and neither wants to care about
+     * chunk boundaries to do it.
+     * @param {number} radius - world units
+     * @returns {Entity[]}
+     */
+    getNearbyEntities(radius = 100) {
+        if (!this.world?.entitiesMap) return []
+
+        return Array.from(this.world.entitiesMap.values()).filter(entity => {
+            if (!entity || entity.id === this.id) return false
+            const dx = (entity.x ?? 0) - this.x
+            const dy = (entity.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= radius
+        })
     }
 
     // Mercantile delegation to PawnMercantile module
