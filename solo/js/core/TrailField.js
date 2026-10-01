@@ -601,7 +601,7 @@ class TrailField {
 
         const wear = finite(options.wear, TRAIL_ROAD_WEAR)
         const kind = options.kind ?? 'road'
-        // A surveyed road is laid on the straight line. Everyone else metalls
+        // A surveyed road is laid on the straight line. Everyone else paves
         // the corridor traffic actually wore - gaps and all, which is the whole
         // point of building it.
         const line = surveyed
