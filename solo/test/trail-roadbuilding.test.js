@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 // #95 (2/2): roads stop being a primitive and become something the sim does on
 // its own. Two events make a road here: a settlement being recognized, which
-// metalls the paths its people already walk, and a barter completed, which
+// paves the paths its people already walk, and a barter completed, which
 // maintains the corridor the merchant just travelled and puts it in the route
 // table with real geometry and a measured travel time. The promise running
 // through all of it is that nothing gets paved on virgin ground unless the

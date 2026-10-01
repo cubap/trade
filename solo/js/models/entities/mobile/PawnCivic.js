@@ -119,7 +119,7 @@ export function canonizeEncampment(pawn, cache) {
 
     pawn.addThought('Our encampment is now a recognized settlement.', 'civic')
 
-    // #95: a recognized settlement metalls the paths its people already walk.
+    // #95: a recognized settlement paves the paths its people already walk.
     const roads = openSettlementRoads(pawn)
     if (roads > 0) {
         recordCivicContribution(pawn, 'build', roads)
@@ -295,7 +295,9 @@ export function acceptJob(pawn, taskId) {
  * @returns {boolean} True if job was completed
  */
 export function completeJob(pawn, taskId) {
-    const job = pawn.jobBoard.find(j => j.taskId === taskId && j.assignedTo === pawn.id)
+    // `!job.completed` matters: without it a finished job could be finished
+    // again, and every re-completion paid the worker and taxed the town.
+    const job = pawn.jobBoard.find(j => j.taskId === taskId && j.assignedTo === pawn.id && !j.completed)
     if (!job) return false
 
     job.completed = true

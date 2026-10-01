@@ -681,6 +681,16 @@ class Pawn extends MobileEntity {
         this.increaseSkill(skill, amount)
     }
 
+    /**
+     * Earn skill the way the civic and market code asks for it: "give this pawn a
+     * point of bartering". Identical to increaseSkill - two names for one idea is
+     * a mistake, but the callers (a teacher, a market, a lesson) are already
+     * written, and they all mean the same thing.
+     */
+    gainSkill(skill, amount = 1) {
+        this.increaseSkill(skill, amount)
+    }
+
     // --- Interaction-based observation and examination helpers ---
     observeInteraction(target, amount = 0.1) {
         // Learn based on what we interacted with
@@ -1603,6 +1613,68 @@ class Pawn extends MobileEntity {
             const dy = (entity.y ?? 0) - this.y
             return Math.sqrt(dx * dx + dy * dy) <= radius
         })
+    }
+
+    /**
+     * Civic delegation to PawnCivic. A pawn is the settlement: the ledger, the
+     * job board and the curriculum all live on the pawn, and the module works on
+     * it. These existed on the module only, so every civic goal - build a cache,
+     * post a job, teach a lesson - threw the moment it reached the line that
+     * asked. The handlers in PawnGoals always spoke this way; now they are answered.
+     */
+    checkProtoSettlementTrigger() {
+        return PawnCivic.checkProtoSettlementTrigger(this)
+    }
+
+    getResourceRichness(radius = 100) {
+        return PawnCivic.getResourceRichness(this, radius)
+    }
+
+    /**
+     * Declare the encampment a settlement. This is the moment a camp becomes a
+     * town in the eyes of the world - and, since #95, the moment the roads out
+     * of it are laid down.
+     * @param {Object} cache - the communal resource cache the town grew around
+     * @returns {number} roads opened from the settlement
+     */
+    canonizeEncampment(cache) {
+        return PawnCivic.canonizeEncampment(this, cache)
+    }
+
+    openSettlementRoads() {
+        return PawnCivic.openSettlementRoads(this)
+    }
+
+    recordCivicContribution(type, amount = 1) {
+        return PawnCivic.recordCivicContribution(this, type, amount)
+    }
+
+    updateCivicScore() {
+        return PawnCivic.updateCivicScore(this)
+    }
+
+    getAverageGroupTrust() {
+        return PawnCivic.getAverageGroupTrust(this)
+    }
+
+    postJob(type, reward = 1, deadline = 100) {
+        return PawnCivic.postJob(this, type, reward, deadline)
+    }
+
+    acceptJob(taskId) {
+        return PawnCivic.acceptJob(this, taskId)
+    }
+
+    completeJob(taskId) {
+        return PawnCivic.completeJob(this, taskId)
+    }
+
+    addCurriculumLesson(skill, prerequisite = null, xp = 1) {
+        return PawnCivic.addCurriculumLesson(this, skill, prerequisite, xp)
+    }
+
+    completeCurriculumLesson(lessonId) {
+        return PawnCivic.completeCurriculumLesson(this, lessonId)
     }
 
     // Mercantile delegation to PawnMercantile module
