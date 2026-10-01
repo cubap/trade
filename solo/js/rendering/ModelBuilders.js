@@ -12,6 +12,15 @@ export default function createModelBuilders(renderer) {
             return mats.some((m) => m && m.map)
         },
 
+        /** True when any mesh in the model carries a texture (e.g. baked GLB skin). */
+        _modelHasBakedTexture(model) {
+            let found = false
+            model.traverse((node) => {
+                if (node.isMesh && renderer._hasBakedTexture(node)) found = true
+            })
+            return found
+        },
+
         _splitTreeMaterialsByHeight(model, profile) {
             model.traverse((node) => {
                 if (!node.isMesh || !node.geometry) return
@@ -499,11 +508,14 @@ export default function createModelBuilders(renderer) {
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
             renderer._centerModelToOrigin(model)
+            // Keep the baked GLB skin (and its flat eye/cheek/sprout materials) when present
+            const hasBakedSkin = renderer._modelHasBakedTexture(model)
             model.traverse((node) => {
                 if (!node.isMesh || !node.geometry) return
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (hasBakedSkin) return
                 node.material = new THREE.MeshStandardMaterial({
                     color: renderer._pawnTexture ? '#ffffff' : profile.materialColor,
                     map: renderer._pawnTexture ?? null,

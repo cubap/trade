@@ -25,8 +25,10 @@ export default function createCameraController(renderer) {
                     const bbox = new THREE.Box3().setFromObject(model)
                     renderer._pawnModelHeight = bbox.max.y - bbox.min.y
                     renderer._pawnModelBottomY = bbox.min.y
+                    // Keep the baked GLB skin when present; flat teal only for untextured models
+                    const hasBakedSkin = renderer._modelHasBakedTexture(model)
                     model.traverse((node) => {
-                        if (node.isMesh) {
+                        if (node.isMesh && !hasBakedSkin) {
                             node.material = new THREE.MeshStandardMaterial({
                                 color: 0x5ec4c0,
                                 roughness: 0.3,
