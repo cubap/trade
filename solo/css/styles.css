@@ -322,6 +322,12 @@ button, select {
     color: #eab308;
 }
 
+/* #128: the pawn has been inside this plan for most of its give-up budget. */
+.panel-goal-stalling {
+    background: rgba(249, 115, 22, 0.18);
+    color: #f97316;
+}
+
 .panel-goal-invested {
     color: #64748b;
 }

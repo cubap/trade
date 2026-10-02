@@ -278,11 +278,14 @@ export function trailPaintFor({
 /**
  * One-line readout of what the ground currently says, for a HUD panel. Kept
  * separate from the paint feed so a panel can show the truth without a rect.
+ * `options.empty` is the wording for nobody having walked anywhere; a panel
+ * that skips its row rather than narrating an absence passes '' (#96).
  */
-export function trailReadout(field, tick = field?.tick ?? 0) {
-    if (!field || typeof field.stats !== 'function') return 'no ground worn yet'
+export function trailReadout(field, tick = field?.tick ?? 0, options = {}) {
+    const nothing = options.empty ?? 'no ground worn yet'
+    if (!field || typeof field.stats !== 'function') return nothing
     const stats = field.stats(tick)
-    if (!stats.wornCells) return 'no ground worn yet'
+    if (!stats.wornCells) return nothing
     const kinds = typeof field.kindsInUse === 'function' ? field.kindsInUse(tick) : []
     const who = kinds.slice(0, 3)
         .map(entry => `${entry.kind} ${Math.round(entry.intensity)}`)

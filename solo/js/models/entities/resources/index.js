@@ -5,6 +5,7 @@ import Cover from './Cover.js'
 import Rock from './Rock.js'
 import Stick from './Stick.js'
 import FiberPlant from './FiberPlant.js'
+import Herb from './Herb.js'
 
 export {
     Resource,
@@ -13,5 +14,6 @@ export {
     Cover,
     Rock,
     Stick,
-    FiberPlant
+    FiberPlant,
+    Herb
 }

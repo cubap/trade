@@ -124,13 +124,15 @@ export function teach(teacher, student, skill) {
     const trustBonus = getTrustBonus(teacher, student)
     const structureBonus = getStructureBonus(teacher, student, 'teaching')
 
+    // A guild or school sets the *rate*, but somebody still sat the lesson: the
+    // payment is practice, so it goes through the practice verb (#108).
     const rate = base * teachingBonus * trustBonus * structureBonus
 
     // Student learns
-    student.increaseSkill(skill, rate)
+    student.useSkill(skill, rate)
     // Teacher reinforces their own skill and gains teaching skill
-    teacher.increaseSkill(skill, rate * 0.1)
-    teacher.increaseSkill('teaching', rate * 0.05)
+    teacher.useSkill(skill, rate * 0.1)
+    teacher.useSkill('teaching', rate * 0.05)
 }
 
 /**
@@ -156,7 +158,7 @@ export function observe(teacher, student, skill) {
     // Observing is 40% of base rate (slowest mode)
     const rate = base * 0.4 * teachingBonus * trustBonus * structureBonus
 
-    student.increaseSkill(skill, rate)
+    student.useSkill(skill, rate)
 }
 
 /**
@@ -178,11 +180,11 @@ export function apprentice(teacher, student, skill) {
     const rate = base * 0.7 * teachingBonus * trustBonus * structureBonus
 
     // Student learns
-    student.increaseSkill(skill, rate)
+    student.useSkill(skill, rate)
     // Teacher's work speed is reduced by 30% while apprenticing
     teacher._apprenticeSlowdown = 0.7
     // Teacher gains teaching skill from mentoring
-    teacher.increaseSkill('teaching', rate * 0.03)
+    teacher.useSkill('teaching', rate * 0.03)
 }
 
 /**

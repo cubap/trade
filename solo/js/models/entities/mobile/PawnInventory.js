@@ -94,6 +94,9 @@ export function getTotalItems(pawn) {
  * @param {Pawn} pawn - The pawn whose inventory to clear
  */
 export function clearInventory(pawn) {
+    // Emptying the pack must hand back whatever room its contents were lending,
+    // otherwise a cleared pawn keeps the slots of the basket she no longer has (#112).
+    for (const item of pawn.inventory) pawn.applyItemCapacity?.(item, false)
     pawn.inventory = []
     pawn.inventoryWeight = 0
 }

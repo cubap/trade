@@ -81,6 +81,23 @@ export default function createEntityPose(renderer) {
                 }
             }
 
+            // #129: herbs wear the foliage shader too, but a much smaller cut of it -
+            // a knee-high clump at the treeline rather than the waist-high stand fibre
+            // makes, so the two plants do not read as the same thing from the saddle.
+            if (renderer._hasTag(entity, 'herb')) {
+                const height = Math.max(1.1, 1.5 + unitA * 1.3)
+                const radius = Math.max(0.16, 0.12 + unitB * 0.18)
+                return {
+                    geometry: new THREE.ConeGeometry(radius * 2.4, height, 5),
+                    materialColor: entity?.color || '#3F7A4E',
+                    shaderType: 'foliage',
+                    swayStrength: 0.5 + unitB * 0.2,
+                    baseY: height * 0.5,
+                    rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
+                    lerp: 0.26
+                }
+            }
+
             if (entity?.type === 'grass') {
                 const height = targetHeightFor('grass', unitA)
                 return {

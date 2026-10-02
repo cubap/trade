@@ -3,7 +3,7 @@ import { createRenderer, getRendererKeyFromHash } from './rendering/rendererFact
 import setupControls from './ui/controls.js'
 import { Animal, Pawn } from './models/entities/index.js'
 import { School } from './models/entities/immobile/index.js'
-import { FoodSource, Cover, Rock, Stick, FiberPlant } from './models/entities/resources/index.js'
+import { FoodSource, Cover, Rock, Stick, FiberPlant, Herb } from './models/entities/resources/index.js'
 // Focus on world simulation (no pawns, animals OK)
 import FloraGenerator from './core/FloraGenerator.js'
 import ResourceGenerator from './core/ResourceGenerator.js'
@@ -240,6 +240,7 @@ function ensureStarterViability(x, y, waterGen, radius = 170) {
     const rockCount = nearby.filter(entity => entity?.subtype === 'rock').length
     const stickCount = nearby.filter(entity => entity?.subtype === 'stick').length
     const fiberCount = nearby.filter(entity => hasTag(entity, 'fiber') || entity?.subtype === 'fiber_plant').length
+    const herbCount = nearby.filter(entity => hasTag(entity, 'herb') || entity?.subtype === 'herb').length
 
     const missingWater = Math.max(0, 2 - waterCount)
     const missingFood = Math.max(0, 8 - foodCount)
@@ -247,6 +248,11 @@ function ensureStarterViability(x, y, waterGen, radius = 170) {
     const missingRock = Math.max(0, 4 - rockCount)
     const missingStick = Math.max(0, 6 - stickCount)
     const missingFiber = Math.max(0, 4 - fiberCount)
+    // #129: three patches near spawn is enough for one poultice with a pick to
+    // spare. Fewer than that and the herbalism branch is only theoretically open -
+    // a herb gatherer needs two for the mash and a third for the salve that uses
+    // it, and the unlock that teaches both costs handling two.
+    const missingHerb = Math.max(0, 3 - herbCount)
 
     for (let i = 0; i < missingWater; i++) {
         const point = randomPointNear(x, y, radius * 0.7)
@@ -282,6 +288,19 @@ function ensureStarterViability(x, y, waterGen, radius = 170) {
     for (let i = 0; i < missingFiber; i++) {
         const point = randomPointNear(x, y, radius)
         world.addEntity(new FiberPlant(`starter_fiber_${x}_${y}_${i}`, point.x, point.y))
+    }
+
+    // #129: the herbs are hung around drinking water rather than scattered with the
+    // rest, because `herb_mash` asks for a drink of it from within 24 units at the
+    // moment of the craft. A patch that grew a field away from every spring would
+    // leave a pawn holding two herbs and no way to use them, which is the same bug
+    // wearing a hat. It asks the world rather than `nearby`, because the spring it is
+    // looking for may be the one this function planted a moment ago.
+    const herbAnchor = world.getNearbyEntities(x, y, radius)
+        .find(entity => hasTag(entity, 'water') || entity?.subtype === 'water') ?? { x, y }
+    for (let i = 0; i < missingHerb; i++) {
+        const point = randomPointNear(herbAnchor.x, herbAnchor.y, 60)
+        world.addEntity(new Herb(`starter_herb_${x}_${y}_${i}`, point.x, point.y))
     }
 }
 

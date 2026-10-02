@@ -6,9 +6,15 @@ import {
     advanceWaypoint,
     planComplete,
     replanIfNeeded,
-    sortByRouteCost
+    sortByRouteCost,
+    recordRouteRecall,
+    rememberRouteSavings,
+    routeCostTo,
+    ROUTE_MEMORY_MIN_TRIP
 } from './MovementPlan.js'
-import Structure from '../immobile/Structure.js'
+import { createShelter } from '../immobile/Structure.js'
+import { behaviorForGoal } from './PawnBehaviors.js'
+import { TRADE_DAY_TICKS } from '../../../core/TradeRoutes.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnLearning from './PawnLearning.js'
 
@@ -18,6 +24,138 @@ const COMMITMENT_STEP_TICKS = 60 // invested ticks per +1 preemption cost
 const COMMITMENT_MAX_COST = 1 // cost cap; critical needs (p4) can always preempt
 const GOAL_SWITCH_LOG_CAP = 12
 
+// How far a merchant will look for somebody to trade with once it has decided
+// to trade (#99: it was a bare 50 in two handlers, and the same figure now
+// decides whether the market it walked to is empty).
+const TRADE_SEARCH_RANGE = 50
+
+// Close enough to a market that the walk is over. The old `travel_route` used
+// the same figure; #99 makes it mean something, because arriving is now the
+// start of the barter rather than the end of a goal.
+const TRADE_ARRIVE_RADIUS = 10
+
+// #121: soaking fibre is the one craft input that cannot be picked up off the
+// ground. It needs a cache to stow it in, water beside that cache, and a day of
+// patience - so the driver has to be a household decision, not a line in a
+// recipe book. Three fibres because that is what `durable_cordage` asks for, and
+// because stowing one at a time would be a chore nobody would finish.
+const SOAK_FIBER_COUNT = 3
+const SOAK_CACHE_RANGE = 140 // how far a pawn will walk to reach its soak pit
+const SOAK_STOW_RADIUS = 14  // close enough to the cache to work at it
+const SOAK_WATER_RANGE = 60  // a soak needs water near it, not a dry shelf
+const SOAK_NOTICE_TICKS = 120 // how often the pawn repeats "I cannot soak without water"
+
+// #128: a goal that can never finish has to be able to fail, because nothing else
+// will end it. A goal is only ever picked up when the pawn has none, so whatever it
+// is standing inside is load-bearing whether it was ever going to finish or not -
+// the pawn in the report spent the rest of its game "Searching for stick for build
+// cache" in a world with no sticks, and no other errand could get a turn.
+//
+// Two clocks, because there are two ways to fail:
+//   budget    ticks without either going somewhere new or moving a number. The
+//             pawn is not working, it is pacing, and patience does not turn a
+//             missing stick into a stick.
+//   lifetime  ticks without making headway. It may be walking a long way in the
+//             right direction, but a plan that has not moved a single number in a
+//             day and a half is not a plan, it is a trap.
+//
+// Headway is counters only - material staged, items carried, building progress,
+// batch collected. Motion is measured in coarse buckets: the stuck pawn kept
+// walking and kept re-aiming at new random points, which is precisely how it looked
+// busy for hundreds of ticks. A goal the player or the group asked for gets more
+// rope, but not infinite rope, and whatever is given up cools its type down so the
+// pawn can actually get on with the rest of its list.
+const GOAL_STALL = {
+    budget: 240,
+    lifetime: 1200,
+    budgets: {
+        stage_build_materials: 180,
+        search_resource: 200,
+        explore: 300,
+        soak_fiber: 240
+    },
+    lifetimes: {
+        // A crossing is long by nature; the road, not the plan, sets that clock.
+        travel_route: 3000,
+        build_structure: 3000,
+        establish_trade: 2400,
+        // Wandering-without-finding is the load-bearing aspiration of the report.
+        explore: 1500,
+        study: 900,
+        stage_build_materials: 900
+    },
+    motionBucket: 64,
+    // How many full-map scans a stage job makes after reporting that the material
+    // is not in the world. Every tick is a fresh scan, so a handful is generous:
+    // past that, walking further is not searching better.
+    searchAttempts: 4,
+    commandRope: 4,
+    cooldownTicks: 240,
+    cooldownCap: 2400,
+    abandonLogCap: 24
+}
+
+// #132: standing next to the thing you were sent to change is not the same thing
+// as changing it.
+//
+// The generic completion test used to be a distance test - touch `goal.target` and
+// the errand is a success - and it ran *before* the executor, so on the tick a pawn
+// walked up to the build cache it had been sent to fill it booked a completion,
+// took its inclination signal for it, and staged nothing.
+//
+// Three subsystems had each already worked around this by refusing to put a thing
+// in `goal.target` at all: the trade journey (#99, "arriving is the start of the
+// barter"), the soak pit (#121, "the standing is not the doing") and the build-site
+// staging job. A convention that three places had to rediscover separately is the
+// bug, not the fix.
+//
+// A type belongs in this set when the work happens *at* the target and something
+// other than proximity can see it finish. Every entry has a branch in
+// `updateGoalSpecificLogic()` that ends the goal from its own evidence - materials
+// in the cache, item in the pack, batch stowed, destination reached, clock run -
+// which `solo/test/goal-completion.test.js` checks statically so a type cannot be
+// added here without an exit. Types *not* listed keep the old behaviour, because
+// for them arriving genuinely is the job: `find_food` ends where the eating begins
+// (the need system completes it from `Pawn`), `explore` is a walk, `rest` is a
+// place, and the group-follow orders are satisfied by being next to somebody.
+const WORK_AT_TARGET_GOALS = new Set([
+    'stage_build_materials',
+    'build_structure',
+    'soak_fiber',
+    'gather_specific',
+    'search_resource',
+    'gather_materials',
+    'collaborative_craft',
+    'build_cache',
+    'post_job',
+    'teach_lesson',
+    'teach_skill',
+    'accumulate_valuables',
+    'negotiate_group',
+    'establish_trade',
+    'seek_trade',
+    'barter',
+    'travel_route',
+    'train_skill',
+    'mark_target',
+    'study',
+    'escort_target',
+    'protect_target'
+])
+
+// Positive evidence that the thing a goal was aimed at is no longer there: a dead
+// animal, a picked-out resource, an entity the world has already dropped. A pawn
+// that comes back empty-handed because the stick walked away did not succeed, and
+// recording it as a success is how a pawn learns to plan for a world it does not
+// have (#132).
+const TARGET_LOSS_FLAGS = ['isDead', 'removed', 'depleted']
+
+function targetLooksGone(target) {
+    if (!target) return false
+    if (target.health != null && target.health <= 0 && target.subtype === 'pawn') return true
+    return TARGET_LOSS_FLAGS.some(flag => target[flag] === true)
+}
+
 class PawnGoals {
     constructor(pawn) {
         this.pawn = pawn
@@ -26,6 +164,9 @@ class PawnGoals {
         this.completedGoals = []
         this.deferredGoals = [] // Goals on hold due to missing prerequisites
         this.goalSwitchLog = [] // recent abandon/preempt events for debugging the UI
+        this.lastSoakRefusalTick = null // #121: rationing the "needs water" complaint
+        this.goalCooldowns = new Map() // #128: goal type -> { untilTick, strikes }
+        this.stalledGoals = [] // #128: recent give-ups, for the HUD, tests and post-mortems
     }
 
     currentTick() {
@@ -85,6 +226,14 @@ class PawnGoals {
             investedTicks: invested,
             commitmentCost: this.getCommitmentCost(),
             hasMovementPlan: !!(this.pawn.movementPlan && this.pawn.movementPlan.goal === goal),
+            // #128: the give-up clock, visible. A pawn that has been inside one
+            // unfinishable plan for most of its budget is the thing the quest panel
+            // should be admitting out loud.
+            sinceProgressTicks: goal.lastProgressTick == null ? null : this.currentTick() - goal.lastProgressTick,
+            sinceHeadwayTicks: goal.lastCounterTick == null ? null : this.currentTick() - goal.lastCounterTick,
+            stallBudget: this.goalStallLimits(goal).budget,
+            stallLifetime: this.goalStallLimits(goal).lifetime,
+            recentAbandons: this.stalledGoals.slice(-3),
             recentSwitches: this.goalSwitchLog.slice(-5)
         }
     }
@@ -127,6 +276,7 @@ class PawnGoals {
             this.addLongTermGoals()
             this.addLearningGoals()
             this.addCivicNegotiationGoals()
+            this.addHouseholdGoals()
         }
         
         // Re-evaluate deferred goals periodically
@@ -145,6 +295,17 @@ class PawnGoals {
             this.goalQueue.unshift({ ...this.pawn.priorityBias.nextGoal })
             // one-shot bias
             this.pawn.priorityBias.nextGoal = null
+        }
+
+        // #128: a goal type the pawn has just given up on is not offered to it again
+        // until the cooldown expires. Without this the scheduler re-enters the same
+        // trap every tick with a fresh clock and the give-up buys the pawn nothing.
+        // Needs are exempt - a thirsty pawn gets to drink even if drinking has been
+        // failing, because starvation is a worse bug than a loop.
+        if (this.goalCooldowns.size > 0) {
+            this.goalQueue = this.goalQueue.filter(
+                goal => this.isEmergencyGoal(goal) || !this.isGoalCooling(goal.type)
+            )
         }
 
         // Set current goal if none exists, with inclination bias
@@ -210,6 +371,7 @@ class PawnGoals {
             'rest': 'civic',
             'seek_shelter': 'civic',
             'collaborative_craft': 'civic',
+            'soak_fiber': 'civic',
             // Mercantile goals
             'trade': 'mercantile',
             'barter': 'mercantile',
@@ -518,6 +680,323 @@ class PawnGoals {
         this.goalQueue.unshift(goal)
     }
     
+    /**
+     * #121: the household errand that makes `soaked_fiber` exist at all.
+     *
+     * Soaking was never the missing piece. `startFiberSoakAtCache()` stows fibre
+     * in a ResourceCache, the cache converts it a day later, and the conversion
+     * had exactly one caller in the repository: a test. Meanwhile
+     * `durable_cordage` asks for three of the stuff, so the strongest cord in the
+     * game was a recipe about an ingredient no pawn could ever obtain. What was
+     * missing was somebody deciding to bury fibre, which is a chore, not a craft.
+     *
+     * It is deliberately two errands rather than one long one. Stage the fibre
+     * and go away; come back when the day has passed. A pawn that stood beside a
+     * soaking pit for 360 ticks would be a pawn with nothing better to do, and
+     * the patience belongs to the pit instead - which is also how a real soak
+     * works, and why the goal recurs instead of blocking.
+     */
+    addHouseholdGoals() {
+        const pawn = this.pawn
+        // The knowledge comes first: a pawn who has not worked out that fibre can
+        // be rotted has no reason to be carrying a spadeful of it anywhere.
+        if (!pawn.unlocked?.recipes?.has('durable_cordage')) return
+        if (this.currentGoal?.type === 'soak_fiber') return
+        if (this.goalQueue.some(goal => goal.type === 'soak_fiber')) return
+
+        const caches = this.soakCaches()
+
+        // The batch already in the ground is the errand the pawn owes itself, and it
+        // is owed from anywhere: a pit three fields over is still this pawn's pit.
+        // Proposals are rebuilt every tick, so a collect goal that only appeared
+        // while the pawn happened to stand beside the hole would be starved by the
+        // pawn wandering off - which is exactly how the soak used to stall.
+        const owed = pawn.pendingSoak
+        if (owed) {
+            const pit = this.soakCacheById(owed.cacheId)
+            if (!pit) {
+                pawn.pendingSoak = null
+            } else if (
+                (pit.countByType?.('soaked_fiber') ?? 0) > 0 ||
+                this.currentTick() >= (owed.readyTick ?? 0)
+            ) {
+                const goal = {
+                    type: 'soak_fiber',
+                    phase: 'collect',
+                    cacheId: pit.id,
+                    priority: 2,
+                    description: 'Collect the soaked fibre',
+                    targetType: 'cache',
+                    action: 'soak'
+                }
+                if (!this.takeUpOwedErrand(goal)) {
+                    this.goalQueue.push(goal)
+                }
+                return
+            } else {
+                // Still rotting. There is nothing to propose and nothing to complain
+                // about; the pit is working.
+                return
+            }
+        }
+
+        // Collect before stowing: fibre in the ground is fibre out of circulation,
+        // and the pack is the only place it does any good. Somebody else's full pit
+        // is still a full pit.
+        const ready = caches.find(cache => (cache.countByType?.('soaked_fiber') ?? 0) > 0)
+        if (ready) {
+            this.goalQueue.push({
+                type: 'soak_fiber',
+                phase: 'collect',
+                cacheId: ready.id,
+                priority: 2,
+                description: 'Collect the soaked fibre',
+                targetType: 'cache',
+                action: 'soak'
+            })
+            return
+        }
+
+        // One batch at a time. A pit with a job in it is a pit already doing the
+        // soaking, and a second batch would be a pawn digging itself a hole it
+        // cannot collect from.
+        if (caches.some(cache => (cache.soakJobs?.length ?? 0) > 0)) return
+
+        // The reserve is the batch itself: a pawn holding exactly the three fibres
+        // a cordage recipe wants should still soak them, and one holding two is
+        // not yet in a position to start.
+        if (PawnMercantile.countItem(pawn, 'fiber') < SOAK_FIBER_COUNT) return
+
+        const pit = caches.find(cache => this.waterNear(cache.x, cache.y)) ?? null
+        if (pit) {
+            this.goalQueue.push({
+                type: 'soak_fiber',
+                phase: 'stage',
+                cacheId: pit.id,
+                priority: 2,
+                description: 'Soak fibre at the cache',
+                targetType: 'cache',
+                action: 'soak'
+            })
+            return
+        }
+
+        // No cache by water. If the pawn is standing by water with a packful of
+        // fibre then the pit is what is missing, not the place - so dig it here.
+        if (this.waterNear(pawn.x, pawn.y)) {
+            this.goalQueue.push({
+                type: 'soak_fiber',
+                phase: 'stage',
+                cacheId: null,
+                targetLocation: { x: pawn.x, y: pawn.y },
+                priority: 2,
+                description: 'Dig a soak pit by the water',
+                targetType: 'cache',
+                action: 'soak'
+            })
+            return
+        }
+
+        // Honest refusal, visible in the HUD: the recipe is known, the fibre is
+        // carried, and the reason nothing is happening is that nobody has found a
+        // drink yet. Water is not a rumour a pawn should soak against. Planning
+        // runs every tick, so the complaint is rationed - a pawn that muttered
+        // this constantly would tell you nothing you could not work out.
+        const tick = this.currentTick()
+        if (tick - (this.lastSoakRefusalTick ?? -Infinity) >= SOAK_NOTICE_TICKS) {
+            this.lastSoakRefusalTick = tick
+            pawn.setRecentAction?.('No water known for a soak pit')
+        }
+    }
+
+    /**
+     * Caches this pawn could reach for a household errand, nearest first.
+     * `getNearbyCaches` is a world scan rather than a memory read, which is the
+     * right strictness for a pit the pawn has to stand over. The hole this leaves
+     * (a cache the pawn visited but no longer has in view) is #127's subject.
+     */
+    soakCaches(range = SOAK_CACHE_RANGE) {
+        const pawn = this.pawn
+        return (pawn.getNearbyCaches?.(range) ?? [])
+            .map(cache => ({ cache, d: Math.hypot((cache.x ?? 0) - pawn.x, (cache.y ?? 0) - pawn.y) }))
+            .sort((a, b) => a.d - b.d)
+            .map(entry => entry.cache)
+    }
+
+    /**
+     * Resolve a pit by id rather than by proximity, because the pawn is rarely
+     * standing next to it at the moment the fibre is ready. The same lookup the
+     * executor uses; a cache that has expired is not haunted.
+     */
+    soakCacheById(id) {
+        if (!id) return null
+        const cache = this.pawn.world?.entitiesMap?.get(id)
+        return cache?.subtype === 'cache' ? cache : null
+    }
+
+    /**
+     * An errand the pawn owes itself is allowed to interrupt an idle aspiration,
+     * which is the only way it ever happens: goals are picked up when the pawn has
+     * none, and a pawn that has started a day of study or a wandering gather can
+     * stay inside it long after the fibre in its pit is ready. The interrupted plan
+     * is deferred rather than dropped, exactly as an emergency need does it.
+     *
+     * Needs keep their ranking. A thirsty pawn drinks first - soaked fibre waits an
+     * afternoon without spoiling, and a dehydrated pawn does not.
+     *
+     * Returns true when the errand was taken up, in which case it is deliberately
+     * not queued: the queue hands the same object straight back on completion.
+     */
+    takeUpOwedErrand(goal) {
+        const current = this.currentGoal
+        if (!current) return false
+        if (current.type === goal.type) return true
+        if ((current.priority ?? 1) >= (goal.priority ?? 2)) return false
+
+        this.logGoalSwitch(current, goal, 'owed_soak')
+        this.deferredGoals.push({
+            ...current,
+            deferredReason: 'owed_soak',
+            deferredAt: this.currentTick()
+        })
+        this.currentGoal = goal
+        this.startGoal(goal)
+        return true
+    }
+
+    /**
+     * Note the debt the pawn has just taken on: three fibres are in a pit and are
+     * owed a collecting trip. `cache` is null when the pawn dug on the spot, so the
+     * pit is found by the soak job now sitting in it - which is also the only
+     * honest way to learn the ready tick.
+     */
+    claimSoakBatch(cache) {
+        const pawn = this.pawn
+        const pit =
+            cache ??
+            (pawn.getNearbyCaches?.(SOAK_STOW_RADIUS * 3) ?? []).find(
+                candidate => (candidate.soakJobs?.length ?? 0) > 0
+            )
+        const job = pit?.soakJobs?.[pit.soakJobs.length - 1]
+        if (!pit || !job) return
+        pawn.pendingSoak = {
+            cacheId: pit.id,
+            readyTick: job.readyTick ?? this.currentTick() + pawn.getDayTicks()
+        }
+    }
+
+    /**
+     * Does this pawn know of water at the place it wants to soak? Memory first,
+     * because a soak pit is dug beside a stream the pawn has drunk from before;
+     * what is in front of it counts too, since a pawn that walks past a pool with
+     * fibre in its pack has every reason to use it.
+     */
+    waterNear(x, y, range = SOAK_WATER_RANGE) {
+        const pawn = this.pawn
+        const remembered = pawn.recallResourcesByType?.('water') ?? []
+        if (remembered.some(m => Math.hypot((m.x ?? 0) - x, (m.y ?? 0) - y) <= range)) return true
+
+        if (!pawn.world?.entitiesMap) return false
+        for (const entity of pawn.world.entitiesMap.values()) {
+            if (!entity || entity === pawn) continue
+            if (entity.subtype !== 'water') {
+                const tags = entity.tags
+                const wet = Array.isArray(tags) ? tags.includes('water') : (tags?.has?.('water') ?? false)
+                if (!wet) continue
+            }
+            if (Math.hypot((entity.x ?? 0) - x, (entity.y ?? 0) - y) <= range) return true
+        }
+        return false
+    }
+
+    /**
+     * Walk to the pit, do the one thing this errand is for, and leave.
+     *
+     * The cache is resolved from its id every tick rather than held in
+     * `goal.target`, because the generic completion test is "standing next to the
+     * target" and the standing is not the doing (#99 learned this the hard way).
+     */
+    executeSoakFiber(goal) {
+        const pawn = this.pawn
+        const world = pawn.world
+        const cache = goal.cacheId ? (world?.entitiesMap?.get(goal.cacheId) ?? null) : null
+
+        if (goal.phase === 'collect') {
+            if (!cache || cache.subtype !== 'cache') {
+                pawn.setRecentAction?.('The soak cache is gone')
+                if (pawn.pendingSoak?.cacheId === goal.cacheId) pawn.pendingSoak = null
+                this.completeCurrentGoal()
+                return
+            }
+            const dist = Math.hypot(pawn.x - cache.x, pawn.y - cache.y)
+            if (dist > SOAK_STOW_RADIUS) {
+                pawn.nextTargetX = cache.x
+                pawn.nextTargetY = cache.y
+                pawn.setRecentAction?.('Going to collect soaked fibre')
+                return
+            }
+            const waiting = cache.countByType?.('soaked_fiber') ?? 0
+            const got = pawn.retrieveFromCache?.({ cache, itemType: 'soaked_fiber', count: SOAK_FIBER_COUNT }) ?? 0
+            if (got > 0) {
+                if (pawn.pendingSoak?.cacheId === cache.id) pawn.pendingSoak = null
+                pawn.addThought?.(`${got} soaked fibre, ready to twist`, 'crafting')
+            } else if (waiting > 0) {
+                pawn.setRecentAction?.('No room for the soaked fibre')
+            } else {
+                // Nothing to take and nothing ripening: the batch is somebody else's
+                // rope now, and the pawn stops walking to an empty hole.
+                if (pawn.pendingSoak?.cacheId === cache.id && (cache.soakJobs?.length ?? 0) === 0) {
+                    pawn.pendingSoak = null
+                }
+                pawn.setRecentAction?.('Nothing soaked at the cache yet')
+            }
+            this.completeCurrentGoal()
+            return
+        }
+
+        // Staging. Without a cache id the errand is to dig the pit as well as fill
+        // it, at the water the generator found; `startFiberSoakAtCache` creates the
+        // cache at whatever spot the pawn is standing on when it asks.
+        if (!cache) {
+            const site = goal.targetLocation ?? { x: pawn.x, y: pawn.y }
+            const dist = Math.hypot(pawn.x - site.x, pawn.y - site.y)
+            if (dist > SOAK_STOW_RADIUS) {
+                pawn.nextTargetX = site.x
+                pawn.nextTargetY = site.y
+                pawn.setRecentAction?.('Carrying fibre to the water')
+                return
+            }
+            if (!this.waterNear(site.x, site.y)) {
+                // Water the pawn remembered may be somebody else's dried-up
+                // spring. Saying so is better than soaking in dust.
+                pawn.setRecentAction?.('The water by the soak site is gone')
+                this.completeCurrentGoal()
+                return
+            }
+        } else {
+            const dist = Math.hypot(pawn.x - cache.x, pawn.y - cache.y)
+            if (dist > SOAK_STOW_RADIUS) {
+                pawn.nextTargetX = cache.x
+                pawn.nextTargetY = cache.y
+                pawn.setRecentAction?.('Hauling fibre to the soak pit')
+                return
+            }
+        }
+
+        const started = pawn.startFiberSoakAtCache?.({ cache, fiberCount: SOAK_FIBER_COUNT }) ?? false
+        if (!started) {
+            // No fibre to spare after all - eaten, traded, or never gathered. The
+            // action line is whichever one the stow or the pack reported.
+            this.completeCurrentGoal()
+            return
+        }
+        // The day does the rest. Completing here is the point of the design: the
+        // pawn is free to be somewhere else while the pit works, and the collect
+        // phase comes round when the fibre is worth coming back for.
+        this.claimSoakBatch(cache)
+        this.completeCurrentGoal()
+    }
+
     selectRandomGoals(goals, count) {
         // Weighted random selection based on priority
         const weighted = []
@@ -600,6 +1079,12 @@ class PawnGoals {
         console.log(`${this.pawn.name} starting goal: ${goal.description}`)
         this.pawn.movementPlan = null // routes belong to the goal that made them
         if (goal.startedAtTick == null) goal.startedAtTick = this.currentTick()
+        // #105: where the pawn set out from, so a finished errand can be
+        // measured as a corridor. Re-starting a goal (commitment, preemption)
+        // must not move the departure point or the trip reads as a stroll.
+        if (goal.tripStart == null) {
+            goal.tripStart = { x: this.pawn.x, y: this.pawn.y, tick: this.currentTick() }
+        }
         // High-priority and command goals stay freely preemptible; routine goals
         // earn commitment (see getCommitmentCost / #82).
         if (goal.preemptible == null) {
@@ -620,40 +1105,10 @@ class PawnGoals {
     }
     
     getBehaviorForGoal(goal) {
-        const behaviorMap = {
-            'find_food': 'seeking_food',
-            'find_water': 'seeking_water',
-            'rest': 'seeking_rest',
-            'seek_shelter': 'seeking_shelter',
-            'socialize': 'seeking_social',
-            'negotiate_group': 'negotiating',
-            'work': 'working',
-            'explore': 'exploring',
-            'build_structure': 'building',
-            'establish_trade': 'trading',
-            'map_territory': 'surveying',
-            'train_skill': 'teaching',
-            'teach_skill': 'teaching',
-            'apprentice_skill': 'learning',
-            'observe_skill': 'observing',
-            'follow_leader': 'following',
-            'protect_target': 'guarding',
-            'escort_target': 'escorting',
-            'mark_target': 'coordinating',
-            'obey_leader': 'obeying',
-            'craft_item': 'crafting',
-            'craft_cordage': 'crafting',
-            'craft_sharp_stone': 'crafting',
-            'craft_poultice': 'crafting',
-            'gather_materials': 'gathering',
-            'stage_build_materials': 'hauling',
-            'gather_specific': 'gathering',
-            'search_resource': 'exploring',
-            'collaborative_craft': 'collaborating',
-            'accumulate_valuables': 'crafting'
-        }
-        
-        return behaviorMap[goal.type] || 'idle'
+        // #131: the map moved to `PawnBehaviors.js` so the vocabulary the goal
+        // system writes and the vocabulary `PawnNeeds` reads are one list, checked
+        // against each other by solo/test/need-behaviors.test.js.
+        return behaviorForGoal(goal)
     }
     
     /**
@@ -667,6 +1122,39 @@ class PawnGoals {
         if (!Array.isArray(list)) return list
         sortByRouteCost(this.pawn, list).forEach((item, i) => { list[i] = item })
         return list
+    }
+
+    /**
+     * #105: score the corridor a finished goal just used and file it against
+     * the destination. Plans only exist for waypointed routes, so without this
+     * the memory would collect random exploration points that are never
+     * revisited while the berry patch the pawn harvests weekly stayed unknown.
+     *
+     * The figure is what the worn ground gave between the departure point and
+     * the target at the moment of the walk, which is what "it was cheap when I
+     * came this way" means: `sortByRouteCost()` reads it back later, even after
+     * the wear itself has faded.
+     */
+    rememberGoalCorridor(goal) {
+        if (!goal || goal.tripRecorded) return
+        const from = goal.tripStart
+        // #99: a journey to a market has a destination and no target, and it is
+        // precisely the kind of corridor worth remembering - the errand is
+        // repeated, the ground under it wears.
+        const to = goal.target ?? goal.destination
+        if (!from || !to) return
+        const fx = Number(from.x)
+        const fy = Number(from.y)
+        const tx = Number(to.x)
+        const ty = Number(to.y)
+        if (![fx, fy, tx, ty].every(Number.isFinite)) return
+        const straight = Math.hypot(tx - fx, ty - fy)
+        if (straight < ROUTE_MEMORY_MIN_TRIP) return
+
+        goal.tripRecorded = true
+        const tick = this.currentTick()
+        const cost = routeCostTo(this.pawn, fx, fy, tx, ty, { tick })
+        rememberRouteSavings(this.pawn, tx, ty, straight - cost, { tick })
     }
 
     findTargetForGoal(goal) {
@@ -755,10 +1243,231 @@ class PawnGoals {
         // Route finished: reward planning, then start the next outing.
         this.pawn.useSkill?.('planning', 0.12)
         this.pawn.setRecentAction?.(`Completed a planned route (${plan.waypoints.length + 1} legs)`)
+        // #98: the plan's travel estimate is checked against the walk it called.
+        // This is what makes `travelTimeTicks` load-bearing rather than dead
+        // telemetry, and it is the only producer of the route-recall figure the
+        // progression gate looks for.
+        recordRouteRecall(this.pawn, plan, this.currentTick())
         this.pawn.movementPlan = null
         this.selectExplorationTarget()
     }
     
+    /**
+     * #128: how much rope this particular goal gets, in ticks. Goals the player or
+     * the group asked for are trusted with more, but they are still on a leash - the
+     * complaint in the report was that nothing ever ended, not who started it.
+     */
+    goalStallLimits(goal) {
+        const type = String(goal?.type ?? '')
+        const rope =
+            goal?.groupCommand || goal?.userAssigned ? GOAL_STALL.commandRope : 1
+        return {
+            budget: (GOAL_STALL.budgets[type] ?? GOAL_STALL.budget) * rope,
+            lifetime: (GOAL_STALL.lifetimes[type] ?? GOAL_STALL.lifetime) * rope
+        }
+    }
+
+    /**
+     * Headway, as a string of counters: material staged, building raised, items in
+     * the pack, batch collected. Deliberately blind to position - the pawn in the
+     * report was never standing still, it was running in place.
+     */
+    goalCounterToken(goal) {
+        const pawn = this.pawn
+        return [
+            goal.stagedCount ?? 0,
+            goal.buildProgress ?? 0,
+            goal.gatheredCount ?? 0,
+            goal.soakStowed ?? 0,
+            goal.craftedItem ? 1 : 0,
+            pawn.inventory?.length ?? 0,
+            pawn.pendingSoak?.cacheId ?? ''
+        ].join(':')
+    }
+
+    /**
+     * Where the pawn actually is, in buckets coarse enough that pacing a clearing
+     * does not read as travel. A goal with a destination is measured by how far it
+     * still has to go, so a slow-but-honest crossing keeps its clock topped up.
+     */
+    goalMotionToken(goal) {
+        const pawn = this.pawn
+        const bucket = GOAL_STALL.motionBucket
+        const cell = `${Math.floor(pawn.x / bucket)}:${Math.floor(pawn.y / bucket)}`
+        const target = goal.destination ?? goal.target ?? goal.targetLocation
+        if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) {
+            return cell
+        }
+        const dist = Math.hypot(pawn.x - target.x, pawn.y - target.y)
+        return `${cell}:${Math.floor(dist / bucket)}`
+    }
+
+    /**
+     * Executors that know they have achieved something can say so directly. The
+     * watchdog does not depend on being told - it reads the world - but a handler
+     * with a real milestone should not have to wait for the next bucket crossing.
+     */
+    noteGoalProgress(goal = this.currentGoal) {
+        if (!goal) return
+        const tick = this.currentTick()
+        goal.lastProgressTick = tick
+        goal.lastCounterTick = tick
+    }
+
+    /**
+     * Needs outrank the dog house. A pawn that keeps failing to find water must keep
+     * looking for water; the alternative is a pawn that politely starves.
+     */
+    isEmergencyGoal(goal) {
+        if (!goal) return false
+        if (goal.groupCommand || goal.userAssigned) return true
+        const needDriven = [
+            'find_food',
+            'find_water',
+            'rest',
+            'seek_shelter',
+            'flee',
+            'eat',
+            'drink',
+            'heal'
+        ]
+        return needDriven.includes(goal.type) || (goal.priority ?? 0) >= 3
+    }
+
+    /**
+     * Is this goal type in the dog house? Strikes persist so a plan that keeps
+     * failing keeps the pawn away from it for longer, which is the only way a map
+     * genuinely short of sticks stops being explored for sticks every ten minutes.
+     */
+    isGoalCooling(type) {
+        const entry = this.goalCooldowns.get(type)
+        if (!entry) return false
+        if (this.currentTick() < entry.untilTick) return true
+        this.goalCooldowns.delete(type)
+        return false
+    }
+
+    coolGoalType(type, now = this.currentTick()) {
+        const strikes = (this.goalCooldowns.get(type)?.strikes ?? 0) + 1
+        const wait = Math.min(
+            GOAL_STALL.cooldownCap,
+            GOAL_STALL.cooldownTicks * Math.pow(2, strikes - 1)
+        )
+        this.goalCooldowns.set(type, { untilTick: now + wait, strikes })
+        return wait
+    }
+
+    /**
+     * #128: the watchdog. Returns true when the current goal has just been given up,
+     * so the caller knows not to run the executor of a goal that no longer exists.
+     */
+    checkGoalStall() {
+        const goal = this.currentGoal
+        if (!goal) return false
+
+        const tick = this.currentTick()
+        if (goal.startedAtTick == null) goal.startedAtTick = tick
+        if (goal.lastProgressTick == null) {
+            goal.lastProgressTick = tick
+            goal.lastCounterTick = tick
+            goal.progressToken = this.goalMotionToken(goal)
+            goal.counterToken = this.goalCounterToken(goal)
+            return false
+        }
+
+        const counters = this.goalCounterToken(goal)
+        if (counters !== goal.counterToken) {
+            goal.counterToken = counters
+            goal.lastCounterTick = tick
+        }
+        const motion = this.goalMotionToken(goal)
+        if (motion !== goal.progressToken) {
+            goal.progressToken = motion
+            goal.lastProgressTick = tick
+        }
+
+        const { budget, lifetime } = this.goalStallLimits(goal)
+        const sinceMotion = tick - goal.lastProgressTick
+        const sinceHeadway = tick - goal.lastCounterTick
+        // Standing still is not the failure on its own - a pawn emptying its pack at
+        // a build site barely walks and is plainly getting somewhere, so headway buys
+        // it the same grace that motion buys a traveller. Both clocks still is a
+        // pawn running in place.
+        if (sinceMotion >= budget && sinceHeadway >= budget) {
+            this.abandonCurrentGoal('no_progress')
+            return true
+        }
+        if (sinceHeadway >= lifetime) {
+            this.abandonCurrentGoal('no_headway')
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Give up on the current goal and hand the pawn back its life. This is the
+     * missing exit: the alternative was a plan that ran until the world ended.
+     *
+     * The type that failed is cooled down, and so is its parent, because a child
+     * errand is regenerated on the spot by the plan waiting on it - cooling only the
+     * staging job would have the pawn back inside the same trap on the next tick,
+     * and `build_structure` would be the thing standing between it and everything
+     * else it meant to do.
+     */
+    abandonCurrentGoal(reason = 'stalled') {
+        const goal = this.currentGoal
+        if (!goal) return null
+
+        const tick = this.currentTick()
+        const invested = this.getGoalInvestment(goal)
+        const label = goal.description ?? goal.type
+
+        this.completedGoals.push({
+            ...goal,
+            endReason: `abandoned:${reason}`,
+            investedTicks: invested,
+            abandonedAt: tick
+        })
+        this.stalledGoals.push({
+            type: goal.type,
+            description: label,
+            reason,
+            investedTicks: invested,
+            atTick: tick
+        })
+        if (this.stalledGoals.length > GOAL_STALL.abandonLogCap) this.stalledGoals.shift()
+
+        const wait = this.coolGoalType(goal.type, tick)
+        if (goal.parentGoal) this.coolGoalType(goal.parentGoal, tick)
+
+        this.logGoalSwitch(goal, null, `abandoned:${reason}`)
+        this.pawn.movementPlan = null
+        this.pawn.setRecentAction?.(`Gave up on ${label}`)
+        this.pawn.addThought?.(`That was going nowhere.`, 'planning')
+        console.warn(
+            `${this.pawn.name} abandoned ${label} after ${invested} ticks (${reason}, ${wait}t cooldown)`
+        )
+
+        // Whatever else was queued gets its turn now rather than after the next
+        // scheduler pass, so a give-up is worth something to the pawn immediately.
+        this.currentGoal = null
+        if (this.goalCooldowns.size > 0) {
+            this.goalQueue = this.goalQueue.filter(
+                candidate => this.isEmergencyGoal(candidate) || !this.isGoalCooling(candidate.type)
+            )
+            this.deferredGoals = this.deferredGoals.filter(
+                candidate => this.isEmergencyGoal(candidate) || !this.isGoalCooling(candidate.type)
+            )
+        }
+        if (this.goalQueue.length > 0) {
+            this.currentGoal = this.goalQueue.shift()
+            this.startGoal(this.currentGoal)
+        } else {
+            this.pawn.behaviorState = 'idle'
+        }
+        return goal
+    }
+
     updateGoalProgress() {
         if (!this.currentGoal) return
         
@@ -767,19 +1476,104 @@ class PawnGoals {
         
         if (completed) {
             this.completeCurrentGoal()
-        } else {
-            // Update goal-specific logic
-            this.updateGoalSpecificLogic()
+            return
         }
+        if (this.checkGoalStall()) return
+
+        const goal = this.currentGoal
+        // Update goal-specific logic
+        this.updateGoalSpecificLogic()
+
+        // #132: a lost target is judged *after* the executor has had its say, so a
+        // pawn that picked the last unit off a node is credited with the gather
+        // rather than blamed for the empty stump it is standing next to. The
+        // executor can also finish or replace the goal in that call, hence the
+        // identity check.
+        if (this.currentGoal === goal) this.retireLostTarget()
     }
-    
+
+    /**
+     * Where the goal's own state can be read back from the world, that is the
+     * answer to "is it done". Returns null when this code has no opinion, which
+     * leaves the goal to its executor.
+     */
+    goalStateCompletion(goal) {
+        if (goal.type === 'stage_build_materials') {
+            const requirements = Array.isArray(goal.requirements) && goal.requirements.length
+                ? goal.requirements
+                : [{ type: 'stick', count: 8 }, { type: 'fiber', count: 4 }]
+            const cache = goal.cacheId
+                ? (this.pawn.world?.entitiesMap?.get(goal.cacheId) ?? null)
+                : null
+            // No cache means the errand still has to dig one, so standing anywhere
+            // is not the end of it.
+            if (!cache) return false
+            const staged = requirements.reduce(
+                (sum, req) => sum + Math.min(req.count ?? 0, cache.countByType?.(req.type) ?? 0), 0
+            )
+            const wanted = requirements.reduce((sum, req) => sum + (req.count ?? 0), 0)
+            return staged >= wanted
+        }
+        return null
+    }
+
+    /**
+     * Give up on a goal whose target has died, been picked clean, or left the world
+     * (#132). That is a failure, not a success: `completedGoals` says
+     * `abandoned:target_lost`, no inclination signal is paid, no skill is earned,
+     * and the type cools down, so the pawn goes and does something it can actually
+     * finish instead of being rewarded for a stick another pawn took first. Goals
+     * aimed at a bare {x, y} place cannot lose a target and are left alone.
+     */
+    retireLostTarget() {
+        const goal = this.currentGoal
+        if (!goal) return false
+
+        const map = this.pawn.world?.entitiesMap
+        // Only a world the pawn is actually standing in can confirm an absence;
+        // a goal built in a test with an id nothing ever held is not evidence.
+        const worldIsLive = !!map?.size && this.pawn.id != null && map.has(this.pawn.id)
+
+        let gone = false
+        if (goal.target) {
+            gone = targetLooksGone(goal.target)
+                || (worldIsLive && goal.target.id != null && !map.has(goal.target.id))
+        } else if (
+            goal.targetId != null && worldIsLive
+            // Only a goal that is aimed at a *thing* can have that thing go missing.
+            // A location goal may carry an id for a spot on the map or a plan that
+            // was never an entity, and its absence from the entity map is not news.
+            && (goal.targetType === 'entity' || goal.targetType === 'resource')
+        ) {
+            const target = map.get(goal.targetId)
+            gone = !target || targetLooksGone(target)
+            if (target && !targetLooksGone(target)) goal.target = target
+        }
+
+        if (!gone) return false
+
+        const label = goal.description ?? goal.type
+        this.pawn.addThought?.(`Whatever "${label}" was for is gone`, 'planning')
+        this.abandonCurrentGoal('target_lost')
+        return true
+    }
+
     checkGoalCompletion() {
         if (!this.currentGoal) return false
         
         const goal = this.currentGoal
+
+        // #132: the planner that made the goal is the only code that knows what the
+        // errand was for, so let it say so directly.
+        if (typeof goal.completion === 'function') {
+            return !!goal.completion(goal, this.pawn, this)
+        }
+        const stateAnswer = this.goalStateCompletion(goal)
+        if (stateAnswer !== null) return stateAnswer
         
-        // Check if we're at the target
-        if (goal.target) {
+        // Check if we're at the target - but only for goals whose purpose *is* the
+        // arrival. For the work goals the executor reports done (#132).
+        if (goal.target && !WORK_AT_TARGET_GOALS.has(goal.type)) {
             const distance = Math.sqrt(
                 (this.pawn.x - goal.target.x) ** 2 + 
                 (this.pawn.y - goal.target.y) ** 2
@@ -807,6 +1601,10 @@ class PawnGoals {
         }
         
         console.log(`${this.pawn.name} completed goal: ${goal.description}`)
+
+        // #105: an errand the pawn just walked is worth remembering, because
+        // resource nodes are the destinations it actually returns to.
+        this.rememberGoalCorridor(goal)
         
         // Apply completion rewards
         if (goal.completionReward) {
@@ -869,7 +1667,10 @@ class PawnGoals {
             'map_territory': { cartography: 0.4 },
             'study': { planning: 0.3 },
             'post_job': { planning: 0.15, convincing: 0.1 },
-            'teach_lesson': { storytelling: 0.2, planning: 0.1 }
+            'teach_lesson': { storytelling: 0.2, planning: 0.1 },
+            // #121: stowing fibre in a wet pit is hand work, not craft practice -
+            // the weaving does not start until the cordage gets twisted.
+            'soak_fiber': { manipulation: 0.1 }
         }
         const gains = sg[goal.type]
         if (gains) {
@@ -903,6 +1704,205 @@ class PawnGoals {
         }
     }
     
+    /**
+     * The barter itself, lifted out of the `barter` branch of the update loop
+     * (#99) because a journey's last step is a trade, not an arrival: whoever
+     * walked across the map needs the same code that a chance meeting uses.
+     */
+    executeBarter(goal) {
+        // Execute a trade with another pawn. Proximity still wins when there is
+        // somebody nearby to swap with - the goods move sooner - but the partner
+        // a journey was taken for is not forgotten just because they stepped out
+        // of earshot on the far side of the market.
+        const partner = PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE) ?? goal.tradePartner ?? null
+
+        if (!partner) {
+            // Nobody to swap with after all. The clock goes with them (#99): a
+            // trip nobody closed would time the next journey from this departure.
+            this.pawn.endTradeTrip?.()
+            this.completeCurrentGoal()
+            return
+        }
+
+        // Move to partner
+        const dx = partner.x - this.pawn.x
+        const dy = partner.y - this.pawn.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+
+        if (dist > PawnMercantile.TRADE_REACH) {
+            this.pawn.nextTargetX = partner.x
+            this.pawn.nextTargetY = partner.y
+            // #95: the journey is what makes the road, so time it. A merchant who
+            // set out for a market already has the clock running; beginTradeTrip()
+            // will not reset it.
+            this.pawn.beginTradeTrip?.(partner, null)
+        } else {
+            // Close enough to trade
+            const surplus = PawnMercantile.getSurplusItems(this.pawn)
+
+            if (surplus.length === 0) {
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Find something partner has that we want. `inventory` is an
+            // array, so Object.keys() here used to hand back indices and
+            // partner.countItem() is not a method on Pawn - the lookup threw
+            // or came up empty and no goal-driven barter ever completed (#107).
+            const offer = surplus[0]
+            const wantType = PawnMercantile.getItemTypes(partner).find(
+                type => type !== offer.type
+            )
+
+            if (!wantType) {
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+                return
+            }
+
+            const tradeOffer = PawnMercantile.initiateBarter(
+                this.pawn, partner,
+                offer.type, Math.min(offer.surplus, 2),
+                wantType, 1
+            )
+
+            if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
+                // acceptBarter pays both sides for the completed exchange;
+                // paying the initiator again here made a single trade worth
+                // twice as much bartering to whoever asked for it (#107).
+                // #95: the trip that just happened maintains the road and
+                // the route table entry for it. #99 made that trip longer.
+                this.pawn.noteTradeRoute?.(partner)
+                this.completeCurrentGoal()
+            } else {
+                // The offer was refused - one of the two packs had no room for
+                // what it would receive. Before #109 this branch could not be
+                // reached, because a refusal was reported as a success and the
+                // goods were destroyed; standing here and asking the same pawn
+                // again every tick would have been a new way to waste a life.
+                this.pawn.addThought?.(`${partner.name}'s hands are full`, 'social')
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+            }
+        }
+    }
+
+    /**
+     * Commit to a journey to the trade `findTradeJourney()` picked out (#99).
+     *
+     * The goal stops being a target and becomes a route: `goal.target` is cleared
+     * on purpose, because the generic completion test is "standing next to the
+     * target", and that test is the reason `establish_trade` used to finish as a
+     * greeting with both packs unchanged. The clock starts here, at the real
+     * departure, which is what makes `averageTravelTime` measure a journey rather
+     * than the last few steps of a chance meeting.
+     */
+    beginTradeJourney(goal, journey) {
+        const destination = journey?.destination ?? null
+        if (!destination || !Number.isFinite(destination.x) || !Number.isFinite(destination.y)) return null
+
+        goal.destination = destination
+        goal.tradeKind = journey.kind
+        goal.tradeItem = journey.type ?? null
+        goal.tradeMarket = journey.market ?? null
+        goal.tradePartner = journey.partner ?? null
+        goal.target = null
+        goal.type = 'travel_route'
+
+        // The trip worth timing is the one being walked. A clock left over from a
+        // goal somebody else abandoned would measure this journey from a place
+        // the merchant stopped standing hours ago.
+        this.pawn.tradeTrip = null
+        this.pawn.beginTradeTrip?.(goal.tradePartner, destination)
+
+        // Point at the prize on the tick the decision is made; the waypoint plan
+        // takes over from the next tick. A merchant who has decided to cross the
+        // map should be seen to start walking, not spend a tick thinking about it.
+        this.pawn.nextTargetX = destination.x
+        this.pawn.nextTargetY = destination.y
+        return goal
+    }
+
+    /**
+     * A journey that is not going to pay for itself is over. The clock goes with
+     * it: a trip that ended in a shrug must not lend its travel time to the road
+     * the merchant eventually walks, and a goal that is still current must not
+     * stay current. #99
+     */
+    abandonTradeJourney(goal, reason = 'the market was not worth the walk') {
+        this.pawn.endTradeTrip?.()
+        this.pawn.addThought?.(reason, 'social')
+        if (this.currentGoal === goal) this.completeCurrentGoal()
+    }
+
+    /**
+     * The walk itself (#99): follow a plan to the market, give up when the day is
+     * spent, and trade when there.
+     */
+    executeTradeJourney(goal) {
+        const destination = goal.destination
+
+        if (!destination || !Number.isFinite(destination.x) || !Number.isFinite(destination.y)) {
+            this.pawn.endTradeTrip?.()
+            this.completeCurrentGoal()
+            return
+        }
+
+        // A journey is a commitment with a deadline. TRADE_DAY_TICKS is both the
+        // figure the route table will believe and the point at which a merchant
+        // admits the market was not worth the walk, so an over-long trip is
+        // abandoned *and* stopped, rather than left running to distrust the road
+        // it eventually got to.
+        if (this.pawn.tradeTripAge?.() > TRADE_DAY_TICKS) {
+            this.abandonTradeJourney(goal, `${destination.name ?? 'the market'} was not worth the walk`)
+            return
+        }
+
+        const dist = Math.hypot(this.pawn.x - destination.x, this.pawn.y - destination.y)
+        if (dist <= TRADE_ARRIVE_RADIUS) {
+            this.arriveAtTradeDestination(goal)
+            return
+        }
+
+        const tick = this.currentTick()
+        let plan = this.pawn.movementPlan
+        if (!plan || plan.goal !== goal) {
+            plan = createMovementPlan(this.pawn, destination.x, destination.y, goal, tick)
+            this.pawn.movementPlan = plan
+        } else {
+            // Roads are made by walking on them, so the way ahead can get cheaper
+            // while you are on it; the planner re-reads the ground on its interval.
+            replanIfNeeded(plan, this.pawn, tick)
+        }
+
+        const waypoint = currentWaypoint(plan)
+        this.pawn.nextTargetX = waypoint?.x ?? destination.x
+        this.pawn.nextTargetY = waypoint?.y ?? destination.y
+        // A plan is advanced by whoever walks it, and until now only the
+        // explore/wander handlers did that - a merchant following a route it
+        // planned itself would have stood at the first waypoint forever.
+        advanceWaypoint(plan, this.pawn.x, this.pawn.y)
+    }
+
+    /**
+     * Arrived. The journey ends where a trade begins: at the market, trade with
+     * whoever is there (#99's point 2 - the walk, then the handshake, in that order).
+     */
+    arriveAtTradeDestination(goal) {
+        goal.tradeArrived = true
+        this.pawn.addThought?.(`reached ${goal.destination?.name ?? 'the market'}`, 'social')
+        if (!PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE)) {
+            // The far end was empty. Walking there still wore the ground, but no
+            // goods changed hands, so no route may claim a travel time - and the
+            // clock has to go with the hope, or the next journey is timed from
+            // this departure.
+            this.abandonTradeJourney(goal, `${goal.destination?.name ?? 'the market'} had nobody to trade with`)
+            return
+        }
+        this.executeBarter(goal)
+    }
+
     updateGoalSpecificLogic() {
         // Goal-specific update logic can be added here
         const goal = this.currentGoal
@@ -1081,9 +2081,13 @@ class PawnGoals {
                 if (goal.recipeName) {
                     recipe = getRecipe(goal.recipeName)
                 } else {
-                    // Otherwise pick a craftable recipe we can currently make
+                    // Otherwise pick a craftable recipe we can currently make. The
+                    // choice is the pawn's, not the array's: candidates[0] meant
+                    // "whatever sits first in Recipes.js", so a pawn standing on
+                    // fibre with full hands kept reaching for cordage it could not
+                    // carry and never wove the one thing that would make room (#112).
                     const candidates = getAvailableRecipes(this.pawn).filter(r => canCraftRecipe(this.pawn, r))
-                    if (candidates.length > 0) recipe = candidates[0]
+                    recipe = this.pawn.chooseCraft?.(candidates) ?? candidates[0] ?? null
                 }
 
                 if (!recipe) {
@@ -1104,7 +2108,14 @@ class PawnGoals {
 
                 // Attempt to craft
                 const crafted = this.pawn.craft?.(recipe)
-                if (crafted) {
+                if (crafted?.placed) {
+                    // #120: a `placeable` recipe raises a Structure in the world rather
+                    // than an item, so there is nothing to put in the pack - and a full
+                    // pack is no reason a lean-to failed to appear. The pawn is standing
+                    // in it.
+                    this.pawn.log?.('craft_goal', `${this.pawn.name} raised ${crafted.name}`)
+                    this.completeCurrentGoal()
+                } else if (crafted) {
                     const added = this.pawn.addItemToInventory(crafted)
                     if (!added) console.log(`${this.pawn.name} could not carry crafted ${crafted.name}`)
                     this.completeCurrentGoal()
@@ -1158,6 +2169,16 @@ class PawnGoals {
 
         if (goal.type === 'build_structure') {
             const tick = this.pawn.world?.clock?.currentTick ?? 0
+            // #128: this plan hands itself a staging errand on the spot, below the
+            // scheduler's nose, so it is the one place a cooldown can be walked
+            // straight through. If the materials have already cost the pawn a
+            // give-up, then the building is the thing that is not happening; saying
+            // so is what frees the pawn to go and do the rest of its list.
+            if (this.isGoalCooling('stage_build_materials')) {
+                this.pawn.setRecentAction?.('Frame abandoned: materials never arrived')
+                this.abandonCurrentGoal('materials_unreachable')
+                return
+            }
             const requirements = Array.isArray(goal.materialRequirements)
                 ? goal.materialRequirements
                 : [
@@ -1262,14 +2283,13 @@ class PawnGoals {
             }
 
             const shelterId = `shelter_${this.pawn.id}_${tick}_${Math.random().toString(36).slice(2, 7)}`
-            const shelter = new Structure(shelterId, `${this.pawn.name} Shelter`, site.x, site.y)
-            shelter.tags.add('cover')
-            shelter.tags.add('shelter')
-            shelter.tags.add('built')
-            shelter.ownerId = this.pawn.id
-            shelter.size = 18
-            shelter.condition = 110
-            shelter.maxCondition = 110
+            const shelter = createShelter({
+                id: shelterId,
+                name: `${this.pawn.name} Shelter`,
+                x: site.x,
+                y: site.y,
+                ownerId: this.pawn.id
+            })
 
             this.pawn.world?.addEntity?.(shelter)
             this.pawn.rememberLandmark?.({
@@ -1380,6 +2400,18 @@ class PawnGoals {
             })
 
             if (!candidates.length) {
+                // #128: this scan covers every entity the pawn's world holds, so an
+                // empty result does not mean "look harder", it means "there is
+                // nothing here". The old code read it the other way round forever:
+                // no counter, no exit, and a pawn that re-aimed at a fresh random
+                // point every tick for the rest of its game while the building it was
+                // meant to feed waited on materials that were never going to appear.
+                goal.searchAttempts = (goal.searchAttempts ?? 0) + 1
+                if (goal.searchAttempts >= GOAL_STALL.searchAttempts) {
+                    this.pawn.setRecentAction?.(`No ${needType} left to find anywhere`)
+                    this.abandonCurrentGoal('material_absent')
+                    return
+                }
                 if (!this.pawn.nextTargetX || !this.pawn.nextTargetY) {
                     this.selectExplorationTarget()
                 }
@@ -1777,24 +2809,24 @@ class PawnGoals {
                     if (elapsed >= goal.duration) {
                         console.log(`${this.pawn.name} completed collaboration with ${goal.partner.name}`)
                         // Both gain social and skill benefits
-                        this.pawn.increaseSkill('cooperation', 1)
-                        goal.partner.increaseSkill?.('cooperation', 1)
+                        this.pawn.useSkill('cooperation', 1)
+                        goal.partner.useSkill?.('cooperation', 1)
                         const shared = this.pawn.shareResourceMemory?.(goal.partner, { maxShare: 3, minConfidence: 0.5 }) ?? 0
                             const landmarkShared = this.pawn.shareSocialLandmarks?.(goal.partner, { maxShare: 2, minSignificance: 3 }) ?? 0
                         if (shared > 0) {
-                            this.pawn.increaseSkill('routePlanning', 0.05)
-                            goal.partner.increaseSkill?.('memoryClustering', 0.05)
+                            this.pawn.useSkill('routePlanning', 0.05)
+                            goal.partner.useSkill?.('memoryClustering', 0.05)
                         }
                             if (landmarkShared > 0) {
-                                this.pawn.increaseSkill('storytelling', 0.04)
-                                goal.partner.increaseSkill?.('storytelling', 0.02)
+                                this.pawn.useSkill('storytelling', 0.04)
+                                goal.partner.useSkill?.('storytelling', 0.02)
                             }
                         this.completeCurrentGoal()
                     } else {
                         // Periodic skill gains during collaboration
                         if (elapsed % 20 === 0) {
-                            this.pawn.increaseSkill('cooperation', 0.1)
-                            this.pawn.increaseSkill('planning', 0.05)
+                            this.pawn.useSkill('cooperation', 0.1)
+                            this.pawn.useSkill('planning', 0.05)
                         }
                     }
                 }
@@ -1947,7 +2979,7 @@ class PawnGoals {
                     // Complete lesson
                     const lesson = this.pawn.addCurriculumLesson(skillName, null, 1)
                     if (lesson) {
-                        student.gainSkill(skillName, 1)
+                        student.useSkill(skillName, 1)
                         this.pawn.completeCurriculumLesson(lesson.lessonId)
                         this.pawn.recordCivicContribution('build', 2)
                         this.completeCurrentGoal()
@@ -1955,55 +2987,14 @@ class PawnGoals {
                 }
             }
         }
+        if (goal.type === 'soak_fiber') {
+            // #121: the chore that fills the pit and, a day later, empties it.
+            this.executeSoakFiber(goal)
+            return
+        }
 
         if (goal.type === 'barter') {
-            // Execute a trade with another pawn
-            const partner = PawnMercantile.findTradePartner(this.pawn, 50)
-
-            if (!partner) {
-                this.completeCurrentGoal()
-                return
-            }
-
-            // Move to partner
-            const dx = partner.x - this.pawn.x
-            const dy = partner.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > 10) {
-                this.pawn.nextTargetX = partner.x
-                this.pawn.nextTargetY = partner.y
-            } else {
-                // Close enough to trade
-                const surplus = PawnMercantile.getSurplusItems(this.pawn)
-
-                if (surplus.length === 0) {
-                    this.completeCurrentGoal()
-                    return
-                }
-
-                // Find something partner has that we want
-                const offer = surplus[0]
-                const wantType = Object.keys(partner.inventory || {}).find(
-                    type => partner.countItem(type) > 0 && type !== offer.type
-                )
-
-                if (!wantType) {
-                    this.completeCurrentGoal()
-                    return
-                }
-
-                const tradeOffer = PawnMercantile.initiateBarter(
-                    this.pawn, partner,
-                    offer.type, Math.min(offer.surplus, 2),
-                    wantType, 1
-                )
-
-                if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
-                    this.pawn.gainSkill('bartering', 1)
-                    this.completeCurrentGoal()
-                }
-            }
+            this.executeBarter(goal)
         }
 
         if (goal.type === 'seek_trade') {
@@ -2013,37 +3004,83 @@ class PawnGoals {
                 return
             }
 
-            const partner = PawnMercantile.findTradePartner(this.pawn, 50)
-            if (partner) {
+            const partner = PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE)
+            // #114 ranked nearby partners by what the recorded prices said their
+            // market paid; #99 asks the wider question - is anybody's market worth
+            // crossing the map for - and the answer has to be weighed before the
+            // neighbour is settled for, or "a distant town with what you need"
+            // loses to whoever happens to be standing in the same field.
+            const localGain = partner
+                ? (PawnMercantile.priceAdvantage(this.pawn, partner)?.gain ?? 0)
+                : 0
+
+            if (partner && localGain > PawnMercantile.PRICE_TRADE_MARGIN) {
                 // Switch to barter goal
                 goal.type = 'barter'
-            } else {
-                // No partner nearby, wander to find one
-                this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
-                this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
-            }
-        }
-
-        if (goal.type === 'travel_route') {
-            // Travel to a trade destination
-            const destination = goal.destination
-            if (!destination) {
-                this.completeCurrentGoal()
+                this.executeBarter(goal)
                 return
             }
 
-            // Move toward destination
-            const dx = destination.x - this.pawn.x
-            const dy = destination.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > 10) {
-                this.pawn.nextTargetX = destination.x
-                this.pawn.nextTargetY = destination.y
-            } else {
-                // Arrived at destination
-                this.completeCurrentGoal()
+            const journey = PawnMercantile.findTradeJourney(this.pawn)
+            if (journey && this.beginTradeJourney(goal, journey)) {
+                this.pawn.addThought?.(`${journey.market ?? 'a dear market'} pays ${journey.gain.toFixed(1)}x for ${journey.type}`, 'social')
+                return
             }
+
+            if (partner) {
+                goal.type = 'barter'
+                this.executeBarter(goal)
+                return
+            }
+
+            // Nobody within earshot and no price worth chasing. A coin flip is a
+            // poor way to spend the afternoon, so wander outwards from home, which
+            // is what #118 left here: memory may hold a name the road table likes
+            // but no coordinates, and a place you cannot locate is not a destination.
+            this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
+            this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
+        }
+
+        if (goal.type === 'establish_trade') {
+            // #99: the planner emits this goal and nothing used to execute it.
+            // startGoal() drew a random pawn out of the entity map for any
+            // entity-targeted goal, and the generic completion test is "standing
+            // next to the target", so the merchant walked up to whoever came out of
+            // the hat, was 0.3 more convincing, and went home with both packs
+            // unchanged. Trading is not a greeting: choose the trade worth making,
+            // and if there is nobody to make it with, say so and go and find out.
+            const journey = PawnMercantile.findTradeJourney(this.pawn)
+            if (journey && this.beginTradeJourney(goal, journey)) return
+
+            const partner = goal.target ?? PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE)
+            if (!partner || partner === this.pawn) {
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+                return
+            }
+            // Keep the walk, but make the arrival the start of a barter instead of
+            // the end of a call: the partner travels in goal.tradePartner now, the
+            // clock runs from this departure, and completion is measured against
+            // where they are rather than against brushing past them.
+            goal.tradePartner = partner
+            goal.tradeKind = 'partner'
+            goal.target = null
+            goal.destination = {
+                x: partner.x,
+                y: partner.y,
+                name: partner.getHomeLandmark?.()?.name ?? null
+            }
+            this.pawn.tradeTrip = null
+            this.pawn.beginTradeTrip?.(partner, goal.destination)
+            goal.type = 'travel_route'
+            this.pawn.nextTargetX = goal.destination.x
+            this.pawn.nextTargetY = goal.destination.y
+        }
+
+        if (goal.type === 'travel_route') {
+            // Travel to a trade destination, and trade when there (#99)
+            this.executeTradeJourney(goal)
+            return
         }
 
         // Accumulate valuables: craft high-quality items
@@ -2055,6 +3092,11 @@ class PawnGoals {
                 const { getAvailableRecipes, canCraftRecipe } = module
                 
                 const available = getAvailableRecipes(this.pawn)
+                    // #120: hoarding is about things you can carry and sell. A
+                    // `placeable` recipe spends the materials on a building in the
+                    // ground, which is the craft goal's job, not an accumulation of
+                    // stock - and it would always fail the `addItemToInventory` below.
+                    .filter(r => !r.placeable)
                     .filter(r => canCraftRecipe(this.pawn, r))
                     .sort((a, b) => (b.output.baseQuality ?? 1) - (a.output.baseQuality ?? 1))
                 
@@ -2124,3 +3166,4 @@ class PawnGoals {
 }
 
 export default PawnGoals
+export { WORK_AT_TARGET_GOALS, TARGET_LOSS_FLAGS, targetLooksGone }

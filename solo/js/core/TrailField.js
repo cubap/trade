@@ -79,6 +79,29 @@ export const TRAIL_COST_SAMPLE = 8
 /** Longest leg we will integrate. This ranks destinations; it does not trace them. */
 export const TRAIL_COST_MAX_SAMPLES = 64
 
+/**
+ * #95: roads. There is no road *object* in this game, on purpose. A road is
+ * ground worn enough that the rest of the sim already treats it as built:
+ * `trailAwareDirection` steers walkers along it and `pathCost` prices it
+ * cheaper. Promotion therefore has to write wear into the field, which is the
+ * only channel both of those read - a route table entry would be obeyed by
+ * nobody.
+ */
+export const TRAIL_ROAD_WEAR = 12
+
+/**
+ * How much of a line must already be trodden before it can be called a road.
+ * Below this the "road" is a straight line through bush that no pawn walks,
+ * which is exactly the thing #95 says not to build.
+ */
+export const TRAIL_ROAD_MIN_COVERAGE = 0.5
+
+/** How far off the straight line a footpath may drift and still be the road. */
+export const TRAIL_ROAD_REACH_CELLS = 2
+
+/** Spacing, in world units, between the wear points written along a road. */
+export const TRAIL_ROAD_SAMPLE = 4
+
 const LN2 = Math.LN2
 
 function finite(value, fallback = 0) {
@@ -438,6 +461,35 @@ class TrailField {
     }
 
     /**
+     * What the ground under one foot costs (#98), as a multiplier on the step.
+     * `pathCost` answers the planner's question - "how expensive is this leg" -
+     * by resampling the whole line, which is far too much work to ask of every
+     * step of every walker. This answers the walker's question, which is only
+     * ever about the cell it is standing on, in a single lookup.
+     *
+     * Deliberately the same rule as `pathCost` (`1 - discount * wear/cap`, with
+     * the same threshold floor) so the body cannot disagree with the plan about
+     * what a road is worth.
+     *
+     * @param {number} x @param {number} y
+     * @param {{tick?: number, discount?: number, threshold?: number}} options
+     *   same meaning as in `pathCost`; `discount` 0 disables the relief.
+     * @returns {number} multiplier in (0, 1]. 1 means "this is just ground".
+     */
+    stepCost(x, y, options = {}) {
+        const discount = Math.min(0.9, Math.max(0, finite(options.discount, TRAIL_COST_DISCOUNT)))
+        if (discount <= 0 || this.cells.size === 0) return 1
+
+        const threshold = finite(options.threshold, TRAIL_FOLLOW_THRESHOLD)
+        const tick = Math.floor(finite(options.tick, this.tick))
+        const intensity = this.intensityAt(x, y, tick)
+        if (!(intensity > threshold)) return 1
+
+        const cap = this.maxIntensity > 0 ? this.maxIntensity : TRAIL_MAX_INTENSITY
+        return 1 - discount * Math.min(1, intensity / cap)
+    }
+
+    /**
      * Cost of a whole polyline route (#94), leg by leg, plus the distance and
      * the units of walking the worn ground saved. `points` is the traveller's
      * position followed by its waypoints and destination; anything unparseable
@@ -464,7 +516,8 @@ class TrailField {
 
     /**
      * The strongest worn ground within `radius` of a spot (#94). Answers with
-     * a cell centre, so a planner steers toward ground that actually exists
+     * the cell itself - its recorded position, which `cellCenter` can square up
+     * to the grid - so a planner steers toward ground that actually exists
      * instead of a coordinate between cells. Null when the neighbourhood is
      * unworn, which is the common case and must stay cheap.
      */
@@ -481,6 +534,124 @@ class TrailField {
             if (Math.hypot(cell.x - px, cell.y - py) <= radius) return cell
         }
         return null
+    }
+
+    /**
+     * The corridor of worn ground between two points (#95). Walks the straight
+     * line from A to B and, wherever a footpath is within reach, bends onto it.
+     * `points` are the worn cells found - cell centres, so they are ground that
+     * exists rather than a coordinate between cells - and `path` is the line a
+     * walker would actually take, worn where it could be found and straight
+     * across the gaps between. `coverage` is the share of the line already
+     * trodden, which is what decides whether a road can be formalised here.
+     * @returns {{points: Array, path: Array, length: number, coverage: number, gaps: number}}
+     */
+    corridorBetween(fromX, fromY, toX, toY, options = {}) {
+        const px = finite(fromX), py = finite(fromY)
+        const qx = finite(toX), qy = finite(toY)
+        const length = Math.hypot(qx - px, qy - py)
+        if (!(length > 0)) return { points: [], path: [], length: 0, coverage: 0, gaps: 0 }
+
+        const reach = finite(options.reach, this.cellSize * TRAIL_ROAD_REACH_CELLS)
+        const threshold = finite(options.threshold, TRAIL_FOLLOW_THRESHOLD)
+        const sample = Math.max(1, finite(options.sample, TRAIL_ROAD_SAMPLE))
+        // Same integration cap as cost estimation: this measures a corridor, it
+        // does not trace a contour map.
+        const steps = Math.min(Math.max(2, Math.ceil(length / sample)), TRAIL_COST_MAX_SAMPLES)
+        const stride = length / steps
+
+        const points = []
+        const path = []
+        let hits = 0
+        let gaps = 0
+        for (let i = 0; i <= steps; i++) {
+            const t = (i * stride) / length
+            const x = px + (qx - px) * t
+            const y = py + (qy - py) * t
+            const cell = reach > 0
+                ? this.wearNear(x, y, { radius: reach, threshold, tick: options.tick })
+                : null
+            if (!cell) {
+                gaps++
+                path.push({ x, y })
+                continue
+            }
+            hits++
+            // Snap onto the cell centre rather than wherever the first walker
+            // happened to put a foot down: a road is a line of ground, and the
+            // grid is how the field remembers it.
+            const centre = this.cellCenter(cell.x, cell.y)
+            path.push(centre)
+            const last = points[points.length - 1]
+            if (!last || Math.hypot(last.x - centre.x, last.y - centre.y) >= this.cellSize * 0.5) {
+                points.push(centre)
+            }
+        }
+
+        return {
+            points,
+            path,
+            length,
+            coverage: hits / (steps + 1),
+            gaps
+        }
+    }
+
+    /**
+     * Formalise the worn ground between two points as a road (#95). Traffic has
+     * to have gone here already - coverage must clear `minCoverage` - unless the
+     * caller is surveying, which is the cartography bypass the issue asks for:
+     * a good enough surveyor lays the straight line that is best forever
+     * instead of the bent one that is cheapest now.
+     *
+     * The only side effect is wear. That is what makes the road real: steering
+     * and route cost both obey it from the next read onwards, and
+     * TRAIL_DECAY_HALF_LIFE means an abandoned road fades unless someone keeps
+     * walking it.
+     * @returns {{ok: boolean, reason: string, points: Array, length: number, coverage: number}}
+     */
+    promoteCorridor(fromX, fromY, toX, toY, options = {}) {
+        const corridor = this.corridorBetween(fromX, fromY, toX, toY, options)
+        const surveyed = options.surveyed === true
+        const minCoverage = finite(options.minCoverage, TRAIL_ROAD_MIN_COVERAGE)
+
+        // A road has to go somewhere. Without this the surveyed bypass would
+        // "pave" a dot under the feet of anyone asking, which the civic road
+        // opening does for whoever is standing on the settlement already.
+        if (!(corridor.length > 0)) {
+            return { ok: false, reason: 'nowhere', ...corridor }
+        }
+        if (!surveyed && corridor.coverage < minCoverage) {
+            return { ok: false, reason: 'unworn', ...corridor }
+        }
+        if (!corridor.points.length && !surveyed) {
+            return { ok: false, reason: 'unworn', ...corridor }
+        }
+
+        const wear = finite(options.wear, TRAIL_ROAD_WEAR)
+        const kind = options.kind ?? 'road'
+        // A surveyed road is laid on the straight line. Everyone else paves
+        // the corridor traffic actually wore - gaps and all, which is the whole
+        // point of building it.
+        const line = surveyed
+            ? this.corridorBetween(fromX, fromY, toX, toY, { ...options, reach: 0 }).path
+            : corridor.path
+
+        if (!line.length) {
+            return { ok: false, reason: 'nowhere', ...corridor }
+        }
+
+        for (const p of line) {
+            this.deposit(p.x, p.y, wear, options.tick, kind)
+        }
+
+        return {
+            ok: true,
+            reason: surveyed ? 'surveyed' : 'worn',
+            points: line,
+            length: corridor.length,
+            coverage: corridor.coverage
+        }
     }
 
     stats(tick = this.tick) {

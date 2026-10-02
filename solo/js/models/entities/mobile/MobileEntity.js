@@ -5,7 +5,7 @@ import {
     impedimentText,
     clampTargetToPassable
 } from './MovementTerrain.js'
-import { trailFieldFor, TRAIL_FOOTFALL } from '../../../core/TrailField.js'
+import { trailFieldFor, TRAIL_FOOTFALL, TRAIL_COST_DISCOUNT } from '../../../core/TrailField.js'
 
 class MobileEntity extends Entity {
     constructor(id, name, x, y) {
@@ -32,6 +32,9 @@ class MobileEntity extends Entity {
         // Pawns raise affinity with their trail skills, animals by species.
         this.trailWeight = 1
         this.trailAffinity = 0
+        // #98: the effort multiplier the last step actually paid, for the HUD.
+        // 1 means ordinary ground; below 1 means worn ground gave some back.
+        this.lastStepCost = 1
     }
 
     /**
@@ -86,6 +89,27 @@ class MobileEntity extends Entity {
         this.onTrailFollowed?.(bias)
         return bias
     }
+
+    /**
+     * Effort multiplier for the ground under this entity's feet (#98).
+     *
+     * #94 taught the *plan* what worn ground is worth; this is the same
+     * discount spent by the body, so a route taken down a pawn's own road is
+     * easier than the same route cut cross-country. 1 means "just ground":
+     * entities that cannot read the land (affinity 0) and worlds nobody has
+     * walked yet step exactly as they did before, which is the degeneracy
+     * #94's tests assert for planning.
+     */
+    trailStepCost() {
+        const affinity = this.trailAffinity ?? 0
+        if (!(affinity > 0)) return 1
+        const field = trailFieldFor(this.world, { create: false })
+        if (!field || typeof field.stepCost !== 'function') return 1
+        return field.stepCost(this.x, this.y, {
+            tick: this._trailTick(),
+            discount: TRAIL_COST_DISCOUNT * Math.min(1, affinity)
+        })
+    }
     
     move() {
         // Store previous position for rendering interpolation
@@ -110,8 +134,21 @@ class MobileEntity extends Entity {
                 }
                 if (terrain.factor < 1) this._noteMovementImpediment(terrain.reason)
 
+                // Worn ground (#98): the cheaper the step, the farther the same
+                // effort carries it. Roads recover some of what mud and slope
+                // take away, which is what makes a planned route feel planned.
+                const ground = this.trailStepCost()
+                this.lastStepCost = ground
+                const ease = ground < 1 ? 1 / ground : 1
+
                 // Move by at most (speed * factor) units toward target
-                const moveDistance = Math.min(distance, this.speed * terrain.factor)
+                const moveDistance = Math.min(distance, this.speed * terrain.factor * ease)
+
+                // #104: the body pays for the stride it just took, one unit per
+                // stride at this entity's own pace. Mud and scree are charged
+                // for by taking more strides over the same ground, and a road
+                // for by taking fewer, which is #98's relief turned round.
+                this.needs?.noteStrideEffort?.(moveDistance / (this.speed * terrain.factor * ease))
                 
                 // Avoid division by zero
                 if (distance > 0) {

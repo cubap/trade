@@ -20,13 +20,62 @@ export const RECIPES = [
     experience: 0.5 // skill gain on craft
   },
   {
+    // #112. A pawn has two slots and the world holds far more than two things, yet
+    // every other craft here makes something you spend. This one makes room. It is
+    // deliberately as cheap as cordage and draws the extra fibre from the patch the
+    // weaver is standing on, so a pawn with full hands can still weave its way out
+    // of them - otherwise the cure for being overloaded would itself require
+    // carrying the load.
+    //
+    // No requiredSkills, which is not an oversight: weaving is the skill this
+    // recipe *pays* (primarySkill + experience), and nothing else in the game pays
+    // practice into it. A weaving prerequisite here would be a locked door with the
+    // key hanging on the inside of it - cordage asks for weaving 1 too, so with a
+    // two-slot pack and no teacher there was no craft a fresh pawn could ever
+    // finish. The basket is the root the textile branch was missing.
+    id: 'basket',
+    name: 'Basket',
+    description: 'A woven vessel that gives a pair of hands somewhere else to put things',
+    requiredItems: [
+      {
+        type: 'fiber',
+        count: 3,
+        allowSourceUse: true,
+        sourceTag: 'fiber',
+        sourceRange: 24
+      }
+    ],
+    output: {
+      type: 'basket',
+      name: 'Basket',
+      baseQuality: 1,
+      tags: ['container', 'carrying'],
+      slotType: 'container',
+      increasesCapacity: { slots: 4, weight: 20, size: 15 },
+      weight: 2,
+      size: 2,
+      stackable: false,
+      maxStack: 1,
+      durability: 30
+    },
+    craftTime: 30,
+    primarySkill: 'weaving',
+    experience: 0.8
+  },
+  {
     id: 'sharp_stone',
     name: 'Sharp Stone',
     description: 'Knapped flint cutting tool',
     requiredSkills: { knapping: 1 },
     requiredItems: [
-      { type: 'rock', count: 2 },
-      { type: 'stone', count: 1 }
+      // #129: this used to ask for one `stone`, which is an item no entity in the
+      // world has ever produced - `Rock.gather()` drops a `rock` that is merely
+      // *tagged* 'stone', and `canCraftRecipe()` matches on type. Knapping and
+      // everything above it (`stone_knife`, the shelter that wants the knife) were
+      // waiting on a material that did not exist. Three rocks is the same pile of
+      // stone the recipe already wanted; the difference between a hammerstone and a
+      // flake belongs in the craft, not in the shopping list.
+      { type: 'rock', count: 3 }
     ],
     output: {
       type: 'sharp_stone',
@@ -90,7 +139,12 @@ export const RECIPES = [
     experience: 0.4
   },
   {
-    id: 'simple_poultice',
+    // The id is the recipe's name in every other vocabulary: the unlock table
+    // grants recipes by id, the goal planner turns craft_<goal> into <goal> and
+    // looks that up as an id, and this recipe's *output type* has always been
+    // 'poultice'. While the id said 'simple_poultice' both of those lookups missed
+    // silently, which is why no pawn could ever craft a poultice (#112).
+    id: 'poultice',
     name: 'Simple Poultice',
     description: 'Prepared healing mash for wounds',
     requiredSkills: { herbalism: 2 },
@@ -134,23 +188,32 @@ export const RECIPES = [
     name: 'Basic Shelter',
     description: 'Simple lean-to structure',
     requiredSkills: { construction_basics: 1 },
+    // #120. This used to ask for 20 `grass`, and no item of type `grass` has ever
+    // existed: grass patches are flora that browsers eat (`Grass.consume()` returns a
+    // population count, not an item), and nothing in the tree makes thatch. The frame
+    // now costs what the civic `build_structure` route has always cost - 8 sticks and
+    // 4 fibre - plus two cords to lash it, so the two routes to a shelter are
+    // comparable and neither is free.
     requiredItems: [
-      { type: 'stick', count: 10 },
-      { type: 'grass', count: 20 },
-      { type: 'cordage', count: 3 }
+      { type: 'stick', count: 8 },
+      { type: 'fiber', count: 4 },
+      { type: 'cordage', count: 2 }
     ],
+    // No `capacity`: a building you can put in your pack is a bug, not a storehouse.
+    // `restBonus` is read by `createShelter` and lands on the entity (#120).
     output: {
       type: 'shelter',
       name: 'Lean-to Shelter',
       baseQuality: 1,
       tags: ['structure', 'cover', 'shelter'],
-      capacity: 2,
       restBonus: 1.3
     },
     craftTime: 100,
     primarySkill: 'construction_basics',
     experience: 2.0,
-    placeable: true // Creates structure entity in world
+    // Honoured: `Pawn.craft` raises a Structure on the spot instead of handing back
+    // an item. See solo/test/recipe-placement.test.js (#120).
+    placeable: true
   }
 ]
 
@@ -229,5 +292,19 @@ export function calculateCraftQuality(pawn, recipe) {
   const quality = baseQuality + skillBonus + (Math.random() * 0.3 - 0.15) // ±15% variance
   return Math.max(0.5, quality)
 }
+
+/**
+ * #129: not every material comes out of the ground or off a bench. The soak pit
+ * spends a day turning `fiber` into `soaked_fiber`, which is a transformation the
+ * recipe book depends on but cannot express here, because a recipe is something a
+ * pawn does with its hands and a soak is something a pit does with its time.
+ *
+ * It is written down so that `solo/test/material-reachability.test.js` can tell
+ * "made slowly" apart from "never made", and `Pawn.startFiberSoakAtCache()` reads
+ * it back, so the two lists cannot drift away from each other.
+ */
+export const FIBER_SOAK = { id: 'fiber_soak', inputType: 'fiber', outputType: 'soaked_fiber' }
+
+export const PROCESS_TRANSFORMS = [FIBER_SOAK]
 
 export default RECIPES

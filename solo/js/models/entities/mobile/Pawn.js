@@ -1,10 +1,13 @@
 import MobileEntity from './MobileEntity.js'
 import PawnNeeds from './PawnNeeds.js'
 import PawnGoals from './PawnGoals.js'
+import { SITUATION_RADIUS, hasTag } from './PawnBehaviors.js'
 import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
+import { FIBER_SOAK } from '../../crafting/Recipes.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
 import INVENTION_CONFIG from './InventionConfig.js'
 import ResourceCache from '../immobile/ResourceCache.js'
+import { createShelter, SHELTER_SIZE } from '../immobile/Structure.js'
 import * as PawnCivic from './PawnCivic.js'
 import * as PawnSocial from './PawnSocial.js'
 import * as PawnTactical from './PawnTactical.js'
@@ -20,17 +23,36 @@ import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
 import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
 import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
-import { routeCostTo } from './MovementPlan.js'
+import { routeCostTo, canSurveyRoutes, trailPlanningBias } from './MovementPlan.js'
+import { trailFieldFor, TRAIL_COST_DISCOUNT } from '../../../core/TrailField.js'
+import { createRoute, findRoute, recordTrip, TRADE_DAY_TICKS } from '../../../core/TradeRoutes.js'
 
 // Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
 const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
 const TRAIL_SKILL_MASTERY = 20        // skill at which affinity is complete
 const TRAIL_XP_ORIENTEERING = 0.004   // per followed step
 const TRAIL_XP_TRACKING = 0.006       // per step on ground someone else wore
+const TRAIL_XP_ROAD = 0.25            // per road opened (#95, a rare act)
 // Below this combined share of other species' wear, a corridor is just ground.
 const TRAIL_TRACKING_SHARE = 0.1
+// A trading trip is timed, not guessed. #95 allowed 600 ticks because anything
+// longer could not have been a walk between two neighbours; #99 sends merchants
+// across the map to a market, so the ceiling is a trading day - and it is the
+// same figure the journey goal gives up at, not a second number somebody has to
+// remember to change when the first one is tuned.
+const TRADE_ROUTE_MAX_TRIP_TICKS = TRADE_DAY_TICKS
 const TRAIL_THOUGHT_COOLDOWN = 320    // ticks between remarks about a path
 const TRAIL_REMARK_WEAR = 6           // how worn it must be to be worth noting
+// #96: what trail work was for, phrased for the player instead of the log. A
+// followed step pays 0.004 orienteering, so a notice per award would be noise;
+// the player hears about it when the walking adds up to a whole level - about
+// 250 trodden steps, or four roads paved.
+const TRAIL_NOTICE_PHRASES = {
+    path: ({ skill, level }) => `the route you keep walking is paying off (${skill} ${level})`,
+    tracks: ({ skill, level }) => `you can tell whose prints these are now (${skill} ${level})`,
+    road: ({ skill, level }) => `a road you paved is worth remembering (${skill} ${level})`
+}
+const TRAIL_NOTICE_FALLBACK = ({ skill, level, cause }) => `${skill} ${level} - ${cause}`
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -42,6 +64,10 @@ class Pawn extends MobileEntity {
         this.trailKind = 'pawn'
         this.trailWeight = 1.25
         this.trail = { tick: 0, steps: 0, followed: 0, lastGain: 0, wear: 0, underfoot: 0, sinceThought: -1e9 }
+        // #98: ProgressionController reads routeRecallConsistency for its
+        // Phase-3 gate. It was declared in the plan and read by the gate but
+        // never written by anything; a finished route now scores itself here.
+        this.progressionMetrics = { routeRecallAttempts: 0, routeRecallConsistency: 0 }
         this.color = '#3498db'  // Blue color for pawns
         
         // Walking speed: ~1.4 m/s (average human walking pace)
@@ -69,6 +95,10 @@ class Pawn extends MobileEntity {
         this.behaviorState = 'idle'  // Current activity state
         this.recentAction = 'Idle'
         this.recentActionTick = 0
+        // #121: { cacheId, readyTick } for fibre this pawn put in a soaking pit.
+        // The batch is owed a collecting trip wherever the pawn has wandered off to,
+        // so it cannot be remembered only by standing near the hole again.
+        this.pendingSoak = null
         this.thoughtLog = []
         this.maxThoughtLog = 16
         this.thoughtSequence = 0 // Increments on every addThought, even duplicates
@@ -114,6 +144,15 @@ class Pawn extends MobileEntity {
         // Track when skills were last used for gentle decay
         this.skillLastUsed = {}
 
+        // Feedback (#96): the last XP awards, with the reason that earned them.
+        // "Known Skills" can say *that* orienteering is 3.24; only a ledger can
+        // say what the walk did for it. Bounded and drained by the UI, because
+        // a renderer that diffs skill values every frame is the wrong mechanism.
+        this.skillLedger = []
+        this.maxSkillLedger = 12
+        this.skillNotices = []
+        this.maxSkillNotices = 4
+
         // Simple idle planner configuration (unlocks expand with planning)
         this.idlePlan = {
             enabled: true,
@@ -135,6 +174,7 @@ class Pawn extends MobileEntity {
         // Phase 1: Egocentric (direction-based, must update as pawn moves)
         // Phase 2: Allocentric (compass directions, fixed origin, compressed vectors)
         this.resourceMemory = [] // { type, tags, x, y, lastSeen, amount, successCount, failCount, confidence, memoryPhase }
+        this.routeMemory = [] // #105: { x, y, savings, legs, trips, tick } - what walking somewhere actually saved
         this.maxResourceMemory = 20 // Can be increased by skills
         this.memoryOrigin = { x, y } // Origin point for allocentric memory (spawn location)
         this.memoryPhase = 1 // 1=egocentric, 2=allocentric, 3=clusters, 4=conceptual
@@ -542,6 +582,9 @@ class Pawn extends MobileEntity {
 
         const used = neededCount - remaining
         if (used > 0) {
+            // #115: material worked at its source passed through the pawn's
+            // hands just as surely as material carried home.
+            this.noteItemHandled(req.type, used)
             this.setRecentAction(`Combining at ${req.sourceTag ?? req.type} source`)
         }
         return used
@@ -650,7 +693,16 @@ class Pawn extends MobileEntity {
     }
     
     /**
-     * Increase a skill (creates skill entry if first time)
+     * The primitive: set a skill number by arithmetic.
+     *
+     * #101 fixed the vocabulary: an *activity* pays practice through `useSkill`,
+     * which is the only place a diminishing-returns curve can ever live. This is
+     * what `useSkill` delegates to, and what you call directly when the payment
+     * is not practice - a structure's buff, an item's effect, a test, a growth
+     * rule. Its semantics are pinned by existing tests and must not shift under
+     * a rename: sparse storage (a 0 skill is absent, not zero), deletion when a
+     * negative amount brings it to 0 or below, and the `skillLastUsed` stamp that
+     * decay reads.
      * @param {string} skill - Skill name
      * @param {number} amount - Amount to increase (default 1)
      */
@@ -671,8 +723,143 @@ class Pawn extends MobileEntity {
         this.skillLastUsed[skill] = tick
     }
 
+    /**
+     * The practice verb: skill earned by doing something.
+     *
+     * This is the one an activity should call - teaching a lesson, closing a
+     * barter, finishing a route, walking a road into being. It is currently one
+     * line on top of `increaseSkill`, and that is the point: the amount an
+     * activity pays is decided by the activity (#95's `TRAIL_XP_ROAD`, the
+     * 0.12 for completing a movement plan), while *how* a payment lands is
+     * decided here, once. Saturation, caps and decay of unpractised skill all
+     * belong to this method; they do not belong to the forty call sites.
+     *
+     * #101: there were three verbs. `gainSkill` was added by #95 purely so the
+     * civic and market code - written against a method that had never existed -
+     * would stop throwing, and it was an alias of an alias. It is gone, and its
+     * callers say `useSkill` like everyone else.
+     * @param {string} skill - Skill name
+     * @param {number} amount - Practice awarded (default 1)
+     */
     useSkill(skill, amount = 1) {
         this.increaseSkill(skill, amount)
+    }
+
+    /**
+     * The qualification verb: paying a skill because something now requires it.
+     *
+     * #116. Not practice - nobody repeated an action, so nothing accumulated -
+     * and not a buff either, which is why it does not hide in `increaseSkill`
+     * at some call site. An unlock entry that says `skills: ['weaving']` is a
+     * promise about what the pawn can do next, and every gate in the game reads
+     * `pawn.skills` (getAvailableRecipes, the craft executors, the goal
+     * classifiers), so the promise has to be paid here or `unlocked.skills` is
+     * a list of intentions no code consults.
+     *
+     * It tops the skill up to `level` instead of adding to it: a pawn that has
+     * already knapped its way to 0.8 needs 0.2 of qualification, not a second
+     * level, and a pawn past the level is left exactly where it was. Growth
+     * rules are on the exception list in pawn-skill-verbs.test.js, which exists
+     * to keep this kind of payment deliberate and visible.
+     * @param {string} skill - Skill name
+     * @param {number} level - The level the pawn is now qualified for (default 1)
+     * @returns {boolean} true if the skill number moved
+     */
+    qualifySkill(skill, level = 1) {
+        const current = this.skills[skill] ?? 0
+        if (current >= level) return false
+        this.increaseSkill(skill, level - current)
+        return true
+    }
+
+    /**
+     * #96: pay trail skill *and* keep the reason. `useSkill` alone leaves the
+     * player with a number that moved and no story attached, which is exactly
+     * the complaint: walking a corridor for 400 ticks and seeing a nicer brown
+     * path is not feedback that the walk earned anything.
+     * @param {string} kind - which notice phrase fits the act ('path', 'tracks', 'road')
+     * @returns {number} the skill value after the award
+     */
+    _awardTrailSkill(skill, amount, cause, kind = 'path') {
+        const before = this.getSkill(skill)
+        this.useSkill(skill, amount)
+        const after = this.getSkill(skill)
+        if (!(after > before)) return after
+
+        this.skillLedger.push({ skill, cause, amount: after - before, level: after, tick: this._trailTick() })
+        if (this.skillLedger.length > this.maxSkillLedger) this.skillLedger.shift()
+
+        // Only a whole level is worth interrupting for; the first one says the
+        // thing the player needs to believe ("yes, that walking counted").
+        if (Math.floor(after) > Math.floor(before)) {
+            const info = { skill, cause, level: Math.floor(after) }
+            const phrase = TRAIL_NOTICE_PHRASES[kind] ?? TRAIL_NOTICE_FALLBACK
+            this.skillNotices.push(phrase(info))
+            if (this.skillNotices.length > this.maxSkillNotices) this.skillNotices.shift()
+        }
+        return after
+    }
+
+    /**
+     * The UI's side of #96: pending notices, oldest first, cleared by reading.
+     * Event-driven on purpose - the alternative is a per-frame diff of every
+     * skill value, which misses whatever was earned between two frames.
+     * @returns {string[]}
+     */
+    drainSkillNotices() {
+        if (!this.skillNotices.length) return []
+        return this.skillNotices.splice(0, this.skillNotices.length)
+    }
+
+    /**
+     * "Why is this skill this number?" - the causes behind the recent awards,
+     * biggest first. The ledger is a bounded window (`maxSkillLedger` entries),
+     * so this is deliberately an account of the last few dozen awards and not a
+     * lifetime total; it exists to explain a number the player just noticed.
+     * Empty string when nothing has earned it, so a row can be skipped rather
+     * than showing a bare zero.
+     */
+    skillWhy(skill, limit = 3) {
+        const counts = new Map()
+        for (const entry of this.skillLedger) {
+            if (entry.skill !== skill) continue
+            const seen = counts.get(entry.cause) ?? { amount: 0, times: 0 }
+            seen.amount += entry.amount
+            seen.times += 1
+            counts.set(entry.cause, seen)
+        }
+        return [...counts.entries()]
+            .sort((a, b) => b[1].amount - a[1].amount)
+            .slice(0, limit)
+            .map(([cause, { amount, times }]) => `${cause} +${amount.toFixed(2)}${times > 1 ? ` x${times}` : ''}`)
+            .join(', ')
+    }
+
+    /**
+     * #96: this pawn's own trail line for the HUD. Like `sightReport()` it says
+     * nothing rather than something false - a pawn that has never been pulled
+     * along a footpath and has paved nothing has no trail knowledge to report.
+     */
+    trailReport() {
+        const roads = this.roadsOpened ?? 0
+        const followed = this.trail?.followed ?? 0
+        if (!followed && !roads) return ''
+
+        const parts = []
+        if (followed) {
+            const earned = ['orienteering', 'tracking', 'cartography']
+                .filter(name => this.getSkill(name) > 0)
+                .map(name => `${name} ${this.getSkill(name).toFixed(1)}`)
+            parts.push(`${followed} trodden steps${earned.length ? ` (${earned.join(', ')})` : ''}`)
+        }
+        if (roads) parts.push(`${roads} road${roads === 1 ? '' : 's'} paved`)
+        // #98: the part the pawn feels right now - the ground under its feet is
+        // giving some of the step back. Only said when it is actually true.
+        const underfoot = this.trailStepCost()
+        if (underfoot < 1) {
+            parts.push(`road underfoot -${Math.round((1 - underfoot) * 100)}%`)
+        }
+        return parts.join(' · ')
     }
 
     // --- Interaction-based observation and examination helpers ---
@@ -682,29 +869,50 @@ class Pawn extends MobileEntity {
         const subtype = target?.subtype
         // Interacting with plants improves herbalism slightly
         if ((Array.isArray(tags) ? tags.includes('plant') : (typeof tags?.has === 'function' ? tags.has('plant') : false)) || subtype === 'plant') {
-            this.increaseSkill('herbalism', amount)
+            this.useSkill('herbalism', amount)
         }
         // Interacting with structures (e.g., school) improves planning/cartography a bit
         if ((Array.isArray(tags) ? tags.includes('structure') : (typeof tags?.has === 'function' ? tags.has('structure') : false)) || subtype === 'structure') {
-            this.increaseSkill('planning', amount * 0.8)
-            this.increaseSkill('cartography', amount * 0.4)
+            this.useSkill('planning', amount * 0.8)
+            this.useSkill('cartography', amount * 0.4)
         }
         // Interacting with another pawn improves social skills slightly
         if (subtype === 'pawn') {
-            this.increaseSkill('storytelling', amount * 0.5)
-            this.increaseSkill('convincing', amount * 0.3)
-            this.increaseSkill('manipulation', amount * 0.2)
+            this.useSkill('storytelling', amount * 0.5)
+            this.useSkill('convincing', amount * 0.3)
+            this.useSkill('manipulation', amount * 0.2)
         }
         // Light unlock evaluation on interaction
         this.evaluateSkillUnlocks?.()
     }
 
+    /**
+     * #115: the writer for `itemExposure`, which counts material that has passed
+     * through the pawn's hands.
+     *
+     * It used to be `examineItem` that incremented this, which made the counter
+     * measure *looking*: a pawn could satisfy "handled four fibres" by studying
+     * the same bundle over and over, and a pawn that carried a sack of rocks
+     * without pausing to admire them registered nothing. Exposure is now paid
+     * where material is acquired - stowed in the pack, or drawn from a source
+     * during a craft - and attention keeps paying what attention earns, which is
+     * practice. Both readings were true about learning; only the second one is
+     * true about the number, and one call site cannot tell them apart.
+     * @param {string} type - Item type being handled
+     * @param {number} count - How many units (default 1)
+     */
+    noteItemHandled(type, count = 1) {
+        if (!type || !(count > 0)) return
+        this.itemExposure = this.itemExposure ?? {}
+        this.itemExposure[type] = (this.itemExposure[type] ?? 0) + count
+    }
+
     examineItem(item, amount = 0.2) {
         if (!item) return
-        // Track exposure to item types to support unlocks later
+        // #115: no exposure payment here on purpose. Studying a packed item is
+        // attention, not handling; the pack already recorded the handling when
+        // the item went in (see noteItemHandled).
         const type = item.type ?? item.name ?? 'unknown'
-        this.itemExposure = this.itemExposure ?? {}
-        this.itemExposure[type] = (this.itemExposure[type] ?? 0) + 1
         
         // Track as known material for lateral learning
         this.trackMaterialEncounter(item)
@@ -713,20 +921,20 @@ class Pawn extends MobileEntity {
         const tags = item.tags ?? []
         const has = t => Array.isArray(tags) ? tags.includes(t) : (typeof tags?.has === 'function' ? tags.has(t) : false)
         if (has('herb') || /herb|leaf|flower/i.test(String(type))) {
-            this.increaseSkill('herbalism', amount)
+            this.useSkill('herbalism', amount)
         }
         if (has('potion') || /potion|elixir/i.test(String(type))) {
-            this.increaseSkill('alchemy', amount)
+            this.useSkill('alchemy', amount)
         }
         if (has('medical') || has('bandage') || /salve|bandage|medicine/i.test(String(type))) {
-            this.increaseSkill('medicine', amount * 0.8)
+            this.useSkill('medicine', amount * 0.8)
         }
         // Food/drink inform basic survival
         if (has('food') || item.type === 'food') {
-            this.increaseSkill('planning', amount * 0.2)
+            this.useSkill('planning', amount * 0.2)
         }
         if (has('drink') || item.type === 'drink' || has('water')) {
-            this.increaseSkill('planning', amount * 0.2)
+            this.useSkill('planning', amount * 0.2)
         }
 
         this.addItemExperience?.(type, 1)
@@ -743,11 +951,11 @@ class Pawn extends MobileEntity {
         if (isStructure) this.structureExposure.structure = (this.structureExposure.structure ?? 0) + 1
         if (isSchool) this.structureExposure.school = (this.structureExposure.school ?? 0) + 1
         if (isStructure) {
-            this.increaseSkill('planning', amount)
+            this.useSkill('planning', amount)
             if (isSchool) {
                 // Studying environment nudges cartography/intuition a bit
-                this.increaseSkill('cartography', amount * 0.5)
-                this.increaseSkill('intuition', amount * 0.2)
+                this.useSkill('cartography', amount * 0.5)
+                this.useSkill('intuition', amount * 0.2)
             }
         }
         this.evaluateSkillUnlocks?.()
@@ -763,12 +971,12 @@ class Pawn extends MobileEntity {
     passiveSkillTick() {
         // Example: exploring increases orienteering, guarding increases composure
         if (this.behaviorState === 'exploring') {
-            this.increaseSkill('orienteering', 0.1)
+            this.useSkill('orienteering', 0.1)
             // Remember resources while exploring
             this.observeNearbyResources()
         }
         if (this.behaviorState === 'guarding') {
-            this.increaseSkill('composure', 0.1)
+            this.useSkill('composure', 0.1)
         }
         // Add more passive skill checks as needed
         // Observation now requires interaction/training, not mere proximity
@@ -843,10 +1051,166 @@ class Pawn extends MobileEntity {
         return TRAIL_BASE_AFFINITY + (1 - TRAIL_BASE_AFFINITY) * trained
     }
 
+    /**
+     * Roads (#95): formalise the worn ground between here and (x, y).
+     *
+     * Anyone walking can *recognise* a road: the corridor is metalled only
+     * where traffic already wore it, and the request is refused on virgin
+     * ground. A pawn with the surveying craft may instead lay the straight
+     * line, which is better forever rather than cheapest today. Either way the
+     * only thing written is wear (TrailField.promoteCorridor), so decay keeps
+     * the road honest: an abandoned road fades.
+     * @returns {{ok: boolean, reason: string, points: Array, length: number, coverage: number}}
+     */
+    openRoadTo(x, y, options = {}) {
+        const field = trailFieldFor(this.world, { create: false })
+        if (!field) return { ok: false, reason: 'no ground', points: [], length: 0, coverage: 0 }
+
+        // Underfoot by default; a merchant passes the place the journey started
+        // from, since that is the corridor its walking actually wore.
+        const fromX = Number.isFinite(options.fromX) ? options.fromX : this.x
+        const fromY = Number.isFinite(options.fromY) ? options.fromY : this.y
+        const surveyed = options.surveyed === true && canSurveyRoutes(this)
+        const road = field.promoteCorridor(fromX, fromY, x, y, {
+            tick: this._trailTick(),
+            kind: 'road',
+            surveyed,
+            wear: options.wear,
+            minCoverage: options.minCoverage
+        })
+        if (!road.ok) return road
+
+        this.roadsOpened = (this.roadsOpened || 0) + 1
+        this._awardTrailSkill(
+            surveyed ? 'cartography' : 'orienteering',
+            TRAIL_XP_ROAD,
+            surveyed ? 'a surveyed road' : 'a paved road',
+            'road'
+        )
+        return road
+    }
+
+    /**
+     * Routes (#95): start the clock when a merchant sets out, so the route table
+     * can hold a measured travel time instead of a guess. Only the departure is
+     * recorded; refreshing it mid-journey would reset the measurement the arrival
+     * is supposed to read.
+     *
+     * #99 adds the second form: a merchant may set out for a *place* - a market
+     * whose prices the road table and the price table together recommended -
+     * before knowing whose hand it will shake there. Pass the destination for
+     * that, and whoever is standing at the far end closes the trip.
+     *
+     * @param {Object|null} partner - the pawn the trade is with, or null for a
+     *   journey to a place
+     * @param {{name?: string, x?: number, y?: number}|null} destination - the
+     *   market being travelled to, when no partner is known yet
+     */
+    beginTradeTrip(partner, destination = null) {
+        if (this.tradeTrip) return
+        if (!partner && !destination) return
+        this.tradeTrip = {
+            partner: partner?.id ?? null,
+            place: destination?.name ?? null,
+            fromX: this.x,
+            fromY: this.y,
+            startTick: this._trailTick()
+        }
+    }
+
+    /**
+     * #99: stop the clock on a journey that ended some other way - the market
+     * was empty, the partner wandered off, the walk outlasted the day. Someone
+     * has to clear it, or the next barter is timed from a departure nobody
+     * remembers and the road it opens is measured from the wrong place.
+     * @returns {number|null} ticks spent on the trip, or null if none was running
+     */
+    endTradeTrip() {
+        const trip = this.tradeTrip
+        this.tradeTrip = null
+        if (!trip) return null
+        return this._trailTick() - trip.startTick
+    }
+
+    /**
+     * Ticks since the current trade trip began, 0 when none is running. Measured
+     * on the same clock `beginTradeTrip` started, so a caller can decide the walk
+     * has outlasted its welcome without clearing the measurement (#99).
+     */
+    tradeTripAge() {
+        if (!this.tradeTrip) return 0
+        return this._trailTick() - this.tradeTrip.startTick
+    }
+
+    /**
+     * Routes (#95): a finished barter is the event that makes a road. The way
+     * between the two homes goes into the world's route table with its
+     * polyline rather than only its names, and the wear along it is topped up,
+     * so the corridor traffic uses survives decay while a footpath nobody
+     * walks fades away.
+     * @param {Pawn} other - the partner just traded with
+     * @returns {{road: Object, route: Object|null}|null} nothing if there was
+     *   no world to hold the route, or no road and no pair of places to name it
+     */
+    noteTradeRoute(other) {
+        if (!other || other === this || !this.world) return null
+
+        const trip = this.tradeTrip
+        this.tradeTrip = null
+        const tick = this._trailTick()
+        const road = this.openRoadTo(other.x, other.y, { fromX: trip?.fromX, fromY: trip?.fromY })
+        // A trip begun *for a partner* belongs to that partner. A trip begun for
+        // a place (#99) belongs to the road, and whoever is standing at the far
+        // end when the goods change hands is the one who walked it with you.
+        if (trip && trip.partner != null && trip.partner !== (other.id ?? null)) return { road, route: null }
+
+        const elapsed = trip ? tick - trip.startTick : null
+        const travelTime = elapsed > 0 && elapsed <= TRADE_ROUTE_MAX_TRIP_TICKS ? elapsed : null
+
+        const here = this.getHomeLandmark()?.name ?? null
+        const there = other.getHomeLandmark()?.name ?? null
+        if (!here || !there || here === there) return { road, route: null }
+
+        // Both ends write the same entry: a road runs both ways.
+        const [a, b] = here < there ? [here, there] : [there, here]
+        const routes = this.world.tradeRoutes ?? (this.world.tradeRoutes = { list: [] })
+        const measured = {
+            fromPoint: { x: trip?.fromX ?? this.x, y: trip?.fromY ?? this.y },
+            toPoint: { x: other.x, y: other.y },
+            geometry: road.ok ? road.points : null,
+            distance: road.ok ? road.length : null,
+            coverage: road.ok ? road.coverage : null
+        }
+        const existing = findRoute(routes, a, b)
+        const route = existing
+            ? recordTrip(routes, a, b, 0, travelTime, tick, measured)
+            : createRoute(routes, a, b, tick, { travelTime, ...measured })
+        return { road, route }
+    }
+
     // Refresh affinity from skills on the way into the shared steering helper.
     _steerAlongTrails(dirX, dirY) {
         this.trailAffinity = this.trailAwareness()
         return super._steerAlongTrails(dirX, dirY)
+    }
+
+    /**
+     * #98: a pawn's feet are only as good as its reading of the land. The base
+     * class discounts the step by `trailAffinity`, but a pawn's affinity starts
+     * above zero (#77 lets a fresh traveller half-notice a footpath), which
+     * would pay a pawn for a road it cannot plan onto. The body therefore uses
+     * the planner's own bias, so the discount the walk enjoys is exactly the
+     * one #94's route cost promised - zero until the skills say otherwise.
+     */
+    trailStepCost() {
+        const bias = trailPlanningBias(this)
+        if (!(bias > 0)) return 1
+        const field = trailFieldFor(this.world, { create: false })
+        if (!field || typeof field.stepCost !== 'function') return 1
+        return field.stepCost(this.x, this.y, {
+            tick: this._trailTick(),
+            discount: TRAIL_COST_DISCOUNT * bias
+        })
     }
 
     _depositFootfall(fromX, fromY) {
@@ -876,7 +1240,7 @@ class Pawn extends MobileEntity {
         stats.wear = bias.intensity
 
         // Following someone else's route is how tracking and orientation improve.
-        this.useSkill('orienteering', TRAIL_XP_ORIENTEERING)
+        this._awardTrailSkill('orienteering', TRAIL_XP_ORIENTEERING, 'trodden ground', 'path')
         const field = this.world?.trailField
         // Read the ground being turned toward, not the ground underfoot - the
         // whole point of a trail is that it is a little way ahead.
@@ -886,7 +1250,9 @@ class Pawn extends MobileEntity {
             const predator = field.trackShare(where.x, where.y, 'predator', tick)
             // Distinguishing whose tracks these are is the actual skill, so it is
             // paid for reading a *mixed* corridor rather than one's own footsteps.
-            if (deer + predator > TRAIL_TRACKING_SHARE) this.useSkill('tracking', TRAIL_XP_TRACKING)
+            if (deer + predator > TRAIL_TRACKING_SHARE) {
+                this._awardTrailSkill('tracking', TRAIL_XP_TRACKING, 'mixed tracks', 'tracks')
+            }
         }
         stats.ahead = field ? field.intensityAt(where.x, where.y, tick) : 0
         stats.underfoot = field ? field.intensityAt(this.x, this.y, tick) : 0
@@ -1016,14 +1382,14 @@ class Pawn extends MobileEntity {
     trainSkill(skill, student, amount = 0.5) {
         // Training another pawn increases their skill
         if (student && student.increaseSkill) {
-            student.increaseSkill(skill, amount)
+            student.useSkill(skill, amount)
         }
     }
 
     apprenticeSkill(skill, teacher, amount = 0.5) {
         // Apprenticing under a teacher (only learn if teacher is better)
         if (teacher && teacher.getSkill(skill) > this.getSkill(skill)) {
-            this.increaseSkill(skill, amount)
+            this.useSkill(skill, amount)
         }
     }
 
@@ -1142,7 +1508,7 @@ class Pawn extends MobileEntity {
     }
     
     increasePlanningSkill() {
-        this.increaseSkill('planning', 1)
+        this.useSkill('planning', 1)
         // Optionally, trigger events or unlock features as planning increases
     }
 
@@ -1178,6 +1544,10 @@ class Pawn extends MobileEntity {
                     if (!this.unlocked.skills.has(sk)) {
                         this.unlocked.skills.add(sk)
                         newly.skills.push(sk)
+                        // #116: the grant is a qualification, so pay the first
+                        // level. Once, here - re-evaluating the table every
+                        // commit must not hand out another level each time.
+                        this.qualifySkill(sk)
                     }
                 }
                 for (const g of (unlock.unlocks?.goals ?? [])) {
@@ -1239,7 +1609,10 @@ class Pawn extends MobileEntity {
         // Otherwise, pick an idle enrichment task
         // Prioritize gathering if inventory is low
         const invCount = this.inventory?.length ?? 0
-        if (invCount < 5 && Math.random() < 0.4) {
+        // #128: the idle planner writes goals directly into `currentGoal`, which is
+        // how a scheduled wander could outlive every other intention a pawn had.
+        // It now honours the same give-up cooldowns the scheduler does.
+        if (invCount < 5 && Math.random() < 0.4 && !this.goals.isGoalCooling('gather_materials')) {
             this.goals.currentGoal = {
                 type: 'gather_materials',
                 priority: 1,
@@ -1249,7 +1622,7 @@ class Pawn extends MobileEntity {
             this.goals.startGoal(this.goals.currentGoal)
             return
         }
-        if (canStudy && this.idlePlan.tasks.includes('study')) {
+        if (canStudy && this.idlePlan.tasks.includes('study') && !this.goals.isGoalCooling('study')) {
             const dur = this.idlePlan.studyDuration
             this.goals.currentGoal = {
                 type: 'study', priority: 1, description: 'Study and plan',
@@ -1258,7 +1631,7 @@ class Pawn extends MobileEntity {
             this.goals.startGoal(this.goals.currentGoal)
             return
         }
-        if (canExplore && this.idlePlan.tasks.includes('explore')) {
+        if (canExplore && this.idlePlan.tasks.includes('explore') && !this.goals.isGoalCooling('explore')) {
             this.goals.currentGoal = {
                 type: 'explore', priority: 1, description: 'Wander and observe',
                 targetType: 'location', action: 'explore'
@@ -1442,8 +1815,8 @@ class Pawn extends MobileEntity {
         if (seedType) this.resourceSpecialization.knownSeedTypes.add(seedType)
 
         if (domain === 'agriculture') {
-            this.increaseSkill('agronomy', 0.05)
-            this.increaseSkill('materialAppraisal', 0.02)
+            this.useSkill('agronomy', 0.05)
+            this.useSkill('materialAppraisal', 0.02)
         }
 
         if (domain === 'woods') {
@@ -1451,7 +1824,7 @@ class Pawn extends MobileEntity {
             this.resourceSpecialization.woodUse.tool = Math.min(1, (this.resourceSpecialization.woodUse.tool ?? 0) + woodProfile.tool)
             this.resourceSpecialization.woodUse.weapon = Math.min(1, (this.resourceSpecialization.woodUse.weapon ?? 0) + woodProfile.weapon)
             this.resourceSpecialization.woodUse.construction = Math.min(1, (this.resourceSpecialization.woodUse.construction ?? 0) + woodProfile.construction)
-            this.increaseSkill('materialAppraisal', 0.03)
+            this.useSkill('materialAppraisal', 0.03)
         }
     }
     
@@ -1475,6 +1848,97 @@ class Pawn extends MobileEntity {
     // Memory delegation to PawnMemory module
     rememberLandmark(landmark) {
         return PawnMemory.rememberLandmark(this, landmark)
+    }
+
+    /**
+     * The shelter this pawn thinks of as home, if it remembers one. Civic and
+     * mercantile code names places with this, so a route reads "Ash Hollow to
+     * Riverbend" rather than two entity ids.
+     * @returns {Object|null}
+     */
+    getHomeLandmark() {
+        return PawnMemory.getHomeLandmark(this)
+    }
+
+    /**
+     * Everything within `radius` world units of here, self excluded. Follows the
+     * same entitiesMap scan as getNearbyPawns: the civic score and the market
+     * both ask what stands around a settlement, and neither wants to care about
+     * chunk boundaries to do it.
+     * @param {number} radius - world units
+     * @returns {Entity[]}
+     */
+    getNearbyEntities(radius = 100) {
+        if (!this.world?.entitiesMap) return []
+
+        return Array.from(this.world.entitiesMap.values()).filter(entity => {
+            if (!entity || entity.id === this.id) return false
+            const dx = (entity.x ?? 0) - this.x
+            const dy = (entity.y ?? 0) - this.y
+            return Math.sqrt(dx * dx + dy * dy) <= radius
+        })
+    }
+
+    /**
+     * Civic delegation to PawnCivic. A pawn is the settlement: the ledger, the
+     * job board and the curriculum all live on the pawn, and the module works on
+     * it. These existed on the module only, so every civic goal - build a cache,
+     * post a job, teach a lesson - threw the moment it reached the line that
+     * asked. The handlers in PawnGoals always spoke this way; now they are answered.
+     */
+    checkProtoSettlementTrigger() {
+        return PawnCivic.checkProtoSettlementTrigger(this)
+    }
+
+    getResourceRichness(radius = 100) {
+        return PawnCivic.getResourceRichness(this, radius)
+    }
+
+    /**
+     * Declare the encampment a settlement. This is the moment a camp becomes a
+     * town in the eyes of the world - and, since #95, the moment the roads out
+     * of it are laid down.
+     * @param {Object} cache - the communal resource cache the town grew around
+     * @returns {number} roads opened from the settlement
+     */
+    canonizeEncampment(cache) {
+        return PawnCivic.canonizeEncampment(this, cache)
+    }
+
+    openSettlementRoads() {
+        return PawnCivic.openSettlementRoads(this)
+    }
+
+    recordCivicContribution(type, amount = 1) {
+        return PawnCivic.recordCivicContribution(this, type, amount)
+    }
+
+    updateCivicScore() {
+        return PawnCivic.updateCivicScore(this)
+    }
+
+    getAverageGroupTrust() {
+        return PawnCivic.getAverageGroupTrust(this)
+    }
+
+    postJob(type, reward = 1, deadline = 100) {
+        return PawnCivic.postJob(this, type, reward, deadline)
+    }
+
+    acceptJob(taskId) {
+        return PawnCivic.acceptJob(this, taskId)
+    }
+
+    completeJob(taskId) {
+        return PawnCivic.completeJob(this, taskId)
+    }
+
+    addCurriculumLesson(skill, prerequisite = null, xp = 1) {
+        return PawnCivic.addCurriculumLesson(this, skill, prerequisite, xp)
+    }
+
+    completeCurriculumLesson(lessonId) {
+        return PawnCivic.completeCurriculumLesson(this, lessonId)
     }
 
     // Mercantile delegation to PawnMercantile module
@@ -1737,7 +2201,9 @@ class Pawn extends MobileEntity {
 
     rememberResource(entity) {
         // Remember resource location for future planning
-        if (!entity?.x || !entity?.y || !Number.isFinite(entity.x) || !Number.isFinite(entity.y)) return
+        // #111: no truthiness test on the coordinates - #95 learned this for
+        // landmarks, and the shoreline (x or y = 0) was being thrown away here.
+        if (!Number.isFinite(entity?.x) || !Number.isFinite(entity?.y)) return
         
         const tick = this.world?.clock?.currentTick ?? 0
         const resourceType = entity.subtype || entity.type
@@ -1771,7 +2237,7 @@ class Pawn extends MobileEntity {
                 cluster.id = entity.id
                 cluster.confidence = Math.min(1.0, (cluster.confidence ?? 0.5) + 0.03)
 
-                this.increaseSkill('memoryClustering', 0.04)
+                this.useSkill('memoryClustering', 0.04)
                 return
             }
         }
@@ -1799,26 +2265,23 @@ class Pawn extends MobileEntity {
         })
 
         if (nearbySameType) {
-            this.increaseSkill('memoryClustering', 0.02)
+            this.useSkill('memoryClustering', 0.02)
         }
         
-        // Add new memory
+        // Add new memory. The cap is a promise at every phase (#119): a pawn that
+        // cannot group what it has seen pays for room with forgetting, and a pawn
+        // that can pays for it with compression - trading the exact coordinate of
+        // two rocks for the knowledge that the country in between has rocks.
         if (this.resourceMemory.length >= this.maxResourceMemory) {
-            // Phase 1-2: Remove based on confidence or age
-            // Phase 3+: Cluster compression will handle this differently
-            if (this.memoryPhase <= 2) {
-                // Remove least confident or oldest
-                this.resourceMemory.sort((a, b) => {
-                    const confA = a.confidence ?? 0.5
-                    const confB = b.confidence ?? 0.5
-                    const ageA = tick - a.lastSeen
-                    const ageB = tick - b.lastSeen
-                    // Prioritize removing low confidence and old memories
-                    return (confA - ageA * 0.001) - (confB - ageB * 0.001)
-                })
-                const removed = this.resourceMemory.shift()
-                if (!removed) return // Safety check: ensure we removed something
+            if (!canCluster) {
+                this.forgetWeakestResource(tick)
+            } else if (!this.compressResourceMemory()) {
+                // Every entry is its own kind of thing, so there is nothing to
+                // merge. Forget rather than grow: an unbounded list is walked by
+                // recall, route planning, sharing and the UI panels.
+                this.forgetWeakestResource(tick)
             }
+            if (this.resourceMemory.length >= this.maxResourceMemory) return
         }
         
         // Calculate initial confidence based on observation
@@ -1849,9 +2312,96 @@ class Pawn extends MobileEntity {
         }
     }
 
+    /**
+     * Throw away the memory this pawn is least sorry to lose: low confidence
+     * first, and within equal confidence the stalest sighting, because a place
+     * nothing has confirmed for a long time is the one worth another look.
+     * @param {number} tick - current world tick
+     * @returns {Object|null} the memory dropped, if any
+     */
+    forgetWeakestResource(tick = this.world?.clock?.currentTick ?? 0) {
+        if (this.resourceMemory.length === 0) return null
+        this.resourceMemory.sort((a, b) => {
+            const confA = a.confidence ?? 0.5
+            const confB = b.confidence ?? 0.5
+            const ageA = tick - a.lastSeen
+            const ageB = tick - b.lastSeen
+            // Prioritize removing low confidence and old memories
+            return (confA - ageA * 0.001) - (confB - ageB * 0.001)
+        })
+        return this.resourceMemory.shift() ?? null
+    }
+
+    /**
+     * #119: the compression the phase 3+ comment always promised.
+     *
+     * Merging only ever ran when a *new* sighting landed inside the cluster
+     * radius, so two rocks sixty units apart stayed two memories forever and the
+     * cap simply stopped applying - the better a pawn's memory, the less bounded
+     * it was. This looks at what is already held instead: the nearest pair of
+     * same-type entries becomes one entry at their weighted centre, in the same
+     * shape a clustered sighting arrives in.
+     *
+     * There is deliberately no distance limit on the pair. At the cap a skilled
+     * pawn is choosing between the exact coordinate of one rock and the fact
+     * that there are rocks out that way; a novice throws the memory away
+     * instead, which is the other half of the same trade.
+     *
+     * It pays no practice. The sighting that triggered it already did; merging
+     * two things already known is not a new act (#108).
+     *
+     * @returns {boolean} false when no two entries share a type and can be merged
+     */
+    compressResourceMemory() {
+        const mem = this.resourceMemory
+        if (mem.length < 2) return false
+
+        // Nearest same-type pair. Grouped first so a memory of nine kinds costs
+        // nine small scans rather than one large one; it only runs at the cap.
+        const byType = new Map()
+        for (let i = 0; i < mem.length; i++) {
+            if (!byType.has(mem[i].type)) byType.set(mem[i].type, [])
+            byType.get(mem[i].type).push(i)
+        }
+
+        let best = null
+        for (const indexes of byType.values()) {
+            for (let a = 0; a < indexes.length; a++) {
+                for (let b = a + 1; b < indexes.length; b++) {
+                    const i = indexes[a], j = indexes[b]
+                    const d = Math.hypot(mem[i].x - mem[j].x, mem[i].y - mem[j].y)
+                    if (!best || d < best.d) best = { i, j, d }
+                }
+            }
+        }
+        if (!best) return false
+
+        const x = mem[best.i], y = mem[best.j]
+        const cx = Math.max(1, x.clusterCount ?? 1)
+        const cy = Math.max(1, y.clusterCount ?? 1)
+        const total = cx + cy
+        // The better-attended sighting keeps its identity - its id, provenance
+        // and phase are the ones the rest of the sim will go back to look at.
+        const keep = (x.confidence ?? 0.5) >= (y.confidence ?? 0.5) ? x : y
+        const other = keep === x ? y : x
+
+        keep.x = (x.x * cx + y.x * cy) / total
+        keep.y = (x.y * cx + y.y * cy) / total
+        keep.clusterCount = total
+        keep.lastSeen = Math.max(x.lastSeen ?? 0, y.lastSeen ?? 0)
+        keep.amount = Math.max(x.amount ?? 1, y.amount ?? 1)
+        keep.confidence = Math.min(1, Math.max(x.confidence ?? 0.5, y.confidence ?? 0.5) + 0.02)
+        keep.successCount = (x.successCount ?? 0) + (y.successCount ?? 0)
+        keep.failCount = (x.failCount ?? 0) + (y.failCount ?? 0)
+        keep.tags = [...new Set([...(x.tags ?? []), ...(y.tags ?? [])])]
+
+        mem.splice(mem.indexOf(other), 1)
+        return true
+    }
+
     updateResourceMemoryConfidence(resource, success) {
         // Update confidence when gathering succeeds or fails
-        if (!resource?.x || !resource?.y) return
+        if (!Number.isFinite(resource?.x) || !Number.isFinite(resource?.y)) return
         
         const tick = this.world?.clock?.currentTick ?? 0
         const resourceType = resource.subtype || resource.type
@@ -1926,7 +2476,7 @@ class Pawn extends MobileEntity {
         if (success) {
             memory.observedSuccessCount = (memory.observedSuccessCount ?? 0) + 1
             memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.05 * normalizedWeight)
-            this.increaseSkill('routePlanning', 0.01 * normalizedWeight)
+            this.useSkill('routePlanning', 0.01 * normalizedWeight)
         } else {
             memory.observedFailCount = (memory.observedFailCount ?? 0) + 1
             memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - 0.04 * normalizedWeight)
@@ -2066,9 +2616,15 @@ class Pawn extends MobileEntity {
                 const observedSignalB = ((b.observedSuccessCount ?? 0) * 7) - ((b.observedFailCount ?? 0) * 4)
                 const routeSkill = this.getSkill('routePlanning')
                 const clusterWeight = routeSkill >= 5 ? 6 : 0
-                
+                // #104: distance is the only term here that is *walked*, so it
+                // is the term tiredness makes dearer. A winded pawn will take
+                // the near, shabby patch over the well-remembered one on the
+                // far side of the map; a fresh one sorts exactly as before
+                // because the weight is 1.
+                const fatigue = this.needs?.distanceWeight?.() ?? 1
+
                 // Weight: confidence most important, then distance, then age
-                return (distA + ageA * 0.1 - confA * 100 - clusterA * clusterWeight - observedSignalA) - (distB + ageB * 0.1 - confB * 100 - clusterB * clusterWeight - observedSignalB)
+                return (distA * fatigue + ageA * 0.1 - confA * 100 - clusterA * clusterWeight - observedSignalA) - (distB * fatigue + ageB * 0.1 - confB * 100 - clusterB * clusterWeight - observedSignalB)
             })
     }
 
@@ -2132,7 +2688,7 @@ class Pawn extends MobileEntity {
         }
 
         if (route.length > 1) {
-            this.increaseSkill('routePlanning', usesOptimizedRoute ? 0.05 : 0.02)
+            this.useSkill('routePlanning', usesOptimizedRoute ? 0.05 : 0.02)
         }
 
         return route
@@ -2170,8 +2726,8 @@ class Pawn extends MobileEntity {
         }
 
         if (sharedCount > 0) {
-            this.increaseSkill('storytelling', 0.03 * sharedCount)
-            this.increaseSkill('routePlanning', 0.01 * sharedCount)
+            this.useSkill('storytelling', 0.03 * sharedCount)
+            this.useSkill('routePlanning', 0.01 * sharedCount)
         }
 
         return sharedCount
@@ -2241,8 +2797,11 @@ class Pawn extends MobileEntity {
         }
 
         if (sharedCount > 0) {
-            this.increaseSkill('storytelling', 0.02 * sharedCount)
-            otherPawn.increaseSkill?.('memoryClustering', 0.01 * sharedCount)
+            this.useSkill('storytelling', 0.02 * sharedCount)
+            // Listening is the other pawn's act, so it is practice for them too
+            // (#108) - the optional call stays because the listener is whatever
+            // the social goal handed us, not a pawn we constructed.
+            otherPawn.useSkill?.('memoryClustering', 0.01 * sharedCount)
         }
 
         return sharedCount
@@ -2292,7 +2851,7 @@ class Pawn extends MobileEntity {
             existing.clusterCount = Math.max(existing.clusterCount ?? 1, incomingClusterCount)
             existing.lastSeen = tick
             existing.source = 'shared'
-            this.increaseSkill('memoryClustering', 0.02)
+            this.useSkill('memoryClustering', 0.02)
             return true
         }
 
@@ -2318,7 +2877,7 @@ class Pawn extends MobileEntity {
             sharedBy: knowledge.sourcePawnId ?? null
         })
 
-        this.increaseSkill('memoryClustering', 0.03)
+        this.useSkill('memoryClustering', 0.03)
         return true
     }
 
@@ -2424,8 +2983,13 @@ class Pawn extends MobileEntity {
 
         let behaviorBonus = 0
         if (behavior === 'idle') behaviorBonus += 0.05
-        if (behavior === 'resting' || behavior === 'sleeping') behaviorBonus += 0.08
-        if (behavior === 'learning' || behavior === 'study') behaviorBonus += 0.1
+        // #131: this used to ask `behaviorState` for 'resting'/'sleeping', neither
+        // of which the pawn's own goal system can write ('resting' is an animal
+        // state - see AnimalBehavior.js), and for 'study', which nothing writes at
+        // all. Rest is a fact about where the pawn is, so it comes from the
+        // snapshot the needs system reads out of the world.
+        if (this.needs?.situations?.has('resting')) behaviorBonus += 0.08
+        if (behavior === 'learning') behaviorBonus += 0.1
 
         return Math.max(0, (calmWindow * 0.05) + behaviorBonus)
     }
@@ -2483,20 +3047,22 @@ class Pawn extends MobileEntity {
     registerRestOutcome(goal = null) {
         const tick = this.world?.clock?.currentTick ?? 0
         const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        // #131: the radii and the cover test come from `PawnBehaviors`, which is
+        // what `PawnNeeds.readSituation()` now uses to decide whether the pawn is
+        // under a roof at all. The night used to be judged by one pair of numbers
+        // and the need model by another.
         const nearCover = entities.some(entity => {
-            const tags = entity?.tags
-            const hasCover = Array.isArray(tags) ? tags.includes('cover') : typeof tags?.has === 'function' ? tags.has('cover') : false
-            if (!hasCover) return false
+            if (!hasTag(entity, 'cover')) return false
             const dx = (entity.x ?? 0) - this.x
             const dy = (entity.y ?? 0) - this.y
-            return Math.sqrt(dx * dx + dy * dy) <= 26
+            return Math.sqrt(dx * dx + dy * dy) <= SITUATION_RADIUS.shelter
         })
 
         const nearbyPawns = entities.filter(entity => {
             if (entity?.subtype !== 'pawn' || entity.id === this.id) return false
             const dx = (entity.x ?? 0) - this.x
             const dy = (entity.y ?? 0) - this.y
-            return Math.sqrt(dx * dx + dy * dy) <= 30
+            return Math.sqrt(dx * dx + dy * dy) <= SITUATION_RADIUS.company
         })
 
         if (!nearCover) {
@@ -2950,6 +3516,7 @@ class Pawn extends MobileEntity {
             'teach_skill': 'civic',
             'socialize': 'civic',
             'rest': 'civic',
+            'soak_fiber': 'civic',
             // Mercantile goals
             'trade': 'mercantile',
             'accumulate_valuables': 'mercantile',
@@ -3081,8 +3648,8 @@ class Pawn extends MobileEntity {
                 
                 // Grant experience (more for harder discoveries)
                 const xpMultiplier = 1 + (problem.attempts * 0.1)
-                this.increaseSkill('invention', (10 + problem.attempts * 2) * xpMultiplier)
-                this.increaseSkill('experimentation', (5 + problem.attempts) * xpMultiplier)
+                this.useSkill('invention', (10 + problem.attempts * 2) * xpMultiplier)
+                this.useSkill('experimentation', (5 + problem.attempts) * xpMultiplier)
                 
                 // Remove from queue
                 this.ponderingQueue.shift()
@@ -3332,7 +3899,7 @@ class Pawn extends MobileEntity {
         if (crafter && item.craftedBy === crafter.id) {
             const recipe = this.getRecipeForItemType(item.type)
             if (recipe?.primarySkill) {
-                this.increaseSkill(recipe.primarySkill, 0.1)
+                this.useSkill(recipe.primarySkill, 0.1)
             }
         }
     }
@@ -4372,14 +4939,198 @@ class Pawn extends MobileEntity {
         }
     }
 
+    /**
+     * Why this item could not go into the pack right now, or null if it could.
+     *
+     * This is the only place the carrying limits are stated. addItemToInventory()
+     * asks it before it mutates anything, and a pawn that has to decide in advance
+     * - whether it can accept somebody's offer before the goods are touched (#109)
+     * - asks the same question instead of keeping a private copy of the rules that
+     * would quietly drift out of sync with the real ones.
+     *
+     * `state` tests a hypothetical pack (items held, weight, size so far) rather
+     * than this pawn's, which is how canHold() stacks several items up. It can
+     * carry the pack's limits too, because a hypothetical pack that is giving away
+     * a basket is also giving away the room that basket lent it (#112).
+     *
+     * @param {Object} item - prospective item
+     * @param {Object|null} [state] - hypothetical count/weight/size and limits
+     * @returns {string|null} 'need_water_container' | 'inventory_full' | 'over_weight' | 'over_size' | null
+     */
+    carryRejection(item, state = null) {
+        if (!item) return 'invalid_item'
+        // A container-widening item counts its own bonus, as it does on the way in.
+        const bonus = item.increasesCapacity || {}
+        const count = state ? state.count : this.inventory.length
+        const weight = state ? state.weight : this.inventoryWeight
+        const size = state ? state.size : this.getInventorySize()
+        const slots = state?.slots ?? this.inventorySlots
+        const maxWeight = state?.maxWeight ?? this.maxWeight
+        const maxSize = state?.maxSize ?? this.maxSize
+        const holdsContainer = state ? state.container : this.hasContainer()
+        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !holdsContainer) {
+            return 'need_water_container'
+        }
+        if (count >= slots + (bonus.slots ?? 0)) return 'inventory_full'
+        if ((weight + (item.weight ?? 1)) > maxWeight + (bonus.weight ?? 0)) return 'over_weight'
+        if ((size + (item.size ?? 1)) > maxSize + (bonus.size ?? 0)) return 'over_size'
+        return null
+    }
+
+    /**
+     * Could this pawn take `amount` more of `itemType`? Non-mutating.
+     *
+     * `frees` are items the pawn is about to give up - the other half of a barter -
+     * whose slot, weight and size are counted as available, because that is the
+     * order the real placement uses: goods leave a pack before the goods replacing
+     * them arrive. Without it, a pawn one rock short of room would be refused a
+     * trade it could actually have made.
+     *
+     * @param {string} itemType
+     * @param {number} [amount]
+     * @param {Object[]|null} [frees] - items expected to leave the pack first
+     * @returns {boolean}
+     */
+    canHold(itemType, amount = 1, frees = null) {
+        if (!(amount > 0)) return true
+        const leaving = Array.isArray(frees) ? frees : []
+        const leavingSet = new Set(leaving)
+        const state = {
+            count: this.inventory.length - leaving.length,
+            weight: this.inventoryWeight - leaving.reduce((sum, item) => sum + (item?.weight ?? 1), 0),
+            size: this.getInventorySize() - leaving.reduce((sum, item) => sum + (item?.size ?? 1), 0),
+            // What the pack will still be able to hold once those goods have gone.
+            // A basket's slots were never the pawn's to trade away, so handing one
+            // over in a barter closes the room it was lending (#112).
+            slots: this.inventorySlots,
+            maxWeight: this.maxWeight,
+            maxSize: this.maxSize,
+            container: this.inventory.some(item => !leavingSet.has(item) && item.slotType === 'container')
+        }
+        for (const item of leaving) {
+            if (!item?.capacityApplied) continue
+            state.slots -= item.increasesCapacity?.slots ?? 0
+            state.maxWeight -= item.increasesCapacity?.weight ?? 0
+            state.maxSize -= item.increasesCapacity?.size ?? 0
+        }
+        // A pack cannot be freer than empty; clamp rather than inventing space.
+        if (state.count < 0) state.count = 0
+        if (state.weight < 0) state.weight = 0
+        if (state.size < 0) state.size = 0
+        for (let i = 0; i < amount; i++) {
+            const probe = { type: itemType }
+            if (this.carryRejection(probe, state)) return false
+            state.count++
+            state.weight += probe.weight ?? 1
+            state.size += probe.size ?? 1
+        }
+        return true
+    }
+
+    /**
+     * Which of the recipes this pawn could make right now it should make.
+     *
+     * The craft goals took candidates[0], which in practice meant "the first entry
+     * in Recipes.js, forever": a pawn with full hands and a fibre patch underfoot
+     * kept twisting cordage it did not need, and the one craft that could widen
+     * the pack was the one it never chose (#112). Selection follows the complaint
+     * that opens the pondering queue - full hands want the thing that makes room.
+     *
+     * #117 adds the other half. The unlock table has always listed goals -
+     * `craft_cordage`, `craft_sharp_stone`, `craft_basket` - and nothing read
+     * them, so an idea the pawn had was ranked below the order a source file was
+     * written in. Now the newest idea the pawn can actually carry out wins, which
+     * is what "unlocked a goal" is for. Making room still comes first: urgency
+     * outranks novelty, or a pawn with a new thought and no space keeps weaving
+     * rope it cannot hold.
+     *
+     * @param {Object[]} candidates - recipes already filtered to unlocked + craftable
+     * @returns {Object|null}
+     */
+    chooseCraft(candidates = []) {
+        if (candidates.length === 0) return null
+        if (this.inventory.length >= this.inventorySlots) {
+            const widening = candidates.find(r => (r.output?.increasesCapacity?.slots ?? 0) > 0)
+            if (widening) return widening
+        }
+        for (const recipeId of this.craftIdeas()) {
+            const thought = candidates.find(r => r.id === recipeId)
+            if (thought) return thought
+        }
+        return candidates[0]
+    }
+
+    /**
+     * The pawn's craft ideas, newest first.
+     *
+     * `unlocked.goals` is a Set, so insertion order is the order the ideas
+     * arrived, and the last one in is the thought the pawn just had. Goals that
+     * are not craft ideas are skipped: the convention in the table is
+     * craft_&lt;recipeId&gt;, and anything else is a name the planner cannot act on.
+     * @returns {string[]} recipe ids, most recently conceived first
+     */
+    craftIdeas() {
+        const goals = this.unlocked?.goals
+        if (!goals || typeof goals[Symbol.iterator] !== 'function') return []
+        return [...goals]
+            .map(goal => /^craft_(.+)$/.exec(String(goal))?.[1])
+            .filter(Boolean)
+            .reverse()
+    }
+
+    /**
+     * Lend the pack the room an item grants, or take it back.
+     *
+     * increasesCapacity used to be added on the way in and never removed, so a
+     * pawn that lost a basket to a barter, a death, or a transfer that failed at
+     * the far end kept the extra slots for good: capacity had become a rumour the
+     * pack repeated about itself. The bonus is a property of *carrying* the item,
+     * so it is booked when the item enters the pack and released when it leaves.
+     * The item carries the ledger on itself (capacityApplied), which also makes
+     * the operation idempotent - putting an item back after a failed transfer
+     * cannot count it twice.
+     *
+     * @param {Object} item
+     * @param {boolean} applied - true when the item is now being carried
+     * @returns {boolean} whether the pack's limits changed
+     */
+    applyItemCapacity(item, applied) {
+        const bonus = item?.increasesCapacity
+        if (!bonus) return false
+        if (Boolean(item.capacityApplied) === Boolean(applied)) return false
+        const sign = applied ? 1 : -1
+        this.inventorySlots += (bonus.slots ?? 0) * sign
+        this.maxWeight += (bonus.weight ?? 0) * sign
+        this.maxSize += (bonus.size ?? 0) * sign
+        item.capacityApplied = Boolean(applied)
+        return true
+    }
+
     addItemToInventory(item) {
         // item: { id, name, weight, size, slotType, increasesCapacity, ... }
         // Track as known material
         this.trackMaterialEncounter(item)
-        
-        // Prevent water from being added unless pawn has a container
-        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
-            // Can't carry water without a container - trigger pondering!
+
+        const rejection = this.carryRejection(item)
+        if (!rejection) {
+            // #115: this is what "handled it" means - it came into the pack. The
+            // stamp is the item's memory of whose hands it last filled, so a
+            // failed transfer (which rolls itself back by re-adding the very same
+            // object) does not count as a second encounter with a known material.
+            const handledType = item.type ?? item.name ?? 'unknown'
+            if (item._handledBy !== this.id) {
+                this.noteItemHandled(handledType, 1)
+                item._handledBy = this.id
+            }
+            this.applyItemCapacity(item, true)
+            this.inventory.push(item)
+            this.inventoryWeight += item.weight ?? 1
+            return true
+        }
+
+        // The two refusals a pawn learns from both widen into a thought: water
+        // needs something to hold it, and a full pack needs better carrying.
+        if (rejection === 'need_water_container') {
             this.recordChallengeContext('water_handling_hardship', 0.06, {
                 durationTicks: 700,
                 itemType: 'water'
@@ -4390,15 +5141,7 @@ class Pawn extends MobileEntity {
                 reason: 'Cannot carry water without container',
                 possibleSolutions: ['waterskin', 'clay_pot', 'gourd']
             })
-            return false
-        }
-        if (item.increasesCapacity) {
-            this.inventorySlots += item.increasesCapacity.slots ?? 0
-            this.maxWeight += item.increasesCapacity.weight ?? 0
-            this.maxSize += item.increasesCapacity.size ?? 0
-        }
-        if (this.inventory.length >= this.inventorySlots) {
-            // Inventory full - trigger pondering!
+        } else if (rejection === 'inventory_full') {
             this.recordChallengeContext('inventory_pressure', 0.06, {
                 durationTicks: 700,
                 itemType: item.type
@@ -4410,13 +5153,8 @@ class Pawn extends MobileEntity {
                 reason: 'No more hands to carry items',
                 possibleSolutions: ['basket', 'backpack', 'pouch', 'drop_items']
             })
-            return false
         }
-        if ((this.inventoryWeight + (item.weight ?? 1)) > this.maxWeight) return false
-        if ((this.getInventorySize() + (item.size ?? 1)) > this.maxSize) return false
-        this.inventory.push(item)
-        this.inventoryWeight += item.weight ?? 1
-        return true
+        return false
     }
     
     // Item durability and degradation
@@ -4458,6 +5196,7 @@ class Pawn extends MobileEntity {
         if (idx !== -1) {
             const [item] = this.inventory.splice(idx, 1)
             this.inventoryWeight -= item.weight ?? 1
+            this.applyItemCapacity(item, false)
             return item
         }
         return null
@@ -4488,7 +5227,7 @@ class Pawn extends MobileEntity {
         // Try combining or processing items without a recipe
         // Returns a result or null if nothing happens
         // This is a stub for more advanced experimentation logic
-        this.increaseSkill('processing', 0.2)
+        this.useSkill('processing', 0.2)
         // Example: if both are sticks, maybe discover 'sharp stick'
         if (itemA.type === 'stick' && itemB.type === 'rock') {
             return { type: 'sharp stick', quality: 1, discovered: true }
@@ -4497,12 +5236,47 @@ class Pawn extends MobileEntity {
         return null
     }
 
+    /**
+     * Can a building stand here? A structure occupies ground, so the only thing that
+     * stops a new one is another building already on the spot (#120). Pawns, caches
+     * and sticks are all fine to share a clearing with; a second lean-to on the first
+     * one is how a village becomes a diagram of overlapping purple discs.
+     *
+     * @param {number} x
+     * @param {number} y
+     * @param {number} [footprint] Centre-to-centre minimum, in world units
+     * @returns {boolean}
+     */
+    groundIsFreeForStructure(x, y, footprint = SHELTER_SIZE) {
+        const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        return !entities.some(entity => {
+            if (entity?.subtype !== 'structure') return false
+            const dx = entity.x - x
+            const dy = entity.y - y
+            return Math.sqrt(dx * dx + dy * dy) < footprint
+        })
+    }
+
     craft(recipe) {
         // Modern craft using Recipe data structure from Recipes.js
         // Check skills
         for (const [skill, level] of Object.entries(recipe.requiredSkills ?? {})) {
             if (this.getSkill(skill) < level) {
                 console.warn(`${this.name} lacks skill ${skill} (need ${level})`)
+                return null
+            }
+        }
+
+        // A `placeable` recipe makes a building rather than a burden (#120), and a
+        // building needs ground. Asked before a single stick leaves the pack: a craft
+        // that eats ten sticks and then fails because the clearing is full is the #112
+        // mistake wearing a different hat.
+        let buildSite = null
+        if (recipe.placeable) {
+            buildSite = { x: this.x, y: this.y }
+            if (!this.groundIsFreeForStructure(buildSite.x, buildSite.y)) {
+                console.warn(`${this.name} cannot raise ${recipe.name}: the ground is taken`)
+                this.setRecentAction('No clear ground for a shelter')
                 return null
             }
         }
@@ -4541,6 +5315,16 @@ class Pawn extends MobileEntity {
             if (stillNeeded > 0) {
                 const sourced = this.consumeRecipeRequirementAtSource(req, stillNeeded)
                 if (sourced < stillNeeded) {
+                    // Either the nearby estimate was optimistic or the source ran dry
+                    // mid-weave. Either way the goods already taken out of the pack go
+                    // back (#112): a craft that eats its own materials and then fails
+                    // leaves the pawn poorer *and* empty-handed, with an emptier fibre
+                    // store than before it tried to widen its carry.
+                    for (const item of consumed.splice(0).reverse()) {
+                        if (!this.addItemToInventory(item)) {
+                            console.warn(`${this.name} could not take back ${item.name ?? item.type} after a failed craft`)
+                        }
+                    }
                     console.warn(`${this.name} failed to source ${req.type} at crafting site`)
                     return null
                 }
@@ -4596,7 +5380,7 @@ class Pawn extends MobileEntity {
 
         // Gain skill experience
         if (recipe.primarySkill && recipe.experience) {
-            this.increaseSkill(recipe.primarySkill, recipe.experience)
+            this.useSkill(recipe.primarySkill, recipe.experience)
         }
         
         // Track crafting success for specialization
@@ -4623,6 +5407,40 @@ class Pawn extends MobileEntity {
 
         // Evaluate unlocks after crafting
         this.evaluateSkillUnlocks?.()
+
+        if (recipe.placeable) {
+            // `placeable: true` used to be a comment on nothing: the output went into
+            // the pack, `capacity: 2` read like a storehouse and behaved like an
+            // oversized backpack, and the world gained nothing (#120). It is a
+            // Structure now, raised on the ground the pawn is standing on, through the
+            // same factory the civic build route uses - so a crafted lean-to and a
+            // built one are the same building and rot at the same rate.
+            const shelter = createShelter({
+                id: `shelter_${this.id}_${this.world?.clock?.currentTick ?? 0}_${Math.random().toString(36).slice(2, 7)}`,
+                name: output.name,
+                x: buildSite.x,
+                y: buildSite.y,
+                ownerId: this.id,
+                quality: output.quality,
+                restBonus: output.restBonus
+            })
+            shelter.placed = true
+            shelter.craftedBy = this.id
+            shelter.craftedAt = output.craftedAt
+            this.world?.addEntity?.(shelter)
+            this.rememberLandmark?.({
+                x: shelter.x,
+                y: shelter.y,
+                type: 'shelter',
+                significance: 8,
+                name: shelter.name,
+                event: 'raised'
+            })
+
+            this.setRecentAction(`Raised a ${shelter.name}`)
+            console.log(`${this.name} raised ${shelter.name} at ${Math.round(shelter.x)},${Math.round(shelter.y)} (quality: ${output.quality.toFixed(2)})`)
+            return shelter
+        }
 
         this.setRecentAction(`Crafted ${output.name}`)
 
@@ -4793,7 +5611,7 @@ class Pawn extends MobileEntity {
         const tick = this.world?.clock?.currentTick ?? 0
         const moved = this.stashInventoryInCache({
             cache: targetCache,
-            itemTypes: ['fiber'],
+            itemTypes: [FIBER_SOAK.inputType],
             maxItems: fiberCount,
             purpose: 'fiber_soak'
         }).stashed
@@ -4801,14 +5619,14 @@ class Pawn extends MobileEntity {
         if (moved <= 0) return false
 
         const started = targetCache.startSoakJob({
-            inputType: 'fiber',
-            outputType: 'soaked_fiber',
+            inputType: FIBER_SOAK.inputType,
+            outputType: FIBER_SOAK.outputType,
             quantity: moved,
             durationTicks: dayTicks,
             tick,
             itemFactory: index => ({
-                id: `soaked_fiber_${tick}_${index}_${Math.random().toString(36).slice(2, 8)}`,
-                type: 'soaked_fiber',
+                id: `${FIBER_SOAK.outputType}_${tick}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+                type: FIBER_SOAK.outputType,
                 name: 'Soaked Fiber',
                 quality: 1.1,
                 durability: 1.2,
@@ -4900,13 +5718,16 @@ class Pawn extends MobileEntity {
         if (item.filling) {
             this.needs.modifyNeedDecay?.('hunger', -item.filling)
         }
-        // Buffs
+        // Buffs. Not practice: the pawn is not getting better at herbalism by
+        // doing anything, the tincture is carrying it, so this stays on the
+        // primitive and out of the practice verb (#108).
         if (item.buffs) {
             for (const skill in item.buffs) {
                 this.increaseSkill(skill, item.buffs[skill])
             }
         }
-        // Mythical/rare effects (example: beer and charisma)
+        // Mythical/rare effects (example: beer and charisma) - likewise a
+        // property of the drink, not of the drinking.
         if (item.type === 'beer') {
             this.increaseSkill('charisma', 1)
         }
@@ -4965,7 +5786,10 @@ class Pawn extends MobileEntity {
     }
 
     applyRegularHoursBonus() {
-        // If pawn is awake during regular hours, apply a small bonus
+        // If pawn is awake during regular hours, apply a small bonus. Kept on the
+        // primitive (#108): keeping a schedule is a condition the pawn is in, not
+        // an act it performs, which makes this a standing bonus of the same kind
+        // as a workshop's, not practice.
         if (!this.isAsleep && this.isDaytime()) {
             this.increaseSkill('planning', 0.05)
             this.increaseSkill('composure', 0.05)

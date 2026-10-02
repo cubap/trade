@@ -8,7 +8,9 @@
  * @param {Object} landmark - {x, y, type, significance, name, event}
  */
 export function rememberLandmark(pawn, landmark) {
-    if (!landmark?.x || !landmark?.y) return
+    // A truthiness test here silently discards any place on the map's zero
+    // axes, which is where the edges of the world are. Only junk is rejected.
+    if (!Number.isFinite(landmark?.x) || !Number.isFinite(landmark?.y)) return
 
     // Check if we already remember this landmark (within 5 units)
     const existingIndex = pawn.memoryMap.findIndex(m =>

@@ -78,7 +78,10 @@ Standalone single-player game with autonomous agents:
 - `test_goals.js` - Testing utilities for goal system
 - `/js/models/` - Game entity models and systems
   - `Entity.js` - Base entity class for solo game
-  - `EntityTypes.js` - Entity type definitions
+  - `/entities/` - The live entity hierarchy, exported by `entities/index.js`,
+    `entities/mobile/index.js`, `entities/immobile/index.js` and
+    `entities/resources/index.js`. There is no central type table: a type is its
+    class plus its `subtype` string and `tags`, and readers match on those.
   - `/entities/mobile/` - Mobile entities (Pawns, Animals)
     - `Pawn.js` - Main autonomous agent with inventory, stats, and memory
     - `PawnGoals.js` - Goal planning and execution system
@@ -215,18 +218,45 @@ npm test
 - Pawns use hierarchical goal planning - complex goals decompose into subgoals
 - Goals have priorities and descriptions
 - Resource memory is consulted before exploration
-- Failed gathering attempts should update memory confidence (future enhancement)
+- A failed gather lowers that memory's confidence, and a patch that fails three
+  times is forgotten outright; `observeGatheringOutcome` books what other pawns
+  report about the same place
 
 ### Memory System
-- Pawns remember up to 100 resource locations
-- Memories have timestamps and age naturally
+- The cap is a phase ladder, not a constant: 20 places at memory phase 1, then 40,
+  60 and 100 (`updateMemoryPhase`, driven by orienteering and cartography). Above
+  phase 2 nothing evicts at all, which is a bug being tracked in #119.
+- Memories have timestamps and age naturally; recall throws away anything below
+  0.1 confidence or older than 2000 ticks, and ranks the rest by distance
+  (weighted by tiredness), age, confidence, cluster size and observed outcomes
 - Resource types: rock, stick, fiber_plant, forage_food, water
-- Memory clustering prevents duplicates within 30 units
+- Clustering merges nearby sightings into one patch, but only once a pawn reaches
+  memory phase 3 or earns `memoryClustering` 10; the radius is
+  `min(45, 18 + memoryClustering * 0.8)`, so it grows with practice rather than
+  being a fixed distance
+- `solo/test/pawn-memory.test.js` is the executable version of all of the above
 
 ### Crafting
 - Recipes define inputs (materials + quantities) and outputs
 - Skills may be required or gained from crafting
 - Goal planner automatically creates gathering subgoals for missing materials
+
+### Skill awards (`useSkill` vs `increaseSkill`)
+There are exactly two ways to move a skill number, and which one you type is the
+rule (#101, enforced by `solo/test/pawn-skill-verbs.test.js`):
+
+- `pawn.useSkill(skill, amount)` - the pawn *did* something. Gathering, crafting,
+  closing a barter, teaching or attending a lesson, walking a route, remembering a
+  resource, even a tick spent exploring. Every activity handler uses this, and it
+  is the only place a diminishing-returns curve can ever go.
+- `pawn.increaseSkill(skill, amount)` - the arithmetic underneath, and the door
+  for payments that are not practice: a workshop's "you are standing in here"
+  bump, a market's bartering bonus, a tincture's buffs, a meal's effect, the
+  regular-hours habit, a growth rule, a test.
+
+`gainSkill` was a third alias added so civic code would stop throwing; it is
+deleted and must not come back. Amounts belong to the caller either way - the
+verb decides *how* a payment lands, never how big it is.
 
 ## Documentation References
 
@@ -240,8 +270,12 @@ npm test
 1. Create class in `/solo/js/models/entities/resources/`
 2. Extend `Resource` base class
 3. Export from `/solo/js/models/entities/resources/index.js`
-4. Add to entity type definitions in `EntityTypes.js`
-5. Spawn resources in game initialization
+4. Set `this.subtype` and `this.tags` in the constructor - that pair is the
+   registration. `PawnGoals` matches on it when it looks for something to gather,
+   and `EntityPose.js` / `ThreeRenderer.js` when they pick a model. There is no
+   type table to add it to; `EntityTypes.js` was a dead lookalike of the real
+   hierarchy and was deleted, so do not recreate it.
+5. Spawn instances in game initialisation (`solo/js/app.js`) or world generation
 
 ### Adding a New Goal Type
 1. Define goal structure in `PawnGoals.js`
@@ -275,7 +309,6 @@ NODE_ENV=development
 
 ## Known Limitations
 
-- Test script in package.json needs updating to use `node --test`
-- Memory system doesn't yet track gathering success/failure (planned enhancement)
+- Resource memory stops honouring its cap above memory phase 2 (#119)
 - No UI for crafting/inventory (console-based for now)
 - Single pawn in solo mode (multi-pawn planned)

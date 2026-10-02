@@ -1,6 +1,7 @@
 import ActionQueue from './ActionQueue.js'
 import GameClock from './GameClock.js'
 import ChunkManager from './ChunkManager.js'
+import { pruneOldPrices, PRICE_PRUNE_INTERVAL } from './PriceRegistry.js'
 
 class World {
     constructor(width = 2000, height = 2000, options = {}) {
@@ -14,6 +15,11 @@ class World {
             seed: options.mapSeed,
             mapStyle: options.mapStyle
         })
+        // #110: a price belongs to the world, not to whoever saw the trade.
+        // acceptBarter is the only producer; TradeRoutes and the merchant
+        // features in #99/#100 are the readers. Shape is PriceRegistry's own:
+        // { prices: { [itemType]: { [location]: { observations, average, lastObserved } } } }
+        this.priceRegistry = { prices: {} }
     }
 
     setActiveChunkWindow(centerX, centerY, radius = this.activeChunkRadius) {
@@ -93,6 +99,16 @@ class World {
         // forgetting ground nobody walks any more. With a 4-day half-life this is
         // a handful of cells per sweep, not a map scan.
         if (this.trailField && currentTick % 500 === 0) this.trailField.prune(currentTick)
+
+        // Prices (#114): a quote is a claim about *recent* trades. acceptBarter has
+        // booked observations since #110 and nothing ever threw one away, so a busy
+        // market's array grew for the rest of the run and every new trade recomputed
+        // a weighted average across all of it. Sweeping it on the same cadence as
+        // the footpaths bounds the ledger and stops a market that has gone quiet
+        // from quoting a price nobody has paid.
+        if (currentTick % PRICE_PRUNE_INTERVAL === 0) {
+            pruneOldPrices(this.priceRegistry, currentTick)
+        }
 
         // Only log occasional ticks to avoid console spam
         if (this.clock.currentTick % 20 === 0) {

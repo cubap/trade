@@ -7,6 +7,34 @@
  */
 
 /**
+ * Oldest observation a market keeps, in ticks. Past this the trade is history
+ * rather than a price, and the quote stops claiming it (#114).
+ */
+export const PRICE_MAX_AGE = 1000
+
+/**
+ * How often the world sweeps the price table, in ticks.
+ *
+ * Half of PRICE_MAX_AGE, so a dead quote is never left standing for longer
+ * than its own lifetime.
+ */
+export const PRICE_PRUNE_INTERVAL = 500
+
+/**
+ * Triangular-weighted average of a market's observations: the newest trade is
+ * counted newest-last and heaviest, so the number tracks what things have been
+ * going for rather than the whole recorded past.
+ * @param {Array<{ratio: number, tick: number}>} observations
+ * @returns {number|null} null for a market with nothing left to say
+ */
+function weightedAverage(observations) {
+    if (!observations.length) return null
+
+    const totalWeight = observations.length * (observations.length + 1) / 2
+    return observations.reduce((sum, obs, i) => sum + obs.ratio * (i + 1), 0) / totalWeight
+}
+
+/**
  * Record a trade observation at a location.
  * 
  * @param {Object} registry - Price registry object (attached to world or shared scope)
@@ -29,13 +57,7 @@ export function recordTrade(registry, itemType, location, ratio, tick) {
     const entry = registry.prices[itemType][location]
     entry.observations.push({ ratio, tick })
     entry.lastObserved = tick
-
-    // Rolling average (weighted toward recent)
-    const weights = entry.observations.map((_, i) => i + 1)
-    const totalWeight = weights.reduce((a, b) => a + b, 0)
-    entry.average = entry.observations.reduce((sum, obs, i) =>
-        sum + obs.ratio * weights[i], 0
-    ) / totalWeight
+    entry.average = weightedAverage(entry.observations)
 }
 
 /**
@@ -116,29 +138,45 @@ export function isPriceStale(registry, itemType, location, currentTick, staleThr
 
 /**
  * Clear old price observations beyond a tick threshold.
- * 
+ *
+ * A market whose every observation has aged out is *deleted* rather than left
+ * holding its last average. Before this, the recompute sat inside
+ * `if (observations.length > 0)` with no else, so an emptied entry went on
+ * quoting a price while isPriceStale() said the same data was dead - the two
+ * readers of one table disagreed, and the ghost price was the one
+ * detectArbitrage() and findBestRoute() would have shopped by (#114).
+ *
  * @param {Object} registry - Price registry object
  * @param {number} currentTick - Current world tick
- * @param {number} maxAge - Maximum age in ticks for observations (default 1000)
+ * @param {number} [maxAge] - Maximum age in ticks for observations
+ * @returns {number} How many market entries were forgotten
  */
-export function pruneOldPrices(registry, currentTick, maxAge = 1000) {
-    if (!registry.prices) return
+export function pruneOldPrices(registry, currentTick, maxAge = PRICE_MAX_AGE) {
+    if (!registry.prices) return 0
 
-    for (const itemType in registry.prices) {
-        for (const location in registry.prices[itemType]) {
-            const entry = registry.prices[itemType][location]
+    let forgotten = 0
+
+    for (const itemType of Object.keys(registry.prices)) {
+        const byLocation = registry.prices[itemType]
+
+        for (const location of Object.keys(byLocation)) {
+            const entry = byLocation[location]
             entry.observations = entry.observations.filter(
                 obs => (currentTick - obs.tick) <= maxAge
             )
 
-            // Recalculate average after pruning
-            if (entry.observations.length > 0) {
-                const weights = entry.observations.map((_, i) => i + 1)
-                const totalWeight = weights.reduce((a, b) => a + b, 0)
-                entry.average = entry.observations.reduce((sum, obs, i) =>
-                    sum + obs.ratio * weights[i], 0
-                ) / totalWeight
+            if (entry.observations.length === 0) {
+                delete byLocation[location]
+                forgotten++
+                continue
             }
+
+            entry.average = weightedAverage(entry.observations)
         }
+
+        // An item nobody has traded anywhere recently is not a known item.
+        if (Object.keys(byLocation).length === 0) delete registry.prices[itemType]
     }
+
+    return forgotten
 }

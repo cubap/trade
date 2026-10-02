@@ -278,10 +278,19 @@ function renderQuest(pawn) {
             ? '<span class="panel-goal-state panel-goal-preemptible">flexible</span>'
             : `<span class="panel-goal-state panel-goal-committed">committed</span>`
         const invested = `<span class="panel-goal-invested">${commitment.investedTicks}t</span>`
+        // #128: the give-up clock, on show. A plan that has burned most of its
+        // headway budget is about to be dropped, and the panel should admit that
+        // rather than letting the pawn merely look busy.
+        const stallRatio = commitment.stallLifetime
+            ? Math.max(0, commitment.sinceHeadwayTicks ?? 0) / commitment.stallLifetime
+            : 0
+        const stalling = stallRatio > 0.5
+            ? `<span class="panel-goal-state panel-goal-stalling">stalling ${commitment.sinceHeadwayTicks}t</span>`
+            : ''
         const lastSwitch = commitment.recentSwitches?.length
             ? `<div class="panel-goal-last-switch">last switch: ${esc(commitment.recentSwitches[commitment.recentSwitches.length - 1].reason)}</div>`
             : ''
-        commitmentHtml = `<div class="panel-goal-commitment-row">${state}${invested}</div>${lastSwitch}`
+        commitmentHtml = `<div class="panel-goal-commitment-row">${state}${invested}${stalling}</div>${lastSwitch}`
     }
 
     return `
@@ -397,9 +406,14 @@ function renderTechnology(pawn) {
 
     const recipes = Array.from(pawn?.unlocked?.recipes ?? []).slice(0, 12)
 
-    const skillsHtml = skills.map(([name, value]) =>
-        `<div class="panel-tech-row"><span class="panel-tech-name">${esc(name)}</span><span class="panel-tech-value">${value.toFixed(2)}</span></div>`
-    ).join('')
+    // The value alone answers "how good am I"; the tooltip answers "what did
+    // that for me" (#96). Rows without a recorded cause carry no title rather
+    // than an empty one.
+    const skillsHtml = skills.map(([name, value]) => {
+        const why = typeof pawn?.skillWhy === 'function' ? pawn.skillWhy(name) : ''
+        const title = why ? ` title="${esc(`earned by: ${why}`)}"` : ''
+        return `<div class="panel-tech-row"><span class="panel-tech-name"${title}>${esc(name)}</span><span class="panel-tech-value">${value.toFixed(2)}</span></div>`
+    }).join('')
 
     const recipesHtml = recipes.map(r =>
         `<div class="panel-tech-recipe">${esc(r)}</div>`

@@ -1,4 +1,5 @@
 import { sightSummary, classifyPin, describeSight, ringPoints, PIN_STYLES } from '../core/SightRange.js'
+import { trailReadout } from '../core/TrailPaint.js'
 
 class UIRenderer {
     constructor(context, world) {
@@ -22,6 +23,7 @@ class UIRenderer {
         this.visionProvider = null
         this.notice = null
         this.sightText = ''
+        this.trailText = ''
     }
 
     // --- Vision (#90) ---
@@ -466,12 +468,13 @@ class UIRenderer {
 
     renderCapabilityPanel() {
         const sight = this.sightTextFor()
-        if (!this.labelsModeText && !this.mapOverlayText && !sight) return
+        const trail = this.trailTextFor()
+        if (!this.labelsModeText && !this.mapOverlayText && !sight && !trail) return
 
         const x = 10
         const y = this.overrideBadgeText ? 206 : 170
         const panelWidth = 310
-        const panelHeight = 46 + (sight ? 17 : 0)
+        const panelHeight = 46 + (sight ? 17 : 0) + (trail ? 17 : 0)
 
         this.context.save()
         this.context.fillStyle = 'rgba(15, 23, 42, 0.65)'
@@ -484,16 +487,31 @@ class UIRenderer {
         this.context.textAlign = 'left'
         this.context.textBaseline = 'top'
 
-        if (this.labelsModeText) {
-            this.context.fillText(this.labelsModeText, x + 8, y + 7)
-        }
-        if (this.mapOverlayText) {
-            this.context.fillText(this.mapOverlayText, x + 8, y + 24)
-        }
-        if (sight) {
-            this.context.fillText(sight, x + 8, y + 41)
+        // Drawn in order so a row that has nothing to say does not leave a gap
+        // where the next readout would have been.
+        let line = 0
+        for (const text of [this.labelsModeText, this.mapOverlayText, sight, trail]) {
+            if (!text) continue
+            this.context.fillText(text, x + 8, y + 7 + line * 17)
+            line++
         }
         this.context.restore()
+    }
+
+    /**
+     * HUD line describing worn ground and what the followed pawn's walking has
+     * earned on it (#96). Two halves, either of which may be missing: the world
+     * says how much ground is trodden, the pawn says what that taught it. Empty
+     * when nobody is followed and nowhere has been walked, so the row is skipped
+     * rather than showing a zero.
+     */
+    trailTextFor() {
+        const tick = this.world?.clock?.currentTick ?? 0
+        const pawn = this.getVisionEntity()
+        const ground = trailReadout(this.world?.trailField, tick, { empty: '' })
+        const earned = typeof pawn?.trailReport === 'function' ? pawn.trailReport() : ''
+        this.trailText = [ground, earned].filter(Boolean).join(' · ')
+        return this.trailText
     }
 
     /**
