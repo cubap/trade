@@ -7,7 +7,7 @@
  */
 
 import { recordTrade, getPrice, getKnownPrices, isPriceStale, detectArbitrage } from '../../../core/PriceRegistry.js'
-import { findBestRoute } from '../../../core/TradeRoutes.js'
+import { findBestRoute, ROUTE_TRADE_MARGIN } from '../../../core/TradeRoutes.js'
 import { countItem as countHeld, getItemTypes } from './PawnInventory.js'
 
 /**
@@ -16,8 +16,12 @@ import { countItem as countHeld, getItemTypes } from './PawnInventory.js'
  * A 20% spread is worth asking about; one the size of a rounding error is not
  * worth crossing the map for, and without a floor the first non-identical pair
  * of prices would send every trader to the same field.
+ *
+ * Since #118 this is the route table's number rather than a second copy of it:
+ * a road and a trade partner are the same question - is the far end dear enough
+ * to walk for - and two 1.2s would drift apart the first time someone tuned one.
  */
-export const PRICE_TRADE_MARGIN = 1.2
+export const PRICE_TRADE_MARGIN = ROUTE_TRADE_MARGIN
 
 /**
  * A quote older than this is a memory of a price, not a price (#114).
@@ -413,6 +417,13 @@ export function profitableMarket(pawn, surplus = null) {
  * findBestRoute() joins them and had no caller. This is that caller, and it is
  * deliberately a *market* rather than a journey - walking there is #99.
  *
+ * Until #118 this function had to do the direction arithmetic itself, because
+ * findBestRoute() ranked a road in the direction it was written: it read the
+ * prices back out of the route table, worked out which end was dearer, and threw
+ * away the answer when that end was the one the pawn was standing on. Now the
+ * route table is told where the walker is and returns the leg, so this is the
+ * question rather than the workaround.
+ *
  * @param {Pawn} pawn
  * @param {string[]} [itemTypes] - Surplus types to consider (default: ours)
  * @returns {{type: string, market: string, gain: number, route: Object}|null}
@@ -428,22 +439,15 @@ export function bestMarketToSell(pawn, itemTypes = null) {
     let best = null
 
     for (const type of types) {
-        const route = findBestRoute(routes, registry, type)
+        // Ranked from the end this pawn is standing at, and only legs that clear
+        // the margin come back at all.
+        const route = findBestRoute(routes, registry, type, here)
         if (!route) continue
-        // A road we have never set foot on is not ours to walk.
-        if (here && route.from !== here && route.to !== here) continue
 
-        // findBestRoute() ranks the road in the direction it was written; the
-        // dear end is whichever side the table actually pays more on.
-        const from = getPrice(registry, type, route.from)
-        const to = getPrice(registry, type, route.to)
-        const market = to >= from ? route.to : route.from
-        const gain = to >= from ? to / from : from / to
-        if (here && market === here) continue
+        const market = route.sellAt
         if (isPriceStale(registry, type, market, tick, PRICE_STALE_AFTER)) continue
-        if (gain <= PRICE_TRADE_MARGIN) continue
 
-        if (!best || gain > best.gain) best = { type, market, gain, route }
+        if (!best || route.spread > best.gain) best = { type, market, gain: route.spread, route }
     }
 
     return best
