@@ -94,6 +94,67 @@ const GOAL_STALL = {
     abandonLogCap: 24
 }
 
+// #132: standing next to the thing you were sent to change is not the same thing
+// as changing it.
+//
+// The generic completion test used to be a distance test - touch `goal.target` and
+// the errand is a success - and it ran *before* the executor, so on the tick a pawn
+// walked up to the build cache it had been sent to fill it booked a completion,
+// took its inclination signal for it, and staged nothing.
+//
+// Three subsystems had each already worked around this by refusing to put a thing
+// in `goal.target` at all: the trade journey (#99, "arriving is the start of the
+// barter"), the soak pit (#121, "the standing is not the doing") and the build-site
+// staging job. A convention that three places had to rediscover separately is the
+// bug, not the fix.
+//
+// A type belongs in this set when the work happens *at* the target and something
+// other than proximity can see it finish. Every entry has a branch in
+// `updateGoalSpecificLogic()` that ends the goal from its own evidence - materials
+// in the cache, item in the pack, batch stowed, destination reached, clock run -
+// which `solo/test/goal-completion.test.js` checks statically so a type cannot be
+// added here without an exit. Types *not* listed keep the old behaviour, because
+// for them arriving genuinely is the job: `find_food` ends where the eating begins
+// (the need system completes it from `Pawn`), `explore` is a walk, `rest` is a
+// place, and the group-follow orders are satisfied by being next to somebody.
+const WORK_AT_TARGET_GOALS = new Set([
+    'stage_build_materials',
+    'build_structure',
+    'soak_fiber',
+    'gather_specific',
+    'search_resource',
+    'gather_materials',
+    'collaborative_craft',
+    'build_cache',
+    'post_job',
+    'teach_lesson',
+    'teach_skill',
+    'accumulate_valuables',
+    'negotiate_group',
+    'establish_trade',
+    'seek_trade',
+    'barter',
+    'travel_route',
+    'train_skill',
+    'mark_target',
+    'study',
+    'escort_target',
+    'protect_target'
+])
+
+// Positive evidence that the thing a goal was aimed at is no longer there: a dead
+// animal, a picked-out resource, an entity the world has already dropped. A pawn
+// that comes back empty-handed because the stick walked away did not succeed, and
+// recording it as a success is how a pawn learns to plan for a world it does not
+// have (#132).
+const TARGET_LOSS_FLAGS = ['isDead', 'removed', 'depleted']
+
+function targetLooksGone(target) {
+    if (!target) return false
+    if (target.health != null && target.health <= 0 && target.subtype === 'pawn') return true
+    return TARGET_LOSS_FLAGS.some(flag => target[flag] === true)
+}
+
 class PawnGoals {
     constructor(pawn) {
         this.pawn = pawn
@@ -1445,19 +1506,104 @@ class PawnGoals {
         
         if (completed) {
             this.completeCurrentGoal()
-        } else if (!this.checkGoalStall()) {
-            // Update goal-specific logic
-            this.updateGoalSpecificLogic()
+            return
         }
+        if (this.checkGoalStall()) return
+
+        const goal = this.currentGoal
+        // Update goal-specific logic
+        this.updateGoalSpecificLogic()
+
+        // #132: a lost target is judged *after* the executor has had its say, so a
+        // pawn that picked the last unit off a node is credited with the gather
+        // rather than blamed for the empty stump it is standing next to. The
+        // executor can also finish or replace the goal in that call, hence the
+        // identity check.
+        if (this.currentGoal === goal) this.retireLostTarget()
     }
-    
+
+    /**
+     * Where the goal's own state can be read back from the world, that is the
+     * answer to "is it done". Returns null when this code has no opinion, which
+     * leaves the goal to its executor.
+     */
+    goalStateCompletion(goal) {
+        if (goal.type === 'stage_build_materials') {
+            const requirements = Array.isArray(goal.requirements) && goal.requirements.length
+                ? goal.requirements
+                : [{ type: 'stick', count: 8 }, { type: 'fiber', count: 4 }]
+            const cache = goal.cacheId
+                ? (this.pawn.world?.entitiesMap?.get(goal.cacheId) ?? null)
+                : null
+            // No cache means the errand still has to dig one, so standing anywhere
+            // is not the end of it.
+            if (!cache) return false
+            const staged = requirements.reduce(
+                (sum, req) => sum + Math.min(req.count ?? 0, cache.countByType?.(req.type) ?? 0), 0
+            )
+            const wanted = requirements.reduce((sum, req) => sum + (req.count ?? 0), 0)
+            return staged >= wanted
+        }
+        return null
+    }
+
+    /**
+     * Give up on a goal whose target has died, been picked clean, or left the world
+     * (#132). That is a failure, not a success: `completedGoals` says
+     * `abandoned:target_lost`, no inclination signal is paid, no skill is earned,
+     * and the type cools down, so the pawn goes and does something it can actually
+     * finish instead of being rewarded for a stick another pawn took first. Goals
+     * aimed at a bare {x, y} place cannot lose a target and are left alone.
+     */
+    retireLostTarget() {
+        const goal = this.currentGoal
+        if (!goal) return false
+
+        const map = this.pawn.world?.entitiesMap
+        // Only a world the pawn is actually standing in can confirm an absence;
+        // a goal built in a test with an id nothing ever held is not evidence.
+        const worldIsLive = !!map?.size && this.pawn.id != null && map.has(this.pawn.id)
+
+        let gone = false
+        if (goal.target) {
+            gone = targetLooksGone(goal.target)
+                || (worldIsLive && goal.target.id != null && !map.has(goal.target.id))
+        } else if (
+            goal.targetId != null && worldIsLive
+            // Only a goal that is aimed at a *thing* can have that thing go missing.
+            // A location goal may carry an id for a spot on the map or a plan that
+            // was never an entity, and its absence from the entity map is not news.
+            && (goal.targetType === 'entity' || goal.targetType === 'resource')
+        ) {
+            const target = map.get(goal.targetId)
+            gone = !target || targetLooksGone(target)
+            if (target && !targetLooksGone(target)) goal.target = target
+        }
+
+        if (!gone) return false
+
+        const label = goal.description ?? goal.type
+        this.pawn.addThought?.(`Whatever "${label}" was for is gone`, 'planning')
+        this.abandonCurrentGoal('target_lost')
+        return true
+    }
+
     checkGoalCompletion() {
         if (!this.currentGoal) return false
         
         const goal = this.currentGoal
+
+        // #132: the planner that made the goal is the only code that knows what the
+        // errand was for, so let it say so directly.
+        if (typeof goal.completion === 'function') {
+            return !!goal.completion(goal, this.pawn, this)
+        }
+        const stateAnswer = this.goalStateCompletion(goal)
+        if (stateAnswer !== null) return stateAnswer
         
-        // Check if we're at the target
-        if (goal.target) {
+        // Check if we're at the target - but only for goals whose purpose *is* the
+        // arrival. For the work goals the executor reports done (#132).
+        if (goal.target && !WORK_AT_TARGET_GOALS.has(goal.type)) {
             const distance = Math.sqrt(
                 (this.pawn.x - goal.target.x) ** 2 + 
                 (this.pawn.y - goal.target.y) ** 2
@@ -3050,3 +3196,4 @@ class PawnGoals {
 }
 
 export default PawnGoals
+export { WORK_AT_TARGET_GOALS, TARGET_LOSS_FLAGS, targetLooksGone }
