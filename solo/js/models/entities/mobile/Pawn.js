@@ -679,7 +679,16 @@ class Pawn extends MobileEntity {
     }
     
     /**
-     * Increase a skill (creates skill entry if first time)
+     * The primitive: set a skill number by arithmetic.
+     *
+     * #101 fixed the vocabulary: an *activity* pays practice through `useSkill`,
+     * which is the only place a diminishing-returns curve can ever live. This is
+     * what `useSkill` delegates to, and what you call directly when the payment
+     * is not practice - a structure's buff, an item's effect, a test, a growth
+     * rule. Its semantics are pinned by existing tests and must not shift under
+     * a rename: sparse storage (a 0 skill is absent, not zero), deletion when a
+     * negative amount brings it to 0 or below, and the `skillLastUsed` stamp that
+     * decay reads.
      * @param {string} skill - Skill name
      * @param {number} amount - Amount to increase (default 1)
      */
@@ -700,17 +709,25 @@ class Pawn extends MobileEntity {
         this.skillLastUsed[skill] = tick
     }
 
-    useSkill(skill, amount = 1) {
-        this.increaseSkill(skill, amount)
-    }
-
     /**
-     * Earn skill the way the civic and market code asks for it: "give this pawn a
-     * point of bartering". Identical to increaseSkill - two names for one idea is
-     * a mistake, but the callers (a teacher, a market, a lesson) are already
-     * written, and they all mean the same thing.
+     * The practice verb: skill earned by doing something.
+     *
+     * This is the one an activity should call - teaching a lesson, closing a
+     * barter, finishing a route, walking a road into being. It is currently one
+     * line on top of `increaseSkill`, and that is the point: the amount an
+     * activity pays is decided by the activity (#95's `TRAIL_XP_ROAD`, the
+     * 0.12 for completing a movement plan), while *how* a payment lands is
+     * decided here, once. Saturation, caps and decay of unpractised skill all
+     * belong to this method; they do not belong to the forty call sites.
+     *
+     * #101: there were three verbs. `gainSkill` was added by #95 purely so the
+     * civic and market code - written against a method that had never existed -
+     * would stop throwing, and it was an alias of an alias. It is gone, and its
+     * callers say `useSkill` like everyone else.
+     * @param {string} skill - Skill name
+     * @param {number} amount - Practice awarded (default 1)
      */
-    gainSkill(skill, amount = 1) {
+    useSkill(skill, amount = 1) {
         this.increaseSkill(skill, amount)
     }
 

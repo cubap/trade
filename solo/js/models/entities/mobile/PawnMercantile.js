@@ -145,8 +145,8 @@ export function acceptBarter(pawn, offer) {
     }
 
     // Both parties gain bartering skill
-    pawn.gainSkill('bartering', 1)
-    initiator.gainSkill('bartering', 1)
+    pawn.useSkill('bartering', 1)
+    initiator.useSkill('bartering', 1)
 
     pawn.addThought(`Traded ${offer.wantAmount} ${offer.wantType} for ${offer.offerAmount} ${offer.offerType}`, 'trade')
     return true

@@ -1953,7 +1953,7 @@ class PawnGoals {
                     // Complete lesson
                     const lesson = this.pawn.addCurriculumLesson(skillName, null, 1)
                     if (lesson) {
-                        student.gainSkill(skillName, 1)
+                        student.useSkill(skillName, 1)
                         this.pawn.completeCurriculumLesson(lesson.lessonId)
                         this.pawn.recordCivicContribution('build', 2)
                         this.completeCurrentGoal()
@@ -2008,7 +2008,7 @@ class PawnGoals {
                 )
 
                 if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
-                    this.pawn.gainSkill('bartering', 1)
+                    this.pawn.useSkill('bartering', 1)
                     // #95: the trip that just happened maintains the road and
                     // the route table entry for it.
                     this.pawn.noteTradeRoute?.(partner)

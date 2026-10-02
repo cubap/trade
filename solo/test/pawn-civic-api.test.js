@@ -59,7 +59,7 @@ test('the civic goals have something to call', () => {
         'checkProtoSettlementTrigger', 'getResourceRichness', 'canonizeEncampment',
         'openSettlementRoads', 'recordCivicContribution', 'updateCivicScore',
         'getAverageGroupTrust', 'postJob', 'acceptJob', 'completeJob',
-        'addCurriculumLesson', 'completeCurriculumLesson', 'gainSkill'
+        'addCurriculumLesson', 'completeCurriculumLesson', 'useSkill'
     ]
     for (const name of handlers) {
         assert.equal(typeof Pawn.prototype[name], 'function', `pawn.${name}() must exist`)
@@ -159,7 +159,7 @@ test('a lesson taught raises the student and closes the book', () => {
     assert.equal(lesson.skill, 'knapping')
     assert.equal(ada.curriculum.length, 1)
 
-    bob.gainSkill('knapping', 1)
+    bob.useSkill('knapping', 1)
     assert.equal(bob.getSkill('knapping'), 1, 'the student learned it whether or not the town did')
 
     assert.equal(ada.completeCurriculumLesson(lesson.lessonId), true)
@@ -169,8 +169,44 @@ test('a lesson taught raises the student and closes the book', () => {
 test('skill gained out of nothing is skill had', () => {
     const { world } = makeWorld()
     const ada = makeTowner(world, 'Ada', 0, 0)
-    ada.gainSkill('bartering', 0.1)
+    ada.increaseSkill('bartering', 0.1)
     assert.equal(ada.getSkill('bartering'), 0.1, 'a market pays fractions of a point, not a crash')
+})
+
+// ---------------------------------------------------------------- one verb per idea (#101)
+
+test('two verbs, not three', () => {
+    const { world } = makeWorld()
+    const student = makeTowner(world, 'Student', 0, 0)
+    const hand = makeTowner(world, 'Hand', 0, 0)
+
+    // `gainSkill` was #95's apology for a method the civic code had invented: an
+    // alias of an alias. Its callers now say what they mean, so the alias has
+    // nothing left to apologise for, and it must not come back as a third door
+    // into the same number.
+    assert.equal(Pawn.prototype.gainSkill, undefined, 'the alias must stay deleted')
+
+    // The rule the sweep settled on: `useSkill` is practice for something the
+    // pawn did, `increaseSkill` is the arithmetic underneath it (and the door a
+    // structure's standing bonus uses). Today both land on the same number -
+    // that equality is the contract. If practice ever saturates, the curve goes
+    // in `useSkill` and this test is the change notice, rather than forty call
+    // sites quietly disagreeing about what a quarter point of cartography means.
+    student.useSkill('knapping', 0.25)
+    hand.increaseSkill('knapping', 0.25)
+    assert.equal(student.getSkill('knapping'), hand.getSkill('knapping'))
+
+    // Both stamp decay, which is the half of `increaseSkill` an alias tends to
+    // lose: an unpractised skill must still go cold.
+    for (const pawn of [student, hand]) {
+        assert.ok('knapping' in pawn.skillLastUsed, `${pawn.name} practised it, decay should know`)
+    }
+
+    // And a negative payment still deletes the entry rather than storing a
+    // grudge, whichever door it came in by.
+    hand.increaseSkill('knapping', -0.25)
+    assert.equal(hand.getSkill('knapping'), 0)
+    assert.equal('knapping' in hand.skills, false, 'a 0 skill is absent, not zero')
 })
 
 // ---------------------------------------------------------------- reading the town

@@ -21,9 +21,12 @@ class Market extends Structure {
     }
     
     applyBuffsToEntity(entity) {
-        // Boost bartering skill gain for nearby merchants
+        // Boost bartering skill gain for nearby merchants. This is a standing
+        // bonus for trading beside a market, in the same family as Guild's
+        // "being in the guild" bump (#101), so it modifies the skill directly
+        // rather than being paid as practice for an act the pawn chose.
         if (entity.subtype === 'pawn' && entity.getSkill('bartering')) {
-            entity.gainSkill('bartering', 0.1)
+            entity.increaseSkill('bartering', 0.1)
         }
     }
     

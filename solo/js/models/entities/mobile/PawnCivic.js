@@ -358,7 +358,7 @@ export function completeCurriculumLesson(pawn, lessonId) {
     lesson.completed = true
 
     // Award XP to student (this pawn)
-    pawn.gainSkill(lesson.skill, lesson.xp)
+    pawn.useSkill(lesson.skill, lesson.xp)
 
     pawn.addThought(`Completed lesson: ${lesson.skill} (+${lesson.xp} XP)`, 'civic')
     return true
