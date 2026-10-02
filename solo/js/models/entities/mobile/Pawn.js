@@ -37,6 +37,16 @@ const TRAIL_TRACKING_SHARE = 0.1
 const TRADE_ROUTE_MAX_TRIP_TICKS = 600
 const TRAIL_THOUGHT_COOLDOWN = 320    // ticks between remarks about a path
 const TRAIL_REMARK_WEAR = 6           // how worn it must be to be worth noting
+// #96: what trail work was for, phrased for the player instead of the log. A
+// followed step pays 0.004 orienteering, so a notice per award would be noise;
+// the player hears about it when the walking adds up to a whole level - about
+// 250 trodden steps, or four roads paved.
+const TRAIL_NOTICE_PHRASES = {
+    path: ({ skill, level }) => `the route you keep walking is paying off (${skill} ${level})`,
+    tracks: ({ skill, level }) => `you can tell whose prints these are now (${skill} ${level})`,
+    road: ({ skill, level }) => `a road you paved is worth remembering (${skill} ${level})`
+}
+const TRAIL_NOTICE_FALLBACK = ({ skill, level, cause }) => `${skill} ${level} - ${cause}`
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -119,6 +129,15 @@ class Pawn extends MobileEntity {
 
         // Track when skills were last used for gentle decay
         this.skillLastUsed = {}
+
+        // Feedback (#96): the last XP awards, with the reason that earned them.
+        // "Known Skills" can say *that* orienteering is 3.24; only a ledger can
+        // say what the walk did for it. Bounded and drained by the UI, because
+        // a renderer that diffs skill values every frame is the wrong mechanism.
+        this.skillLedger = []
+        this.maxSkillLedger = 12
+        this.skillNotices = []
+        this.maxSkillNotices = 4
 
         // Simple idle planner configuration (unlocks expand with planning)
         this.idlePlan = {
@@ -691,6 +710,90 @@ class Pawn extends MobileEntity {
         this.increaseSkill(skill, amount)
     }
 
+    /**
+     * #96: pay trail skill *and* keep the reason. `useSkill` alone leaves the
+     * player with a number that moved and no story attached, which is exactly
+     * the complaint: walking a corridor for 400 ticks and seeing a nicer brown
+     * path is not feedback that the walk earned anything.
+     * @param {string} kind - which notice phrase fits the act ('path', 'tracks', 'road')
+     * @returns {number} the skill value after the award
+     */
+    _awardTrailSkill(skill, amount, cause, kind = 'path') {
+        const before = this.getSkill(skill)
+        this.useSkill(skill, amount)
+        const after = this.getSkill(skill)
+        if (!(after > before)) return after
+
+        this.skillLedger.push({ skill, cause, amount: after - before, level: after, tick: this._trailTick() })
+        if (this.skillLedger.length > this.maxSkillLedger) this.skillLedger.shift()
+
+        // Only a whole level is worth interrupting for; the first one says the
+        // thing the player needs to believe ("yes, that walking counted").
+        if (Math.floor(after) > Math.floor(before)) {
+            const info = { skill, cause, level: Math.floor(after) }
+            const phrase = TRAIL_NOTICE_PHRASES[kind] ?? TRAIL_NOTICE_FALLBACK
+            this.skillNotices.push(phrase(info))
+            if (this.skillNotices.length > this.maxSkillNotices) this.skillNotices.shift()
+        }
+        return after
+    }
+
+    /**
+     * The UI's side of #96: pending notices, oldest first, cleared by reading.
+     * Event-driven on purpose - the alternative is a per-frame diff of every
+     * skill value, which misses whatever was earned between two frames.
+     * @returns {string[]}
+     */
+    drainSkillNotices() {
+        if (!this.skillNotices.length) return []
+        return this.skillNotices.splice(0, this.skillNotices.length)
+    }
+
+    /**
+     * "Why is this skill this number?" - the causes behind the recent awards,
+     * biggest first. The ledger is a bounded window (`maxSkillLedger` entries),
+     * so this is deliberately an account of the last few dozen awards and not a
+     * lifetime total; it exists to explain a number the player just noticed.
+     * Empty string when nothing has earned it, so a row can be skipped rather
+     * than showing a bare zero.
+     */
+    skillWhy(skill, limit = 3) {
+        const counts = new Map()
+        for (const entry of this.skillLedger) {
+            if (entry.skill !== skill) continue
+            const seen = counts.get(entry.cause) ?? { amount: 0, times: 0 }
+            seen.amount += entry.amount
+            seen.times += 1
+            counts.set(entry.cause, seen)
+        }
+        return [...counts.entries()]
+            .sort((a, b) => b[1].amount - a[1].amount)
+            .slice(0, limit)
+            .map(([cause, { amount, times }]) => `${cause} +${amount.toFixed(2)}${times > 1 ? ` x${times}` : ''}`)
+            .join(', ')
+    }
+
+    /**
+     * #96: this pawn's own trail line for the HUD. Like `sightReport()` it says
+     * nothing rather than something false - a pawn that has never been pulled
+     * along a footpath and has paved nothing has no trail knowledge to report.
+     */
+    trailReport() {
+        const roads = this.roadsOpened ?? 0
+        const followed = this.trail?.followed ?? 0
+        if (!followed && !roads) return ''
+
+        const parts = []
+        if (followed) {
+            const earned = ['orienteering', 'tracking', 'cartography']
+                .filter(name => this.getSkill(name) > 0)
+                .map(name => `${name} ${this.getSkill(name).toFixed(1)}`)
+            parts.push(`${followed} trodden steps${earned.length ? ` (${earned.join(', ')})` : ''}`)
+        }
+        if (roads) parts.push(`${roads} road${roads === 1 ? '' : 's'} paved`)
+        return parts.join(' · ')
+    }
+
     // --- Interaction-based observation and examination helpers ---
     observeInteraction(target, amount = 0.1) {
         // Learn based on what we interacted with
@@ -889,7 +992,12 @@ class Pawn extends MobileEntity {
         if (!road.ok) return road
 
         this.roadsOpened = (this.roadsOpened || 0) + 1
-        this.useSkill(surveyed ? 'cartography' : 'orienteering', TRAIL_XP_ROAD)
+        this._awardTrailSkill(
+            surveyed ? 'cartography' : 'orienteering',
+            TRAIL_XP_ROAD,
+            surveyed ? 'a surveyed road' : 'a paved road',
+            'road'
+        )
         return road
     }
 
@@ -985,7 +1093,7 @@ class Pawn extends MobileEntity {
         stats.wear = bias.intensity
 
         // Following someone else's route is how tracking and orientation improve.
-        this.useSkill('orienteering', TRAIL_XP_ORIENTEERING)
+        this._awardTrailSkill('orienteering', TRAIL_XP_ORIENTEERING, 'trodden ground', 'path')
         const field = this.world?.trailField
         // Read the ground being turned toward, not the ground underfoot - the
         // whole point of a trail is that it is a little way ahead.
@@ -995,7 +1103,9 @@ class Pawn extends MobileEntity {
             const predator = field.trackShare(where.x, where.y, 'predator', tick)
             // Distinguishing whose tracks these are is the actual skill, so it is
             // paid for reading a *mixed* corridor rather than one's own footsteps.
-            if (deer + predator > TRAIL_TRACKING_SHARE) this.useSkill('tracking', TRAIL_XP_TRACKING)
+            if (deer + predator > TRAIL_TRACKING_SHARE) {
+                this._awardTrailSkill('tracking', TRAIL_XP_TRACKING, 'mixed tracks', 'tracks')
+            }
         }
         stats.ahead = field ? field.intensityAt(where.x, where.y, tick) : 0
         stats.underfoot = field ? field.intensityAt(this.x, this.y, tick) : 0

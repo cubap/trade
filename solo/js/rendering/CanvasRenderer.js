@@ -241,6 +241,22 @@ class CanvasRenderer {
         this.uiRenderer.showNotice?.(text, durationMs)
     }
 
+    /**
+     * #96: trail skill progress is paid in fractions of a point per step, so the
+     * pawn decides when it is worth mentioning and queues the sentence. The
+     * renderer empties that queue here - nothing in the sim writes to the canvas
+     * and nothing here ticks the sim. Only the newest notice is shown, because
+     * `UIRenderer` has room for one line; a level and a road earned in the same
+     * frame are rare enough that dropping the older is better than a stack.
+     */
+    consumeSkillNotices() {
+        const pawn = this.camera?.followedEntity
+        const notices = typeof pawn?.drainSkillNotices === 'function' ? pawn.drainSkillNotices() : []
+        if (!notices.length) return false
+        this.showNotice(notices[notices.length - 1], 5000)
+        return true
+    }
+
     _applyCapabilityState() {
         if (!this.capabilities?.modules) return
 
@@ -344,6 +360,10 @@ class CanvasRenderer {
         // Restore context state
         this.context.restore()
         
+        // Trail level-ups are queued by the pawn and flushed once per frame, so
+        // the HUD is event-driven instead of diffing skills every draw (#96).
+        this.consumeSkillNotices()
+
         // Draw UI elements that shouldn't be affected by zoom/pan
         this.uiRenderer.drawUI()
         
