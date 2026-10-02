@@ -461,6 +461,35 @@ class TrailField {
     }
 
     /**
+     * What the ground under one foot costs (#98), as a multiplier on the step.
+     * `pathCost` answers the planner's question - "how expensive is this leg" -
+     * by resampling the whole line, which is far too much work to ask of every
+     * step of every walker. This answers the walker's question, which is only
+     * ever about the cell it is standing on, in a single lookup.
+     *
+     * Deliberately the same rule as `pathCost` (`1 - discount * wear/cap`, with
+     * the same threshold floor) so the body cannot disagree with the plan about
+     * what a road is worth.
+     *
+     * @param {number} x @param {number} y
+     * @param {{tick?: number, discount?: number, threshold?: number}} options
+     *   same meaning as in `pathCost`; `discount` 0 disables the relief.
+     * @returns {number} multiplier in (0, 1]. 1 means "this is just ground".
+     */
+    stepCost(x, y, options = {}) {
+        const discount = Math.min(0.9, Math.max(0, finite(options.discount, TRAIL_COST_DISCOUNT)))
+        if (discount <= 0 || this.cells.size === 0) return 1
+
+        const threshold = finite(options.threshold, TRAIL_FOLLOW_THRESHOLD)
+        const tick = Math.floor(finite(options.tick, this.tick))
+        const intensity = this.intensityAt(x, y, tick)
+        if (!(intensity > threshold)) return 1
+
+        const cap = this.maxIntensity > 0 ? this.maxIntensity : TRAIL_MAX_INTENSITY
+        return 1 - discount * Math.min(1, intensity / cap)
+    }
+
+    /**
      * Cost of a whole polyline route (#94), leg by leg, plus the distance and
      * the units of walking the worn ground saved. `points` is the traveller's
      * position followed by its waypoints and destination; anything unparseable

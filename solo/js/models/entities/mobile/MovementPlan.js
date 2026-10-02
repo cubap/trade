@@ -103,7 +103,7 @@ export function createMovementPlan(pawn, destX, destY, goal, tick) {
     // field and plans exactly as it did before.
     const field = trailFieldFor(pawn.world, { create: false })
     const bias = field ? trailPlanningBias(pawn) : 0
-    const routeOptions = { field, bias, tick }
+    const routeOptions = { field, bias, tick, speed: pawn.speed }
 
     const waypoints = buildWaypoints(pawn.x, pawn.y, targetX, targetY, params.legLength, routeOptions)
     const route = measureRoute(pawn.x, pawn.y, waypoints, targetX, targetY, routeOptions)
@@ -194,7 +194,69 @@ export function measureRoute(fromX, fromY, waypoints, toX, toY, options = {}) {
 
 function estimateTravelTime(fromX, fromY, waypoints, toX, toY, options = {}) {
     const { cost } = measureRoute(fromX, fromY, waypoints, toX, toY, options)
-    return Math.round(cost / ESTIMATE_SPEED)
+    // #98: costed at the walker's own pace. A pawn walks at 0.7 units/tick and
+    // the generic figure is 1.5, so quoting the constant made every pawn's plan
+    // read twice as optimistic as the walk it described - and an estimate
+    // nobody can be checked against is not information.
+    const speed = Number.isFinite(options.speed) && options.speed > 0 ? options.speed : ESTIMATE_SPEED
+    return Math.round(cost / speed)
+}
+
+/**
+ * #98: how close a finished walk came to what its plan predicted, 0..1.
+ *
+ * `travelTimeTicks` was computed and then read by nothing but its own test,
+ * which is the same as lying about the route. Scoring the walk against the
+ * prediction gives the estimate a consumer, and gives the player a number that
+ * means something: 1 for a pawn that called it right, 0.5 when the walk took
+ * twice (or half) as long as advertised, 0 once the plan is pure fiction.
+ * Symmetric in the ratio, so wishful planning and excessive caution cost the
+ * same.
+ */
+export function routeRecallScore(estimatedTicks, actualTicks) {
+    const e = Number(estimatedTicks)
+    const a = Number(actualTicks)
+    if (!Number.isFinite(e) || !Number.isFinite(a) || e <= 0 || a <= 0) return 0
+    const ratio = Math.max(a / e, e / a)
+    return Math.max(0, Math.min(1, 2 - ratio))
+}
+
+/** Attempts after which the running average stops moving much per route. */
+export const ROUTE_RECALL_WINDOW = 10
+
+/**
+ * #98: fold one finished route into the pawn's record of how well it reads
+ * country. Written into `progressionMetrics.routeRecallConsistency`, which is
+ * the Phase-3 gate in ProgressionController.js - previously nothing in the
+ * simulation ever produced it, so a pawn could never earn its way to the
+ * mapping phase by walking well.
+ *
+ * @returns {{score: number, estimated: number, actual: number, consistency: number}}
+ */
+export function recordRouteRecall(pawn, plan, tick) {
+    if (!pawn || !plan) return null
+    const estimated = Number(plan.travelTimeTicks) || 0
+    const start = Number(plan.createdTick)
+    const actual = Number.isFinite(start) && Number.isFinite(tick) ? Math.max(0, tick - start) : 0
+    const score = routeRecallScore(estimated, actual)
+
+    const metrics = pawn.progressionMetrics ?? (pawn.progressionMetrics = {})
+    const attempts = (Number(metrics.routeRecallAttempts) || 0) + 1
+    const prev = Number.isFinite(metrics.routeRecallConsistency) ? metrics.routeRecallConsistency : 0
+    const window = Math.min(attempts, ROUTE_RECALL_WINDOW)
+    const consistency = Math.max(0, Math.min(1, prev + (score - prev) / window))
+
+    metrics.routeRecallAttempts = attempts
+    metrics.routeRecallConsistency = consistency
+    pawn.lastRouteRecall = {
+        score,
+        estimated,
+        actual,
+        savings: Number(plan.trailSavings) || 0,
+        legs: plan.trailLegs ?? 0,
+        tick
+    }
+    return { score, estimated, actual, consistency }
 }
 
 /**
@@ -239,7 +301,7 @@ export function replanIfNeeded(plan, pawn, tick) {
     const params = planningParams(planning)
     const field = trailFieldFor(pawn.world, { create: false })
     const bias = field ? trailPlanningBias(pawn) : 0
-    const routeOptions = { field, bias, tick }
+    const routeOptions = { field, bias, tick, speed: pawn.speed }
     plan.waypoints = buildWaypoints(pawn.x, pawn.y, plan.destination.x, plan.destination.y, params.legLength, routeOptions)
     plan.index = 0
     plan.replanAt = tick + params.replanInterval

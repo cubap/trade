@@ -20,8 +20,8 @@ import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
 import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from '../../../core/LineOfSight.js'
 import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
-import { routeCostTo, canSurveyRoutes } from './MovementPlan.js'
-import { trailFieldFor } from '../../../core/TrailField.js'
+import { routeCostTo, canSurveyRoutes, trailPlanningBias } from './MovementPlan.js'
+import { trailFieldFor, TRAIL_COST_DISCOUNT } from '../../../core/TrailField.js'
 import { createRoute, findRoute, recordTrip } from '../../../core/TradeRoutes.js'
 
 // Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
@@ -58,6 +58,10 @@ class Pawn extends MobileEntity {
         this.trailKind = 'pawn'
         this.trailWeight = 1.25
         this.trail = { tick: 0, steps: 0, followed: 0, lastGain: 0, wear: 0, underfoot: 0, sinceThought: -1e9 }
+        // #98: ProgressionController reads routeRecallConsistency for its
+        // Phase-3 gate. It was declared in the plan and read by the gate but
+        // never written by anything; a finished route now scores itself here.
+        this.progressionMetrics = { routeRecallAttempts: 0, routeRecallConsistency: 0 }
         this.color = '#3498db'  // Blue color for pawns
         
         // Walking speed: ~1.4 m/s (average human walking pace)
@@ -791,6 +795,12 @@ class Pawn extends MobileEntity {
             parts.push(`${followed} trodden steps${earned.length ? ` (${earned.join(', ')})` : ''}`)
         }
         if (roads) parts.push(`${roads} road${roads === 1 ? '' : 's'} paved`)
+        // #98: the part the pawn feels right now - the ground under its feet is
+        // giving some of the step back. Only said when it is actually true.
+        const underfoot = this.trailStepCost()
+        if (underfoot < 1) {
+            parts.push(`road underfoot -${Math.round((1 - underfoot) * 100)}%`)
+        }
         return parts.join(' · ')
     }
 
@@ -1064,6 +1074,25 @@ class Pawn extends MobileEntity {
     _steerAlongTrails(dirX, dirY) {
         this.trailAffinity = this.trailAwareness()
         return super._steerAlongTrails(dirX, dirY)
+    }
+
+    /**
+     * #98: a pawn's feet are only as good as its reading of the land. The base
+     * class discounts the step by `trailAffinity`, but a pawn's affinity starts
+     * above zero (#77 lets a fresh traveller half-notice a footpath), which
+     * would pay a pawn for a road it cannot plan onto. The body therefore uses
+     * the planner's own bias, so the discount the walk enjoys is exactly the
+     * one #94's route cost promised - zero until the skills say otherwise.
+     */
+    trailStepCost() {
+        const bias = trailPlanningBias(this)
+        if (!(bias > 0)) return 1
+        const field = trailFieldFor(this.world, { create: false })
+        if (!field || typeof field.stepCost !== 'function') return 1
+        return field.stepCost(this.x, this.y, {
+            tick: this._trailTick(),
+            discount: TRAIL_COST_DISCOUNT * bias
+        })
     }
 
     _depositFootfall(fromX, fromY) {

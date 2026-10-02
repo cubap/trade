@@ -6,7 +6,8 @@ import {
     advanceWaypoint,
     planComplete,
     replanIfNeeded,
-    sortByRouteCost
+    sortByRouteCost,
+    recordRouteRecall
 } from './MovementPlan.js'
 import Structure from '../immobile/Structure.js'
 import * as PawnMercantile from './PawnMercantile.js'
@@ -755,6 +756,11 @@ class PawnGoals {
         // Route finished: reward planning, then start the next outing.
         this.pawn.useSkill?.('planning', 0.12)
         this.pawn.setRecentAction?.(`Completed a planned route (${plan.waypoints.length + 1} legs)`)
+        // #98: the plan's travel estimate is checked against the walk it called.
+        // This is what makes `travelTimeTicks` load-bearing rather than dead
+        // telemetry, and it is the only producer of the route-recall figure the
+        // progression gate looks for.
+        recordRouteRecall(this.pawn, plan, this.currentTick())
         this.pawn.movementPlan = null
         this.selectExplorationTarget()
     }
