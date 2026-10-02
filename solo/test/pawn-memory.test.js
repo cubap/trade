@@ -10,9 +10,9 @@ import Pawn from '../js/models/entities/mobile/Pawn.js'
 // most of what memory is:
 //
 //   - the copy was built at memory phase 3 with a cap of 50, and evicted
-//     unconditionally; a real pawn starts at phase 1 with room for 20 places,
-//     climbs the ladder with its skills, and (see #119) stops evicting
-//     altogether from phase 3
+//     unconditionally; a real pawn starts at phase 1 with room for 20 places and
+//     climbs the ladder with its skills. From phase 3 it compresses rather than
+//     evicts, which is #119; before the fix its list grew without limit
 //   - the copy clustered at a fixed 20 units; the real radius is
 //     `min(45, 18 + memoryClustering * 0.8)` and clustering is switched off
 //     entirely until a pawn reaches phase 3 or learns enough clustering to
@@ -150,7 +150,7 @@ test('the memory phase is what the skills say it is', () => {
     assert.deepEqual([pawn.memoryPhase, pawn.maxResourceMemory], [4, 100], 'conceptual maps at 50')
 })
 
-test('a young pawn evicts what it cannot hold; its cap is a promise only then', () => {
+test('a young pawn evicts what it cannot hold, and every pawn keeps its cap', () => {
     const pawn = lonePawn('cid')
     // 21 rocks, 40 units apart: no clustering, no near-same-type nudge, so each
     // sighting is its own memory and the cap has to bite 21 times.
@@ -161,16 +161,81 @@ test('a young pawn evicts what it cannot hold; its cap is a promise only then', 
     assert.equal(pawn.resourceMemory[0].x, 140, 'memories are evicted oldest-first when all else ties')
     assert.equal(pawn.resourceMemory.at(-1).x, 900, 'the newest sighting survives')
 
-    // Phase 3 is where the promise breaks. The eviction is gated on
+    // Phase 3 used to be where the promise broke. The eviction was gated on
     // `memoryPhase <= 2` because "cluster compression will handle this
-    // differently", but compression only ever merges sightings that land inside
-    // the (18-45 unit) cluster radius, so thirty-unit spacing is never
-    // compressed and nothing is ever evicted. Pinned here as what the sim does
-    // today, not as what it should do - #119 is about making the cap mean it.
+    // differently", but compression only ever merged sightings that landed
+    // inside the (18-45 unit) cluster radius, so thirty-unit spacing was never
+    // compressed and nothing was ever evicted: the better a pawn's memory, the
+    // less bounded it was (#119).
     const cartographer = train(lonePawn('atlas'), { cartography: 25 })
     assert.equal(cartographer.maxResourceMemory, 60)
     for (let i = 0; i < 61; i++) cartographer.rememberResource({ type: 'rock', x: 40 + i * 30, y: 300 })
-    assert.equal(cartographer.resourceMemory.length, 61, 'the better the memory, the less bounded it is (#119)')
+
+    assert.equal(cartographer.resourceMemory.length, 60, 'the cap is a cap at phase 3 too')
+    const merged = cartographer.resourceMemory.filter(m => (m.clusterCount ?? 1) > 1)
+    assert.equal(merged.length, 1, 'one pair became rock country')
+    assert.deepEqual([merged[0].x, merged[0].y], [55, 300], 'the patch sits between the two sightings')
+    assert.equal(merged[0].clusterCount, 2)
+    assert.equal(cartographer.resourceMemory.at(-1).x, 1840, 'the newest sighting is kept in full')
+})
+
+test('compression spends the oldest detail, never the sighting that paid for it', () => {
+    const atlas = train(lonePawn('una'), { cartography: 25 })
+    const cap = atlas.maxResourceMemory
+    for (let i = 0; i < cap; i++) atlas.rememberResource({ type: 'rock', x: 40 + i * 30, y: 600 })
+    assert.equal(atlas.resourceMemory.length, cap, 'exactly full, nothing merged yet')
+
+    atlas.rememberResource({ type: 'rock', x: 40 + cap * 30, y: 600 })
+    assert.equal(atlas.resourceMemory.length, cap)
+    assert.equal(atlas.resourceMemory.at(-1).x, 40 + cap * 30, 'the new place is in the list as seen')
+    assert.equal(atlas.resourceMemory[0].x, 55, 'the two oldest sightings are the ones that gave up their coordinates')
+    assert.ok(!atlas.resourceMemory.some(m => m.x === 40), 'detail, not coverage, is what the cap costs')
+})
+
+test('a pawn with nothing to merge forgets instead of growing', () => {
+    const atlas = train(lonePawn('zed'), { cartography: 25 })
+    const cap = atlas.maxResourceMemory
+    // Sixty different materials sixty units apart: no two entries share a type,
+    // so compression has no pair to work with and the fallback must bite.
+    for (let i = 0; i < cap; i++) atlas.rememberResource({ type: `ore_${i}`, x: 40 + i * 60, y: 900 })
+    assert.equal(atlas.resourceMemory.length, cap)
+    assert.equal(atlas.compressResourceMemory(), false, 'there is no same-type pair here')
+
+    atlas.rememberResource({ type: 'quartz', x: 40 + cap * 60, y: 900 })
+    assert.equal(atlas.resourceMemory.length, cap, 'the cap held without a merge')
+    assert.ok(atlas.resourceMemory.some(m => m.type === 'quartz'), 'and the new material is what it kept')
+})
+
+test('a compressed patch carries both sightings: counts, tags and provenance', () => {
+    const atlas = train(lonePawn('jo'), { cartography: 25 })
+    atlas.resourceMemory.push(
+        {
+            type: 'fiber', tags: ['plant'], x: 100, y: 100, lastSeen: 5, amount: 3,
+            id: 'near', successCount: 2, failCount: 0, confidence: 0.9, clusterCount: 4, memoryPhase: 3
+        },
+        {
+            type: 'fiber', tags: ['wet'], x: 700, y: 100, lastSeen: 9, amount: 7,
+            id: 'far', successCount: 1, failCount: 1, confidence: 0.6, clusterCount: 1, memoryPhase: 3
+        }
+    )
+
+    assert.equal(atlas.compressResourceMemory(), true)
+    assert.equal(atlas.resourceMemory.length, 1)
+    const patch = atlas.resourceMemory[0]
+    // Weighted by how many sightings each entry stands for: 4 near, 1 far.
+    assert.equal(patch.x, 220, 'the patch leans toward the better-worked end')
+    assert.equal(patch.y, 100)
+    assert.equal(patch.clusterCount, 5)
+    assert.equal(patch.successCount, 3, 'the work both places saw is not lost')
+    assert.equal(patch.failCount, 1)
+    assert.equal(patch.amount, 7)
+    assert.equal(patch.lastSeen, 9, 'a memory is as fresh as its newest sighting')
+    assert.deepEqual(patch.tags.sort(), ['plant', 'wet'])
+    assert.equal(patch.id, 'near', 'the confident entry keeps its identity')
+    assert.ok(patch.confidence > 0.9, 'knowing a thing is in two places raises it a little')
+    assert.ok(patch.confidence <= 1, 'and never above one')
+
+    assert.equal(atlas.compressResourceMemory(), false, 'one entry cannot merge with itself')
 })
 
 test('clustering is earned, and its radius is a skill reading, not a constant', () => {

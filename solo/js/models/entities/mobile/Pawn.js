@@ -2216,23 +2216,20 @@ class Pawn extends MobileEntity {
             this.useSkill('memoryClustering', 0.02)
         }
         
-        // Add new memory
+        // Add new memory. The cap is a promise at every phase (#119): a pawn that
+        // cannot group what it has seen pays for room with forgetting, and a pawn
+        // that can pays for it with compression - trading the exact coordinate of
+        // two rocks for the knowledge that the country in between has rocks.
         if (this.resourceMemory.length >= this.maxResourceMemory) {
-            // Phase 1-2: Remove based on confidence or age
-            // Phase 3+: Cluster compression will handle this differently
-            if (this.memoryPhase <= 2) {
-                // Remove least confident or oldest
-                this.resourceMemory.sort((a, b) => {
-                    const confA = a.confidence ?? 0.5
-                    const confB = b.confidence ?? 0.5
-                    const ageA = tick - a.lastSeen
-                    const ageB = tick - b.lastSeen
-                    // Prioritize removing low confidence and old memories
-                    return (confA - ageA * 0.001) - (confB - ageB * 0.001)
-                })
-                const removed = this.resourceMemory.shift()
-                if (!removed) return // Safety check: ensure we removed something
+            if (!canCluster) {
+                this.forgetWeakestResource(tick)
+            } else if (!this.compressResourceMemory()) {
+                // Every entry is its own kind of thing, so there is nothing to
+                // merge. Forget rather than grow: an unbounded list is walked by
+                // recall, route planning, sharing and the UI panels.
+                this.forgetWeakestResource(tick)
             }
+            if (this.resourceMemory.length >= this.maxResourceMemory) return
         }
         
         // Calculate initial confidence based on observation
@@ -2261,6 +2258,93 @@ class Pawn extends MobileEntity {
             // Occasional logging (5% chance)
             console.log(`${this.name} remembered ${resourceType} at (${Math.round(entity.x)}, ${Math.round(entity.y)}). Total memory: ${this.resourceMemory.length}, Phase: ${memPhase}`)
         }
+    }
+
+    /**
+     * Throw away the memory this pawn is least sorry to lose: low confidence
+     * first, and within equal confidence the stalest sighting, because a place
+     * nothing has confirmed for a long time is the one worth another look.
+     * @param {number} tick - current world tick
+     * @returns {Object|null} the memory dropped, if any
+     */
+    forgetWeakestResource(tick = this.world?.clock?.currentTick ?? 0) {
+        if (this.resourceMemory.length === 0) return null
+        this.resourceMemory.sort((a, b) => {
+            const confA = a.confidence ?? 0.5
+            const confB = b.confidence ?? 0.5
+            const ageA = tick - a.lastSeen
+            const ageB = tick - b.lastSeen
+            // Prioritize removing low confidence and old memories
+            return (confA - ageA * 0.001) - (confB - ageB * 0.001)
+        })
+        return this.resourceMemory.shift() ?? null
+    }
+
+    /**
+     * #119: the compression the phase 3+ comment always promised.
+     *
+     * Merging only ever ran when a *new* sighting landed inside the cluster
+     * radius, so two rocks sixty units apart stayed two memories forever and the
+     * cap simply stopped applying - the better a pawn's memory, the less bounded
+     * it was. This looks at what is already held instead: the nearest pair of
+     * same-type entries becomes one entry at their weighted centre, in the same
+     * shape a clustered sighting arrives in.
+     *
+     * There is deliberately no distance limit on the pair. At the cap a skilled
+     * pawn is choosing between the exact coordinate of one rock and the fact
+     * that there are rocks out that way; a novice throws the memory away
+     * instead, which is the other half of the same trade.
+     *
+     * It pays no practice. The sighting that triggered it already did; merging
+     * two things already known is not a new act (#108).
+     *
+     * @returns {boolean} false when no two entries share a type and can be merged
+     */
+    compressResourceMemory() {
+        const mem = this.resourceMemory
+        if (mem.length < 2) return false
+
+        // Nearest same-type pair. Grouped first so a memory of nine kinds costs
+        // nine small scans rather than one large one; it only runs at the cap.
+        const byType = new Map()
+        for (let i = 0; i < mem.length; i++) {
+            if (!byType.has(mem[i].type)) byType.set(mem[i].type, [])
+            byType.get(mem[i].type).push(i)
+        }
+
+        let best = null
+        for (const indexes of byType.values()) {
+            for (let a = 0; a < indexes.length; a++) {
+                for (let b = a + 1; b < indexes.length; b++) {
+                    const i = indexes[a], j = indexes[b]
+                    const d = Math.hypot(mem[i].x - mem[j].x, mem[i].y - mem[j].y)
+                    if (!best || d < best.d) best = { i, j, d }
+                }
+            }
+        }
+        if (!best) return false
+
+        const x = mem[best.i], y = mem[best.j]
+        const cx = Math.max(1, x.clusterCount ?? 1)
+        const cy = Math.max(1, y.clusterCount ?? 1)
+        const total = cx + cy
+        // The better-attended sighting keeps its identity - its id, provenance
+        // and phase are the ones the rest of the sim will go back to look at.
+        const keep = (x.confidence ?? 0.5) >= (y.confidence ?? 0.5) ? x : y
+        const other = keep === x ? y : x
+
+        keep.x = (x.x * cx + y.x * cy) / total
+        keep.y = (x.y * cx + y.y * cy) / total
+        keep.clusterCount = total
+        keep.lastSeen = Math.max(x.lastSeen ?? 0, y.lastSeen ?? 0)
+        keep.amount = Math.max(x.amount ?? 1, y.amount ?? 1)
+        keep.confidence = Math.min(1, Math.max(x.confidence ?? 0.5, y.confidence ?? 0.5) + 0.02)
+        keep.successCount = (x.successCount ?? 0) + (y.successCount ?? 0)
+        keep.failCount = (x.failCount ?? 0) + (y.failCount ?? 0)
+        keep.tags = [...new Set([...(x.tags ?? []), ...(y.tags ?? [])])]
+
+        mem.splice(mem.indexOf(other), 1)
+        return true
     }
 
     updateResourceMemoryConfidence(resource, success) {
