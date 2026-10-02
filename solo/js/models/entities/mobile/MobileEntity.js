@@ -143,6 +143,12 @@ class MobileEntity extends Entity {
 
                 // Move by at most (speed * factor) units toward target
                 const moveDistance = Math.min(distance, this.speed * terrain.factor * ease)
+
+                // #104: the body pays for the stride it just took, one unit per
+                // stride at this entity's own pace. Mud and scree are charged
+                // for by taking more strides over the same ground, and a road
+                // for by taking fewer, which is #98's relief turned round.
+                this.needs?.noteStrideEffort?.(moveDistance / (this.speed * terrain.factor * ease))
                 
                 // Avoid division by zero
                 if (distance > 0) {

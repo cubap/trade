@@ -2423,9 +2423,15 @@ class Pawn extends MobileEntity {
                 const observedSignalB = ((b.observedSuccessCount ?? 0) * 7) - ((b.observedFailCount ?? 0) * 4)
                 const routeSkill = this.getSkill('routePlanning')
                 const clusterWeight = routeSkill >= 5 ? 6 : 0
-                
+                // #104: distance is the only term here that is *walked*, so it
+                // is the term tiredness makes dearer. A winded pawn will take
+                // the near, shabby patch over the well-remembered one on the
+                // far side of the map; a fresh one sorts exactly as before
+                // because the weight is 1.
+                const fatigue = this.needs?.distanceWeight?.() ?? 1
+
                 // Weight: confidence most important, then distance, then age
-                return (distA + ageA * 0.1 - confA * 100 - clusterA * clusterWeight - observedSignalA) - (distB + ageB * 0.1 - confB * 100 - clusterB * clusterWeight - observedSignalB)
+                return (distA * fatigue + ageA * 0.1 - confA * 100 - clusterA * clusterWeight - observedSignalA) - (distB * fatigue + ageB * 0.1 - confB * 100 - clusterB * clusterWeight - observedSignalB)
             })
     }
 
