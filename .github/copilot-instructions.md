@@ -78,7 +78,10 @@ Standalone single-player game with autonomous agents:
 - `test_goals.js` - Testing utilities for goal system
 - `/js/models/` - Game entity models and systems
   - `Entity.js` - Base entity class for solo game
-  - `EntityTypes.js` - Entity type definitions
+  - `/entities/` - The live entity hierarchy, exported by `entities/index.js`,
+    `entities/mobile/index.js`, `entities/immobile/index.js` and
+    `entities/resources/index.js`. There is no central type table: a type is its
+    class plus its `subtype` string and `tags`, and readers match on those.
   - `/entities/mobile/` - Mobile entities (Pawns, Animals)
     - `Pawn.js` - Main autonomous agent with inventory, stats, and memory
     - `PawnGoals.js` - Goal planning and execution system
@@ -240,8 +243,12 @@ npm test
 1. Create class in `/solo/js/models/entities/resources/`
 2. Extend `Resource` base class
 3. Export from `/solo/js/models/entities/resources/index.js`
-4. Add to entity type definitions in `EntityTypes.js`
-5. Spawn resources in game initialization
+4. Set `this.subtype` and `this.tags` in the constructor - that pair is the
+   registration. `PawnGoals` matches on it when it looks for something to gather,
+   and `EntityPose.js` / `ThreeRenderer.js` when they pick a model. There is no
+   type table to add it to; `EntityTypes.js` was a dead lookalike of the real
+   hierarchy and was deleted, so do not recreate it.
+5. Spawn instances in game initialisation (`solo/js/app.js`) or world generation
 
 ### Adding a New Goal Type
 1. Define goal structure in `PawnGoals.js`
