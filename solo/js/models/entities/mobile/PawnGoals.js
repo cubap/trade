@@ -2089,9 +2089,24 @@ class PawnGoals {
                 // Switch to barter goal
                 goal.type = 'barter'
             } else {
-                // No partner nearby, wander to find one
-                this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
-                this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
+                // Nobody within earshot. A coin flip is a poor way to spend the
+                // afternoon, so when the price table and the road table together
+                // say our goods would fetch more somewhere a road reaches, and
+                // memory holds where that place is, walk towards it instead
+                // (#114). Actually setting out along a long road is #99's job.
+                const sought = PawnMercantile.bestMarketToSell(this.pawn)
+                const place = sought
+                    ? this.pawn.memoryMap?.find(entry => entry.name === sought.market)
+                    : null
+
+                if (place) {
+                    this.pawn.nextTargetX = place.x
+                    this.pawn.nextTargetY = place.y
+                } else {
+                    // No partner, no price worth chasing: wander to find one.
+                    this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
+                    this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
+                }
             }
         }
 

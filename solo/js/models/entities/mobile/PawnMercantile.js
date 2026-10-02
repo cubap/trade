@@ -6,8 +6,26 @@
  * for price tracking and PawnInventory for item management.
  */
 
-import { recordTrade } from '../../../core/PriceRegistry.js'
+import { recordTrade, getPrice, getKnownPrices, isPriceStale, detectArbitrage } from '../../../core/PriceRegistry.js'
+import { findBestRoute } from '../../../core/TradeRoutes.js'
 import { countItem as countHeld, getItemTypes } from './PawnInventory.js'
+
+/**
+ * How much dearer a good must be elsewhere before a merchant bothers (#114).
+ *
+ * A 20% spread is worth asking about; one the size of a rounding error is not
+ * worth crossing the map for, and without a floor the first non-identical pair
+ * of prices would send every trader to the same field.
+ */
+export const PRICE_TRADE_MARGIN = 1.2
+
+/**
+ * A quote older than this is a memory of a price, not a price (#114).
+ *
+ * Matches PriceRegistry's own staleness default; the merchant passes it
+ * explicitly so the two do not drift apart silently.
+ */
+export const PRICE_STALE_AFTER = 500
 
 /**
  * How close two pawns must be for a trade to change hands.
@@ -313,24 +331,207 @@ export function recordTradeObservation(pawn, offer, registry, location = null) {
 }
 
 /**
+ * What our goods fetch where a partner lives, relative to here (#114).
+ *
+ * The registry has held recorded prices since #110 and nothing read them when
+ * choosing a trading partner: two pawns both holding something we want were
+ * worth the same however differently their markets paid. This is the number
+ * that distinguishes them - the best surplus good by sell-high ratio between
+ * the two homes - or null when the table has nothing live to say, which is the
+ * common case early in a run and in every test without a registry.
+ *
+ * @param {Pawn} pawn - The prospective seller
+ * @param {Pawn} partner - The pawn standing nearby
+ * @param {string[]} [itemTypes] - Surplus types to consider (default: ours)
+ * @returns {{type: string, gain: number, from: number, to: number, market: string}|null}
+ */
+export function priceAdvantage(pawn, partner, itemTypes = null) {
+    const registry = pawn?.world?.priceRegistry
+    if (!registry?.prices) return null
+
+    const here = pawn.getHomeLandmark?.()?.name ?? null
+    const there = partner?.getHomeLandmark?.()?.name ?? null
+    if (!here || !there || here === there) return null
+
+    const tick = pawn.world?.tick ?? pawn.world?.clock?.currentTick ?? 0
+    const types = itemTypes ?? getSurplusItems(pawn).map(s => s.type)
+    let best = null
+
+    for (const type of types) {
+        // isPriceStale() is true for missing data as well as dead data, so these
+        // two guards are also the "we have never traded this here/there" check.
+        if (isPriceStale(registry, type, here, tick, PRICE_STALE_AFTER)) continue
+        if (isPriceStale(registry, type, there, tick, PRICE_STALE_AFTER)) continue
+
+        const from = getPrice(registry, type, here)
+        const to = getPrice(registry, type, there)
+        if (!from || !to) continue
+
+        const gain = to / from
+        if (!best || gain > best.gain) best = { type, gain, from, to, market: there }
+    }
+
+    return best
+}
+
+/**
+ * Is any of our surplus worth more at some other market than at ours? (#114)
+ *
+ * detectArbitrage() had no caller: it could name the dear market for an item
+ * and nobody asked. Here it answers the question shouldSeekTrade() never got
+ * round to - not "am I hungry" but "is there money in going out".
+ *
+ * @param {Pawn} pawn
+ * @param {Array<{type: string}>} [surplus] - Pre-computed surplus list
+ * @returns {Object|null} The arbitrage opportunity, or null
+ */
+export function profitableMarket(pawn, surplus = null) {
+    const registry = pawn?.world?.priceRegistry
+    if (!registry?.prices) return null
+
+    const here = pawn.getHomeLandmark?.()?.name ?? null
+    const tick = pawn.world?.tick ?? pawn.world?.clock?.currentTick ?? 0
+
+    for (const holding of (surplus ?? getSurplusItems(pawn))) {
+        const opp = detectArbitrage(registry, holding.type, PRICE_TRADE_MARGIN)
+        if (!opp) continue
+        // Standing in the dear market is not a reason to travel; the profit is
+        // already ours to realise with whoever is nearby.
+        if (here && opp.sellAt === here) continue
+        if (isPriceStale(registry, holding.type, opp.sellAt, tick, PRICE_STALE_AFTER)) continue
+        if (isPriceStale(registry, holding.type, opp.buyAt, tick, PRICE_STALE_AFTER)) continue
+        return opp
+    }
+
+    return null
+}
+
+/**
+ * Where our surplus would sell dearest, among markets a road actually reaches.
+ *
+ * #95/#105 record the roads a pawn walks and #110 books the prices trades pay;
+ * findBestRoute() joins them and had no caller. This is that caller, and it is
+ * deliberately a *market* rather than a journey - walking there is #99.
+ *
+ * @param {Pawn} pawn
+ * @param {string[]} [itemTypes] - Surplus types to consider (default: ours)
+ * @returns {{type: string, market: string, gain: number, route: Object}|null}
+ */
+export function bestMarketToSell(pawn, itemTypes = null) {
+    const registry = pawn?.world?.priceRegistry
+    const routes = pawn?.world?.tradeRoutes
+    if (!registry?.prices || !routes?.list?.length) return null
+
+    const here = pawn.getHomeLandmark?.()?.name ?? null
+    const tick = pawn.world?.tick ?? pawn.world?.clock?.currentTick ?? 0
+    const types = itemTypes ?? getSurplusItems(pawn).map(s => s.type)
+    let best = null
+
+    for (const type of types) {
+        const route = findBestRoute(routes, registry, type)
+        if (!route) continue
+        // A road we have never set foot on is not ours to walk.
+        if (here && route.from !== here && route.to !== here) continue
+
+        // findBestRoute() ranks the road in the direction it was written; the
+        // dear end is whichever side the table actually pays more on.
+        const from = getPrice(registry, type, route.from)
+        const to = getPrice(registry, type, route.to)
+        const market = to >= from ? route.to : route.from
+        const gain = to >= from ? to / from : from / to
+        if (here && market === here) continue
+        if (isPriceStale(registry, type, market, tick, PRICE_STALE_AFTER)) continue
+        if (gain <= PRICE_TRADE_MARGIN) continue
+
+        if (!best || gain > best.gain) best = { type, market, gain, route }
+    }
+
+    return best
+}
+
+/**
+ * How urgent a need has to be before a merchant will leave home to sell
+ * something they do not strictly need to sell (#114).
+ *
+ * Needs in this codebase are 0-100 *urgency* values that grow (PawnNeeds), so
+ * unlike the rest of this file's old predicates the reading is "above", not
+ * "below". At anxiety a trader goes out to top up; past critical they are in
+ * trouble rather than in trade, and the goal has nothing to offer them.
+ *
+ * The rule this replaces asked for `pawn.needs.food.value < 20`, a field that
+ * has never existed - needs are not on the pawn that way. The comparison was
+ * therefore always false and the "unmet needs" clause was decoration.
+ */
+export const TRADE_ANXIETY = 60
+export const TRADE_CRITICAL = 85
+
+/** The pawn's worst pressing need, or 0 for a thing without needs. */
+function needUrgency(pawn) {
+    const needs = pawn?.needs?.needs
+    if (!needs) return 0
+    return Math.max(needs.hunger ?? 0, needs.thirst ?? 0, needs.energy ?? 0)
+}
+
+/**
+ * Has this good been priced anywhere at all?
+ *
+ * An empty table is not "nothing worth selling" - it is a world too young to
+ * have traded, in which there is no number to consult yet. Merchants trade on
+ * instinct there, because the trades are what fill the table (#110).
+ *
+ * @param {Pawn} pawn
+ * @param {Array<{type: string}>} surplus
+ * @returns {boolean}
+ */
+function pricesKnownFor(pawn, surplus) {
+    const registry = pawn?.world?.priceRegistry
+    if (!registry?.prices) return false
+
+    return surplus.some(holding => Object.keys(getKnownPrices(registry, holding.type)).length > 0)
+}
+
+/**
+ * Why this pawn wants to go trading, in one place (#114).
+ *
+ * shouldSeekTrade() asked about surplus, skill levels and needs and never about
+ * what anything was worth, so a full pack of cheap goods sent a well-fed pawn
+ * out to barter exactly as eagerly as a scarce one. The reasons are now need,
+ * profit, or instinct - instinct only while the market table is still blank.
+ *
+ * @param {Pawn} pawn
+ * @returns {{seek: boolean, reason: ('need'|'profit'|'instinct')|null, opportunity?: Object}}
+ */
+export function tradeMotivation(pawn) {
+    const surplus = getSurplusItems(pawn)
+    if (surplus.length === 0) return { seek: false, reason: null }
+
+    const cooperation = pawn.getSkill('cooperation')
+    const bartering = pawn.getSkill('bartering')
+    if (cooperation < 3 && bartering < 1) return { seek: false, reason: null }
+
+    const pressed = needUrgency(pawn)
+    if (pressed >= TRADE_CRITICAL) return { seek: false, reason: null }
+
+    if (pressed >= TRADE_ANXIETY) return { seek: true, reason: 'need' }
+
+    // A table with nothing in it is not evidence that trade is pointless, it is
+    // evidence that nobody has traded yet. Somebody has to bootstrap the prices.
+    if (!pricesKnownFor(pawn, surplus)) return { seek: true, reason: 'instinct' }
+
+    const opportunity = profitableMarket(pawn, surplus)
+    if (opportunity) return { seek: true, reason: 'profit', opportunity }
+
+    return { seek: false, reason: null }
+}
+
+/**
  * Check if a pawn should seek trade opportunities.
  * 
  * @param {Pawn} pawn - The pawn to evaluate
  * @returns {boolean} True if pawn should seek trade
  */
 export function shouldSeekTrade(pawn) {
-    const surplus = getSurplusItems(pawn)
-    const cooperation = pawn.getSkill('cooperation')
-    const bartering = pawn.getSkill('bartering')
-
-    // Need surplus and social capability
-    if (surplus.length === 0) return false
-    if (cooperation < 3 && bartering < 1) return false
-
-    // Don't trade if basic needs are unmet
-    if (pawn.needs.food.value < 20 || pawn.needs.water.value < 20) return false
-
-    return true
+    return tradeMotivation(pawn).seek
 }
 
 /**
@@ -345,17 +546,33 @@ export function findTradePartner(pawn, range = 50) {
     if (surplus.length === 0) return null
 
     const nearby = pawn.getNearbyEntities(range).filter(e => e.subtype === 'pawn')
-    const ourSurplus = new Set(surplus.map(s => s.type))
+    const surplusTypes = surplus.map(s => s.type)
+    const ourSurplus = new Set(surplusTypes)
+
+    let first = null
+    let preferred = null
+    let bestGain = PRICE_TRADE_MARGIN
 
     for (const partner of nearby) {
         // A useful partner holds something we are not already drowning in.
         // This used to call partner.countItem(), which is not a method on Pawn
         // (counting lives here and in PawnInventory), so every barter goal threw
         // the moment a surplus pawn met another pawn (#107).
-        if (getItemTypes(partner).some(type => !ourSurplus.has(type))) {
-            return partner
+        if (!getItemTypes(partner).some(type => !ourSurplus.has(type))) continue
+
+        if (!first) first = partner
+
+        // #114: whoever we already know is worth trading with may not be the
+        // best trade. Where the recorded prices say our goods fetch more, and
+        // the pair is recent enough to still be a price, prefer that partner.
+        // With no registry, or nothing live in it, every candidate scores the
+        // same and the first one found still wins - proximity as before.
+        const signal = priceAdvantage(pawn, partner, surplusTypes)
+        if (signal && signal.gain > bestGain) {
+            preferred = partner
+            bestGain = signal.gain
         }
     }
 
-    return null
+    return preferred ?? first
 }

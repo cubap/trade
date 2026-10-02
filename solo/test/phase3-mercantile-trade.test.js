@@ -144,8 +144,15 @@ describe('Phase 3: Mercantile/Trade Module Structure', () => {
 
     it('PawnMercantile.js imports PriceRegistry', () => {
         const content = fs.readFileSync(PawnMercantilePath, 'utf-8')
+        // #114 widened this import from one function to five, so the guard
+        // checks the dependency instead of the exact brace list. Pinning the
+        // list meant that making the registry actually read - the thing this
+        // phase was for - failed the test that described it.
+        const importsRegistry = content.includes("from '../../../core/PriceRegistry.js'")
+        const importsRecordTrade = /import\s*\{[^}]*\brecordTrade\b/.test(content)
+
         assert.ok(
-            content.includes("import { recordTrade } from '../../../core/PriceRegistry.js'"),
+            importsRegistry && importsRecordTrade,
             'PawnMercantile.js does not import PriceRegistry'
         )
     })
