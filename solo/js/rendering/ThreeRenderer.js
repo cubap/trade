@@ -5,8 +5,27 @@ import createModelLoaders from './ModelLoader.js'
 import createMaterialFactory from './MaterialFactory.js'
 import createModelBuilders from './ModelBuilders.js'
 import createCameraController from './CameraController3D.js'
+import { createIntroCinematic } from './IntroCinematic.js'
 import createEntityPose from './EntityPose.js'
 import createTerrainGenerator from '../core/TerrainGenerator.js'
+import { sightSummary, ringPoints } from '../core/SightRange.js'
+import { trailFieldFor } from '../core/TrailField.js'
+import { trailPaintFor, paintSignature, writeTrailQuads, TRAIL_PAINT_MAX_CELLS } from '../core/TrailPaint.js'
+
+/** Vertices in the perception-mode horizon ring. */
+const SIGHT_RING_SEGMENTS = 64
+
+/**
+ * Ground radius (#93) the trail overlay is built for. The overlay is one small
+ * mesh around wherever the camera is looking, so the radius is a fixed budget
+ * rather than the whole visible terrain: 320 units covers a third-person view
+ * at the default cameraDistance (220) and keeps the paint feed well under the
+ * per-update cap TrailPaint.js enforces.
+ */
+const TRAIL_PAINT_RADIUS_3D = 320
+
+/** Lift above the sampled ground, enough to avoid z-fighting with the terrain. */
+const TRAIL_PAINT_LIFT = 0.25
 
 class ThreeRenderer {
     constructor(world, canvasId) {
@@ -60,6 +79,14 @@ class ThreeRenderer {
         this.zoomLevel = 1
         this.minZoom = 0.1
         this.maxZoom = 5
+        // Worn ground (#93). The terrain mesh shares one vertex grid across the
+        // whole world, which is far coarser than an 8-unit trail cell, so the
+        // paint feed becomes its own terrain-hugging overlay mesh.
+        this.trailsVisible = true
+        this.trailDebug = false
+        this._trailSignature = ''
+        this._trailPaint = null
+        this._trailGeometryDirty = false
         this.cameraDistance = 220
         this.firstPersonHeight = 1.5
         this.turnResponse = 0.22
@@ -191,6 +218,7 @@ class ThreeRenderer {
         Object.assign(this, createMaterialFactory(this))
         Object.assign(this, createModelBuilders(this))
         Object.assign(this, createCameraController(this))
+        Object.assign(this, createIntroCinematic())
         Object.assign(this, createEntityPose(this))
 
         // Head mesh (first-person) — needs _centerModelToOrigin from ModelBuilders
@@ -398,6 +426,168 @@ class ThreeRenderer {
         this._routeTraceProvider = provider
     }
 
+    /**
+     * Ground-hugging horizon for the followed pawn, shown while perception mode
+     * is on. Built from SightRange.ringPoints so the 2D and 3D views agree, and
+     * re-fitted to the terrain each frame because the radius is the range the
+     * pawn's last pass actually used, not a constant (#90).
+     */
+    _ensureSightRing() {
+        if (this._sightRing) return this._sightRing
+        const points = ringPoints(0, 0, 1, SIGHT_RING_SEGMENTS)
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(points.length * 3), 3))
+        const material = new THREE.LineBasicMaterial({
+            color: 0x93c5fd,
+            transparent: true,
+            opacity: 0.55,
+            depthWrite: false
+        })
+        this._sightRing = new THREE.Line(geometry, material)
+        this._sightRing.frustumCulled = false
+        this._sightRing.visible = false
+        this.scene.add(this._sightRing)
+        return this._sightRing
+    }
+
+    _updateSightRing() {
+        const pawn = this.followedEntity
+        const active = this.perceptionMode && pawn
+            && Number.isFinite(pawn.x) && Number.isFinite(pawn.y)
+        if (!active) {
+            if (this._sightRing) this._sightRing.visible = false
+            return
+        }
+
+        const summary = sightSummary(pawn, { tick: this.world?.clock?.currentTick ?? 0 })
+        const points = ringPoints(pawn.x, pawn.y, summary.range, SIGHT_RING_SEGMENTS)
+        const ring = this._ensureSightRing()
+        const attribute = ring.geometry.getAttribute('position')
+        if (attribute.count !== points.length) return
+
+        const elev = this.world?.chunkManager?.getElevationAt
+        for (let i = 0; i < points.length; i++) {
+            const point = points[i]
+            // Lifted clear of the terrain so the line does not z-fight with it.
+            const ground = elev ? this.world.chunkManager.getElevationAt(point.x, point.y) : 0
+            attribute.setXYZ(i, point.x, (Number.isFinite(ground) ? ground : 0) + 0.8, point.y)
+        }
+        attribute.needsUpdate = true
+        ring.material.color.set(summary.dimmed ? 0xf87171 : 0x93c5fd)
+        ring.visible = true
+    }
+
+    /**
+     * Overlay carrying the worn cells (#93): one quad per painted cell, with a
+     * per-vertex colour whose alpha is the cell's wear. Allocated once at the
+     * cap so a refresh only rewrites attributes, never rebuilds the geometry.
+     */
+    _ensureTrailMesh() {
+        if (this._trailMesh) return this._trailMesh
+
+        const cells = TRAIL_PAINT_MAX_CELLS
+        const geometry = new THREE.BufferGeometry()
+        geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(cells * 4 * 3), 3))
+        geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(cells * 4 * 4), 4))
+
+        const indices = new Uint32Array(cells * 6)
+        for (let i = 0; i < cells; i++) {
+            const v = i * 4
+            const k = i * 6
+            indices[k] = v
+            indices[k + 1] = v + 1
+            indices[k + 2] = v + 2
+            indices[k + 3] = v
+            indices[k + 4] = v + 2
+            indices[k + 5] = v + 3
+        }
+        geometry.setIndex(new THREE.BufferAttribute(indices, 1))
+        geometry.setDrawRange(0, 0)
+
+        const material = new THREE.MeshBasicMaterial({
+            vertexColors: true,
+            transparent: true,
+            depthWrite: false,
+            side: THREE.DoubleSide
+        })
+        this._trailMesh = new THREE.Mesh(geometry, material)
+        // The quads span a fixed radius around the camera, so bounds are not
+        // worth recomputing every refresh.
+        this._trailMesh.frustumCulled = false
+        this._trailMesh.renderOrder = -1
+        this._trailMesh.visible = false
+        this.scene.add(this._trailMesh)
+        return this._trailMesh
+    }
+
+    /** World-space ground rect the trail overlay is built for (#93). */
+    _trailRect() {
+        const r = TRAIL_PAINT_RADIUS_3D
+        return {
+            x0: this.viewX - r,
+            y0: this.viewY - r,
+            x1: this.viewX + r,
+            y1: this.viewY + r
+        }
+    }
+
+    /**
+     * Worn ground under the camera (#93). Rebuilt only when the wear or the
+     * view changed (paintSignature), which is a few times a second at most.
+     *
+     * Debug mode (`?trails=1`, set by app.js) tints cells by walker instead of
+     * dirt, which is what a tracking UI reads; the 2D renderer draws cell
+     * outlines for that case.
+     */
+    _updateTrailPaint() {
+        const mesh = this._ensureTrailMesh()
+        const field = this.trailsVisible === false ? null : trailFieldFor(this.world, { create: false })
+        const tick = this.world?.clock?.currentTick ?? 0
+        const debug = !!this.trailDebug
+
+        let cells = this._trailPaint?.cells
+        if (field) {
+            const rect = this._trailRect()
+            const signature = paintSignature({ field, rect, tick, debug })
+            if (signature !== this._trailSignature) {
+                this._trailSignature = signature
+                this._trailPaint = trailPaintFor({ field, rect, tick, debug })
+                cells = this._trailPaint.cells
+                this._trailGeometryDirty = true
+            }
+        } else {
+            this._trailSignature = ''
+            this._trailPaint = null
+            cells = undefined
+        }
+
+        if (!cells || cells.length === 0) {
+            mesh.visible = false
+            return
+        }
+        if (this._trailGeometryDirty) {
+            this._writeTrailQuads(mesh, cells)
+            this._trailGeometryDirty = false
+        }
+        mesh.visible = true
+    }
+
+    /**
+     * Copies the paint feed into the overlay's attributes. Heights come from the
+     * same sampler the click raycast uses, so the paint follows the surface the
+     * player is actually looking at; the quad maths itself lives in
+     * TrailPaint.writeTrailQuads so it can be tested without a GL context.
+     */
+    _writeTrailQuads(mesh, cells) {
+        const position = mesh.geometry.getAttribute('position')
+        const color = mesh.geometry.getAttribute('color')
+        const count = writeTrailQuads(cells, position, color, {
+            lift: TRAIL_PAINT_LIFT,
+            heightAt: (x, y) => (this._getGroundHeightAt ? this._getGroundHeightAt(x, y) : 0)
+        })
+        mesh.geometry.setDrawRange(0, count * 6)
+    }
+
     // --- Visual tuning ---
     getVisualTuning() {
         return { ...this._visualTuning }
@@ -581,6 +771,9 @@ class ThreeRenderer {
             if (visibleIds.has(id)) continue
             this._disposeMesh(id)
         }
+
+        this._updateSightRing()
+        this._updateTrailPaint()
 
         this.webglRenderer.render(this.scene, this._camera3d)
         this._renderAnimalLabels(entitiesToRender)

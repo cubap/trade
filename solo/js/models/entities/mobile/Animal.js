@@ -11,6 +11,13 @@ class Animal extends MobileEntity {
         this.species = 'generic'
         this.diet = 'omnivore'  // herbivore, carnivore, omnivore
         this.predator = false
+        // Pathways (#77): animals wear down the ground they cross, and the
+        // predaceous ones hunt by preferring corridors other animals have
+        // already made. Kind attribution is set once the subtype is known
+        // (SmallForager/SmallPredator override it).
+        this.trailKind = this.subtype
+        this.trailWeight = 0.7
+        this.trailAffinity = 0.4
         this.flockBehavior = false
         this.lifeStage = 'adult'  // baby, juvenile, adult, elder
         

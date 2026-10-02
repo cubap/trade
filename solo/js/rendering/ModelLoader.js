@@ -1,8 +1,10 @@
 import * as THREE from 'three'
-import { GLTFLoader } from '/node_modules/three/examples/jsm/loaders/GLTFLoader.js'
+import { OBJLoader } from '/vendor/three/examples/jsm/loaders/OBJLoader.js'
+import { FBXLoader } from '/vendor/three/examples/jsm/loaders/FBXLoader.js'
+import { GLTFLoader } from '/vendor/three/examples/jsm/loaders/GLTFLoader.js'
 
-// Low-poly placeholder pack authored at world scale (Y-up, origin at model base center)
-const PLACEHOLDER_DIR = '/solo/assets/models/placeholders'
+// Low-poly placeholder pack authored at world scale (Y-up, origin at model base center).
+// Paths are full literals so the site build's reference scan keeps the GLBs staged.
 
 /**
  * Model loaders — returns loader methods bound to the renderer instance.
@@ -48,7 +50,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadTreeModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/tree.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/tree.glb', (gltf) => {
                 renderer._modelVariants(gltf.scene)
                 renderer._treeModelRoot = gltf.scene
                 renderer._refreshTreeMeshes()
@@ -56,7 +58,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadRockModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/rock.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/rock.glb', (gltf) => {
                 renderer._rockModelRoot = gltf.scene
                 renderer._rockModelVariants = renderer._modelVariants(gltf.scene)
                 renderer._refreshRockMeshes()
@@ -64,7 +66,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadGrassModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/grass.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/grass.glb', (gltf) => {
                 renderer._modelVariants(gltf.scene)
                 renderer._grassModelRoot = gltf.scene
                 renderer._grassModelMeta = renderer._getNodeBoundsMeta(gltf.scene)
@@ -73,7 +75,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadPartsForSaleModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/bush.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/bush.glb', (gltf) => {
                 renderer._partsForSaleRoot = gltf.scene
                 renderer._bushModelRoot = gltf.scene
                 // Placeholder bushes are already separate top-level variants; no classification needed.
@@ -84,7 +86,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadAnimalModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/animals.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/animals.glb', (gltf) => {
                 renderer._animalModelRoot = gltf.scene
                 renderer._animalModelVariants = renderer._modelVariants(gltf.scene)
                 renderer._animalVariantMeta = renderer._animalModelVariants.map(node => renderer._getNodeBoundsMeta(node))
@@ -94,7 +96,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadStickModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/stick.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/stick.glb', (gltf) => {
                 renderer._stickModelRoot = gltf.scene
                 renderer._stickModelVariants = renderer._modelVariants(gltf.scene)
                 renderer._refreshStickMeshes()
@@ -102,7 +104,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadFiberPlantModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/fiber_plant.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/fiber_plant.glb', (gltf) => {
                 renderer._fiberModelRoot = gltf.scene
                 renderer._fiberModelVariants = renderer._modelVariants(gltf.scene)
                 renderer._refreshFiberMeshes()
@@ -110,7 +112,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadFoodModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/food.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/food.glb', (gltf) => {
                 renderer._foodModelRoot = gltf.scene
                 renderer._foodModelVariants = renderer._modelVariants(gltf.scene)
                 renderer._refreshFoodMeshes()
@@ -118,7 +120,7 @@ export default function createModelLoaders(renderer) {
         },
 
         _loadCoverModel() {
-            renderer._loadGLB(`${PLACEHOLDER_DIR}/cover.glb`, (gltf) => {
+            renderer._loadGLB('/solo/assets/models/placeholders/cover.glb', (gltf) => {
                 renderer._coverModelRoot = gltf.scene
                 renderer._coverModelVariants = renderer._modelVariants(gltf.scene)
                 renderer._refreshCoverMeshes()
