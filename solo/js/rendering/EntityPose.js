@@ -6,6 +6,14 @@ import { targetHeightFor } from './ModelScales.js'
  */
 export default function createEntityPose(renderer) {
     return {
+        /** Cover/shelter entities that use the cover GLB pack; flora and buildings match other profiles first. */
+        _isCoverEntity(entity) {
+            if (!entity) return false
+            if (entity.type === 'tree' || entity.type === 'bush' || entity.subtype === 'plant') return false
+            if (entity.subtype === 'cover') return true
+            return renderer._hasTag(entity, 'cover') && !renderer._hasTag(entity, 'structure')
+        },
+
         _getEntityRenderProfile(entity) {
             const unitA = renderer._hashUnit(entity?.id, 'a')
             const unitB = renderer._hashUnit(entity?.id, 'b')
@@ -32,6 +40,8 @@ export default function createEntityPose(renderer) {
                 return {
                     geometry: new THREE.BoxGeometry(length, thickness, thickness * 1.2),
                     materialColor: entity?.color || '#8b5a2b',
+                    useStickModel: !!renderer._stickModelRoot,
+                    modelScale: 0.9 + unitA * 0.4,
                     baseY: 0.06 + thickness * 0.5,
                     rotation: { x: (unitA - 0.5) * 0.16, y: unitB * Math.PI * 2, z: (unitB - 0.5) * 0.12 },
                     lerp: 0.26
@@ -63,6 +73,8 @@ export default function createEntityPose(renderer) {
                     materialColor: entity?.color || '#9acd32',
                     shaderType: 'foliage',
                     swayStrength: 0.4 + unitA * 0.22,
+                    useFiberModel: !!renderer._fiberModelRoot,
+                    modelScale: 0.8 + unitA * 0.5,
                     baseY: height * 0.5,
                     rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                     lerp: 0.26
@@ -90,6 +102,8 @@ export default function createEntityPose(renderer) {
                 return {
                     geometry: new THREE.OctahedronGeometry(radius, 0),
                     materialColor: entity?.color || '#7cfc00',
+                    useFoodModel: !!renderer._foodModelRoot,
+                    modelScale: 1.0 + unitA * 0.5,
                     baseY: radius,
                     rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
                     lerp: 0.22
@@ -134,7 +148,7 @@ export default function createEntityPose(renderer) {
                     baseY: radius * 0.88,
                     bushHeight: height,
                     bushRadius: radius,
-                    useBushVariantModel: false,
+                    useBushVariantModel: !!renderer._partsForSaleBushVariants.length,
                     useBushModel: !!renderer._bushModelRoot,
                     useBushLeafTexture: !!renderer._bushLeafTexture,
                     targetHeight: height,
@@ -175,6 +189,19 @@ export default function createEntityPose(renderer) {
                 }
             }
 
+            // Cover/shelter: check after structures so buildings keep their own look
+            if (renderer._isCoverEntity(entity)) {
+                return {
+                    geometry: new THREE.BoxGeometry(5, 5, 5),
+                    materialColor: entity?.color || '#5a7247',
+                    useCoverModel: !!renderer._coverModelRoot,
+                    modelScale: 1.2 + unitA * 0.6,
+                    baseY: 2.5,
+                    rotation: { x: 0, y: unitB * Math.PI * 2, z: 0 },
+                    lerp: 0.24
+                }
+            }
+
             return {
                 geometry: new THREE.BoxGeometry(5, 5, 5),
                 materialColor: entity?.color || '#888888',
@@ -205,6 +232,22 @@ export default function createEntityPose(renderer) {
                 const model = renderer._buildRockModelInstance(entity, profile)
                 renderer.scene.add(model)
                 return model
+            }
+            if (profile.useStickModel && renderer._stickModelRoot) {
+                const model = renderer._buildStickModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
+            }
+            if (profile.useFiberModel && renderer._fiberModelRoot) {
+                const model = renderer._buildFiberPlantModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
+            }
+            if (profile.useFoodModel && renderer._foodModelRoot) {
+                const model = renderer._buildFoodModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
+            }
+            if (profile.useCoverModel && renderer._coverModelRoot) {
+                const model = renderer._buildCoverModelInstance(entity, profile)
+                if (model) { renderer.scene.add(model); return model }
             }
             if (profile.useBushVariantModel && renderer._partsForSaleBushVariants.length) {
                 const model = renderer._buildBushVariantModelInstance(entity, profile)
@@ -275,7 +318,8 @@ export default function createEntityPose(renderer) {
                 ? Math.max(renderer._getGroundHeightAt(x, y), renderer._waterSurfaceHeight())
                 : renderer._getGroundHeightAt(x, y)
             const baseHeight = terrainHeight + groundedOffset + modelGroundBias + followLift
-            renderer._tmpTargetPosition.set(x, baseHeight, y)
+            const poseOffset = mesh.userData.poseOffset
+            renderer._tmpTargetPosition.set(x + (poseOffset?.x ?? 0), baseHeight, y + (poseOffset?.z ?? 0))
 
             if (!mesh.userData.motionInitialized) {
                 mesh.position.copy(renderer._tmpTargetPosition)
@@ -287,7 +331,8 @@ export default function createEntityPose(renderer) {
 
             if (entity.subtype === 'animal') {
                 const angle = Math.atan2(entity.y - prevY, entity.x - prevX)
-                const targetYaw = -angle + Math.PI / 2
+                // Placeholder animal GLBs face +X, so yaw is the raw heading (a +Z-facing model would need +PI/2)
+                const targetYaw = -angle
                 mesh.rotation.y = renderer._easeAngle(mesh.rotation.y, targetYaw, mesh.userData, 'turnVelocity')
             }
 
@@ -316,6 +361,9 @@ export default function createEntityPose(renderer) {
                         }
                     )
                 }
+
+                // Head turns toward attention independently of the body — visible from behind
+                renderer._updatePawnHeadLook(entity, mesh)
             }
 
             const isHighlighted = entity === renderer.highlightedEntity && Date.now() < renderer.highlightEndTime
@@ -375,6 +423,60 @@ export default function createEntityPose(renderer) {
             return renderer.world.entitiesMap.get(goal.targetId) ?? null
         },
 
+        /** Absolute world yaw of what the pawn is paying attention to, or null. */
+        _getPawnAttentionYaw(pawn) {
+            const interactionYaw = renderer._getPawnInteractionYaw(pawn)
+            if (Number.isFinite(interactionYaw)) return interactionYaw
+
+            const candidates = [pawn?.currentTarget, renderer._resolveGoalEntityTarget(pawn?.goals?.currentGoal)]
+            for (const target of candidates) {
+                if (!target || target.id === pawn?.id) continue
+                if (!Number.isFinite(target.x) || !Number.isFinite(target.y)) continue
+                const dx = target.x - pawn.x
+                const dy = target.y - pawn.y
+                if (Math.hypot(dx, dy) > 0.01) {
+                    return -Math.atan2(dy, dx) + Math.PI / 2
+                }
+            }
+            return null
+        },
+
+        /**
+         * Yaw the pawn's head node toward its attention (interaction partner, goal or
+         * resource target). With no target, the head scans side to side so pawns
+         * visibly "look around" without moving the body or camera.
+         */
+        _updatePawnHeadLook(pawn, mesh) {
+            const head = mesh.userData.headNode
+            if (!head) return
+            const bodyYaw = mesh.rotation.y
+            const attentionYaw = renderer._getPawnAttentionYaw(pawn)
+
+            let targetYaw
+            if (Number.isFinite(attentionYaw)) {
+                targetYaw = Math.atan2(
+                    Math.sin(attentionYaw - bodyYaw),
+                    Math.cos(attentionYaw - bodyYaw)
+                )
+            } else {
+                const t = renderer._timeUniform?.value ?? 0
+                const seed = renderer._hashUnit(pawn?.id, 'head-scan') * Math.PI * 2
+                const prevX = Number.isFinite(pawn?.prevX) ? pawn.prevX : pawn.x
+                const prevY = Number.isFinite(pawn?.prevY) ? pawn.prevY : pawn.y
+                const isMoving = Math.hypot((pawn.x ?? 0) - prevX, (pawn.y ?? 0) - prevY) > 0.06
+                targetYaw = Math.sin(t * 0.6 + seed) * (isMoving ? 0.32 : 0.55)
+            }
+
+            const clamped = Math.max(-1.25, Math.min(1.25, targetYaw))
+            const eased = renderer._easeAngle(
+                head.userData.headYaw ?? 0, clamped, head.userData, 'headYawVelocity',
+                { response: 0.25, damping: 0.82, maxSpeed: 0.35, snapThreshold: 0.004, stopVelocity: 0.003 }
+            )
+            head.userData.headYaw = eased
+            head.rotation.y = eased
+            head.rotation.z = -eased * 0.10
+        },
+
         _disposeMesh(id) {
             const mesh = renderer._meshById.get(id)
             if (!mesh) return
@@ -412,6 +514,34 @@ export default function createEntityPose(renderer) {
             if (!renderer._grassModelRoot) return
             for (const [id, entity] of renderer._entityById.entries()) {
                 if (entity?.type !== 'grass') continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshStickMeshes() {
+            if (!renderer._stickModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (entity?.subtype !== 'stick' && !renderer._hasTag(entity, 'stick')) continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshFiberMeshes() {
+            if (!renderer._fiberModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (entity?.subtype !== 'fiber_plant' && !renderer._hasTag(entity, 'fiber')) continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshFoodMeshes() {
+            if (!renderer._foodModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (entity?.subtype !== 'food' && !renderer._hasTag(entity, 'food')) continue
+                renderer._disposeMesh(id)
+            }
+        },
+        _refreshCoverMeshes() {
+            if (!renderer._coverModelRoot) return
+            for (const [id, entity] of renderer._entityById.entries()) {
+                if (!renderer._isCoverEntity(entity)) continue
                 renderer._disposeMesh(id)
             }
         },

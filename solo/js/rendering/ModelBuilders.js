@@ -6,9 +6,25 @@ import * as THREE from 'three'
  */
 export default function createModelBuilders(renderer) {
     return {
+        /** True when a node's material already carries a texture (e.g. baked GLB skin). */
+        _hasBakedTexture(node) {
+            const mats = Array.isArray(node.material) ? node.material : (node.material ? [node.material] : [])
+            return mats.some((m) => m && m.map)
+        },
+
+        /** True when any mesh in the model carries a texture (e.g. baked GLB skin). */
+        _modelHasBakedTexture(model) {
+            let found = false
+            model.traverse((node) => {
+                if (node.isMesh && renderer._hasBakedTexture(node)) found = true
+            })
+            return found
+        },
+
         _splitTreeMaterialsByHeight(model, profile) {
             model.traverse((node) => {
                 if (!node.isMesh || !node.geometry) return
+                if (renderer._hasBakedTexture(node)) return
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
@@ -65,8 +81,8 @@ export default function createModelBuilders(renderer) {
         _normalizeSpeciesName(entity) {
             const raw = `${entity?.species ?? entity?.name ?? ''}`.trim().toLowerCase()
             if (!raw) return ''
-            if (raw.includes('rabbit')) return 'deer'
-            if (raw.includes('fox')) return 'lion'
+            if (raw.includes('forager') || raw.includes('squirrel') || raw.includes('rabbit') || raw.includes('deer')) return 'forager'
+            if (raw.includes('predator') || raw.includes('fox') || raw.includes('wolf') || raw.includes('lion')) return 'predator'
             return raw
         },
 
@@ -89,6 +105,9 @@ export default function createModelBuilders(renderer) {
             model.position.x -= centerX
             model.position.y -= bounds.min.y
             model.position.z -= centerZ
+            // _updateMeshPose overwrites mesh.position each frame, so stash the horizontal
+            // correction: pack variants sit side by side along X inside their source file.
+            model.userData.poseOffset = { x: model.position.x, z: model.position.z }
         },
 
         _classifyPartsForSaleVariants() {
@@ -163,6 +182,13 @@ export default function createModelBuilders(renderer) {
             return Math.max(0, Math.min(count - 1, hashed))
         },
 
+        /** Stable hashed variant index for a placeholder model pack. */
+        _getVariantIndex(entity, salt, count) {
+            if (!count) return -1
+            const hashed = Math.floor(renderer._hashUnit(entity?.id ?? entity?.name, salt) * count)
+            return Math.max(0, Math.min(count - 1, hashed))
+        },
+
         // --- Instance builders ---
 
         _buildTreeModelInstance(profile) {
@@ -196,7 +222,100 @@ export default function createModelBuilders(renderer) {
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
                 node.material = renderer._createRockMaterial(profile.materialColor, variation)
+            })
+            model.userData.groundOffset = renderer._captureGroundOffset(model)
+            return model
+        },
+
+        _buildStickModelInstance(entity, profile) {
+            const variantIndex = renderer._getVariantIndex(entity, 'stick-variant', renderer._stickModelVariants.length)
+            const source = renderer._stickModelVariants[variantIndex] ?? renderer._stickModelRoot
+            if (!source) return null
+            const model = source.clone(true)
+            const scale = profile.modelScale ?? 1
+            model.scale.setScalar(scale)
+            model.userData.profile = profile
+            model.userData.motionInitialized = false
+            model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+            renderer._centerModelToOrigin(model)
+            model.traverse((node) => {
+                if (!node.isMesh || !node.geometry) return
+                node.geometry = node.geometry.clone()
+                node.castShadow = false
+                node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
+                node.material = new THREE.MeshStandardMaterial({ color: profile.materialColor, roughness: 0.9, metalness: 0 })
+            })
+            model.userData.groundOffset = renderer._captureGroundOffset(model)
+            return model
+        },
+
+        _buildFiberPlantModelInstance(entity, profile) {
+            const variantIndex = renderer._getVariantIndex(entity, 'fiber-variant', renderer._fiberModelVariants.length)
+            const source = renderer._fiberModelVariants[variantIndex] ?? renderer._fiberModelRoot
+            if (!source) return null
+            const model = source.clone(true)
+            const scale = profile.modelScale ?? 1
+            model.scale.setScalar(scale)
+            model.userData.profile = profile
+            model.userData.motionInitialized = false
+            model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+            renderer._centerModelToOrigin(model)
+            model.traverse((node) => {
+                if (!node.isMesh || !node.geometry) return
+                node.geometry = node.geometry.clone()
+                node.castShadow = false
+                node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
+                node.material = renderer._createFoliageMaterial(profile.materialColor, profile.swayStrength)
+            })
+            model.userData.groundOffset = renderer._captureGroundOffset(model)
+            return model
+        },
+
+        _buildFoodModelInstance(entity, profile) {
+            const variantIndex = renderer._getVariantIndex(entity, 'food-variant', renderer._foodModelVariants.length)
+            const source = renderer._foodModelVariants[variantIndex] ?? renderer._foodModelRoot
+            if (!source) return null
+            const model = source.clone(true)
+            const scale = profile.modelScale ?? 1
+            model.scale.setScalar(scale)
+            model.userData.profile = profile
+            model.userData.motionInitialized = false
+            model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+            renderer._centerModelToOrigin(model)
+            model.traverse((node) => {
+                if (!node.isMesh || !node.geometry) return
+                node.geometry = node.geometry.clone()
+                node.castShadow = false
+                node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
+                node.material = new THREE.MeshStandardMaterial({ color: profile.materialColor, roughness: 0.9, metalness: 0 })
+            })
+            model.userData.groundOffset = renderer._captureGroundOffset(model)
+            return model
+        },
+
+        _buildCoverModelInstance(entity, profile) {
+            const variantIndex = renderer._getVariantIndex(entity, 'cover-variant', renderer._coverModelVariants.length)
+            const source = renderer._coverModelVariants[variantIndex] ?? renderer._coverModelRoot
+            if (!source) return null
+            const model = source.clone(true)
+            const scale = profile.modelScale ?? 1
+            model.scale.setScalar(scale)
+            model.userData.profile = profile
+            model.userData.motionInitialized = false
+            model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
+            renderer._centerModelToOrigin(model)
+            model.traverse((node) => {
+                if (!node.isMesh || !node.geometry) return
+                node.geometry = node.geometry.clone()
+                node.castShadow = false
+                node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
+                node.material = new THREE.MeshStandardMaterial({ color: profile.materialColor, roughness: 0.9, metalness: 0 })
             })
             model.userData.groundOffset = renderer._captureGroundOffset(model)
             return model
@@ -219,6 +338,7 @@ export default function createModelBuilders(renderer) {
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
                 node.material = renderer._createFoliageMaterial(profile.materialColor, profile.swayStrength)
             })
             model.userData.groundOffset = renderer._captureGroundOffset(model)
@@ -239,6 +359,7 @@ export default function createModelBuilders(renderer) {
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
                 node.material = renderer._createFoliageMaterial(profile.materialColor, profile.swayStrength)
             })
             model.userData.groundOffset = renderer._captureGroundOffset(model)
@@ -282,6 +403,7 @@ export default function createModelBuilders(renderer) {
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
                 node.material = renderer._createFoliageMaterial(profile.materialColor, profile.swayStrength)
             })
             model.userData.groundOffset = renderer._captureGroundOffset(model)
@@ -388,6 +510,7 @@ export default function createModelBuilders(renderer) {
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (renderer._hasBakedTexture(node)) return
                 node.material = new THREE.MeshStandardMaterial({
                     color: profile.materialColor,
                     roughness: 0.86,
@@ -407,11 +530,14 @@ export default function createModelBuilders(renderer) {
             model.userData.motionInitialized = false
             model.rotation.set(profile.rotation.x, profile.rotation.y, profile.rotation.z)
             renderer._centerModelToOrigin(model)
+            // Keep the baked GLB skin (and its flat eye/cheek/sprout materials) when present
+            const hasBakedSkin = renderer._modelHasBakedTexture(model)
             model.traverse((node) => {
                 if (!node.isMesh || !node.geometry) return
                 node.geometry = node.geometry.clone()
                 node.castShadow = false
                 node.receiveShadow = false
+                if (hasBakedSkin) return
                 node.material = new THREE.MeshStandardMaterial({
                     color: renderer._pawnTexture ? '#ffffff' : profile.materialColor,
                     map: renderer._pawnTexture ?? null,
@@ -420,6 +546,10 @@ export default function createModelBuilders(renderer) {
                 })
             })
             model.userData.groundOffset = renderer._captureGroundOffset(model)
+            // Capture the head node (if the GLB has one) so pose updates can yaw it independently
+            let headNode = null
+            model.traverse((node) => { if (!headNode && node.name === 'pawn_head') headNode = node })
+            model.userData.headNode = headNode
             return model
         }
     }
