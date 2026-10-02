@@ -2094,7 +2094,9 @@ class Pawn extends MobileEntity {
 
     rememberResource(entity) {
         // Remember resource location for future planning
-        if (!entity?.x || !entity?.y || !Number.isFinite(entity.x) || !Number.isFinite(entity.y)) return
+        // #111: no truthiness test on the coordinates - #95 learned this for
+        // landmarks, and the shoreline (x or y = 0) was being thrown away here.
+        if (!Number.isFinite(entity?.x) || !Number.isFinite(entity?.y)) return
         
         const tick = this.world?.clock?.currentTick ?? 0
         const resourceType = entity.subtype || entity.type
@@ -2208,7 +2210,7 @@ class Pawn extends MobileEntity {
 
     updateResourceMemoryConfidence(resource, success) {
         // Update confidence when gathering succeeds or fails
-        if (!resource?.x || !resource?.y) return
+        if (!Number.isFinite(resource?.x) || !Number.isFinite(resource?.y)) return
         
         const tick = this.world?.clock?.currentTick ?? 0
         const resourceType = resource.subtype || resource.type

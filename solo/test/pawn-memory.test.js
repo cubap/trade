@@ -1,796 +1,586 @@
-import test from 'node:test'
-import assert from 'node:assert'
+import test, { after } from 'node:test'
+import assert from 'node:assert/strict'
+import World from '../js/core/World.js'
+import Pawn from '../js/models/entities/mobile/Pawn.js'
 
-// Mock Pawn class for testing memory system
-class MockWorld {
-    constructor() {
-        this.clock = {
-            currentTick: 0
-        }
-        this.entitiesMap = new Map()
-    }
+// #111. Until recently this file opened with ~500 lines of `MockPawn`, a hand
+// copy of seventeen of the real pawn's methods, and every assertion below ran
+// against the copy. A forked test cannot fail when the thing it imitates
+// changes, so the suite was green while the mock and `Pawn.js` disagreed about
+// most of what memory is:
+//
+//   - the copy was built at memory phase 3 with a cap of 50, and evicted
+//     unconditionally; a real pawn starts at phase 1 with room for 20 places,
+//     climbs the ladder with its skills, and (see #119) stops evicting
+//     altogether from phase 3
+//   - the copy clustered at a fixed 20 units; the real radius is
+//     `min(45, 18 + memoryClustering * 0.8)` and clustering is switched off
+//     entirely until a pawn reaches phase 3 or learns enough clustering to
+//     deserve it
+//   - the copy never threw a memory away - there is no `splice` anywhere in it.
+//     The real pawn forgets a patch it has failed on three times over, and
+//     prunes anything below 0.1 confidence out of recall, which is the whole
+//     point of keeping a failure count
+//   - the copy's recall sort ignored tiredness (#104); the real one weights
+//     distance by `needs.distanceWeight()`
+//   - the copy's broadcast reached every pawn in the world; the real one stops
+//     at 120 units, because gossip needs a witness
+//   - the copy defined only `increaseSkill`, so even the practice of clustering
+//     was booked as structure. That is the mistake #108 is about; the real path
+//     pays `useSkill`, and #108's guard can only catch it in a file that reads
+//     the real code.
+//
+// So the copy is gone. Everything below runs against `Pawn.js` itself, which
+// means these tests can now be wrong in the useful way: when the sim changes,
+// this file says so. Trail-aware route costing is deliberately not repeated
+// here - `trail-route-cost.test.js` already covers it against real pawns.
+
+const MAX_MEMORY_AGE = 2000 // recallResourcesByType's staleness window, in ticks
+
+// The sim narrates about one sighting in twenty to the console, at random. That
+// is fine in the browser and unreadable in a test run, and nothing here asserts
+// on it, so logging is muted for this file and restored when it finishes.
+const realLog = console.log
+console.log = () => {}
+after(() => { console.log = realLog })
+
+function worldWith(...entities) {
+    const world = new World(2000, 2000)
+    for (const entity of entities) world.addEntity(entity)
+    return world
 }
 
-class MockPawn {
-    constructor() {
-        this.x = 500
-        this.y = 500
-        this.name = 'TestPawn'
-        this.resourceMemory = []
-        this.world = new MockWorld()
-        this.memoryPhase = 3
-        this.maxResourceMemory = 50
-        this.skills = {
-            memoryClustering: 0,
-            routePlanning: 0,
-            storytelling: 0
-        }
-        this.id = `pawn-${Math.random().toString(16).slice(2)}`
-        this.subtype = 'pawn'
-        this.world.entitiesMap.set(this.id, this)
-        this.resourceValuePreferences = {}
-        this.resourceSpecialization = {
-            domains: {},
-            materials: {},
-            woodUse: {
-                tool: 0,
-                weapon: 0,
-                construction: 0
-            },
-            knownSoilTypes: new Set(),
-            knownSeedTypes: new Set()
-        }
-    }
-
-    increaseSkill(skill, amount = 1) {
-        this.skills[skill] = (this.skills[skill] ?? 0) + amount
-    }
-
-    getMaterialGroups() {
-        return {
-            fibers: ['fiber', 'reed', 'linen', 'grass', 'hemp', 'cotton', 'wool'],
-            stones: ['rock', 'stone', 'flint', 'obsidian', 'granite', 'marble'],
-            woods: ['stick', 'branch', 'log', 'plank', 'timber', 'bark'],
-            hides: ['leather', 'fur', 'skin', 'hide', 'pelt'],
-            metals: ['copper', 'bronze', 'iron', 'steel', 'gold', 'silver'],
-            herbs: ['herb', 'leaf', 'flower', 'root', 'bark', 'seed'],
-            agriculture: ['seed', 'grain', 'crop', 'wheat', 'corn', 'barley', 'rice', 'soil', 'loam', 'clay', 'silt', 'berry', 'vegetable', 'fruit']
-        }
-    }
-
-    getMaterialDomain(materialType) {
-        if (!materialType || typeof materialType !== 'string') return 'unknown'
-
-        const normalized = materialType.toLowerCase()
-        if (/seed|grain|crop|wheat|corn|barley|rice|soil|loam|clay|silt|berry|vegetable|fruit/.test(normalized)) {
-            return 'agriculture'
-        }
-
-        for (const [domain, materials] of Object.entries(this.getMaterialGroups())) {
-            const matches = materials.some(material => {
-                const token = String(material).toLowerCase()
-                return normalized === token || normalized.includes(token)
-            })
-            if (matches) return domain
-        }
-
-        return 'unknown'
-    }
-
-    getWoodUseAffinity(intent = 'general') {
-        const profile = this.resourceSpecialization.woodUse ?? { tool: 0, weapon: 0, construction: 0 }
-        if (intent === 'tool') return Math.min(1, profile.tool)
-        if (intent === 'weapon') return Math.min(1, profile.weapon)
-        if (intent === 'construction') return Math.min(1, profile.construction)
-        return Math.min(1, Math.max(profile.tool ?? 0, profile.weapon ?? 0, profile.construction ?? 0))
-    }
-
-    classifyWoodUse(material) {
-        const type = String(material?.type ?? '').toLowerCase()
-        const tags = Array.isArray(material?.tags) ? material.tags.map(t => String(t).toLowerCase()) : []
-
-        const profile = {
-            tool: 0.02,
-            weapon: 0.02,
-            construction: 0.02
-        }
-
-        if (/shaft|straight|hardwood|handle/.test(type) || tags.includes('tool')) profile.tool += 0.06
-        if (/spear|staff|pole|flex|branch/.test(type) || tags.includes('weapon')) profile.weapon += 0.06
-        if (/timber|log|plank|beam|sturdy|thick/.test(type) || tags.includes('construction')) profile.construction += 0.08
-
-        if (type === 'stick') {
-            profile.tool += 0.03
-            profile.weapon += 0.03
-            profile.construction += 0.02
-        }
-
-        return profile
-    }
-
-    updateResourceSpecialization(material) {
-        if (!material?.type) return
-
-        const type = material.type
-        const domain = this.getMaterialDomain(type)
-
-        this.resourceSpecialization.materials[type] = this.resourceSpecialization.materials[type] ?? { encounters: 0 }
-        this.resourceSpecialization.materials[type].encounters++
-
-        this.resourceSpecialization.domains[domain] = this.resourceSpecialization.domains[domain] ?? { encounters: 0 }
-        this.resourceSpecialization.domains[domain].encounters++
-
-        const soilType = material.soilType ?? material.soil
-        const seedType = material.seedType ?? material.seed
-        if (soilType) this.resourceSpecialization.knownSoilTypes.add(soilType)
-        if (seedType) this.resourceSpecialization.knownSeedTypes.add(seedType)
-
-        if (domain === 'agriculture') {
-            this.increaseSkill('agronomy', 0.05)
-            this.increaseSkill('materialAppraisal', 0.02)
-        }
-
-        if (domain === 'woods') {
-            const woodProfile = this.classifyWoodUse(material)
-            this.resourceSpecialization.woodUse.tool = Math.min(1, (this.resourceSpecialization.woodUse.tool ?? 0) + woodProfile.tool)
-            this.resourceSpecialization.woodUse.weapon = Math.min(1, (this.resourceSpecialization.woodUse.weapon ?? 0) + woodProfile.weapon)
-            this.resourceSpecialization.woodUse.construction = Math.min(1, (this.resourceSpecialization.woodUse.construction ?? 0) + woodProfile.construction)
-            this.increaseSkill('materialAppraisal', 0.03)
-        }
-    }
-
-    setResourceValuePreferences(preferences) {
-        this.resourceValuePreferences = preferences
-    }
-
-    getResourceValue(resourceType, context = {}) {
-        const basePreference = this.resourceValuePreferences?.[resourceType] ?? 0.5
-        const domain = this.getMaterialDomain(resourceType)
-        const materialStats = this.resourceSpecialization.materials?.[resourceType] ?? { encounters: 0 }
-        const domainStats = this.resourceSpecialization.domains?.[domain] ?? { encounters: 0 }
-
-        const materialFamiliarity = Math.min(0.2, (materialStats.encounters ?? 0) * 0.01)
-        const domainFamiliarity = Math.min(0.2, (domainStats.encounters ?? 0) * 0.005)
-
-        let specializationBonus = materialFamiliarity + domainFamiliarity
-
-        const isWoodLike = domain === 'woods' || /stick|branch|timber|plank|log|shaft|pole/i.test(resourceType)
-        if (isWoodLike) {
-            const intent = context.intent ?? 'general'
-            const woodAffinity = this.getWoodUseAffinity(intent)
-            specializationBonus += woodAffinity * 0.25
-        }
-
-        if (domain === 'agriculture') {
-            const soilMatch = context.soilType && this.resourceSpecialization.knownSoilTypes.has(context.soilType)
-            const seedMatch = context.seedType && this.resourceSpecialization.knownSeedTypes.has(context.seedType)
-            if (soilMatch) specializationBonus += 0.08
-            if (seedMatch) specializationBonus += 0.08
-        }
-
-        return Math.max(0, Math.min(1, basePreference + specializationBonus))
-    }
-
-    trackMaterialEncounter(material) {
-        if (!material?.type) return
-        this.updateResourceSpecialization(material)
-    }
-    
-    // Copy of the implementation we're testing
-    rememberResource(entity) {
-        if (!entity?.x || !entity?.y || !Number.isFinite(entity.x) || !Number.isFinite(entity.y)) return
-        
-        const tick = this.world?.clock?.currentTick ?? 0
-        const resourceType = entity.subtype || entity.type
-        
-        if (!resourceType || typeof resourceType !== 'string') {
-            console.warn(`${this.name} tried to remember resource without valid type:`, entity)
-            return
-        }
-        
-        const canCluster = this.memoryPhase >= 3 || (this.skills.memoryClustering ?? 0) >= 10
-        const clusterRadius = 20
-
-        if (canCluster) {
-            const cluster = this.resourceMemory.find(r => {
-                if (r.type !== resourceType) return false
-                const dx = r.x - entity.x
-                const dy = r.y - entity.y
-                return Math.sqrt(dx * dx + dy * dy) <= clusterRadius
-            })
-
-            if (cluster) {
-                const priorCount = Math.max(1, cluster.clusterCount ?? 1)
-                const nextCount = priorCount + 1
-                cluster.x = ((cluster.x * priorCount) + entity.x) / nextCount
-                cluster.y = ((cluster.y * priorCount) + entity.y) / nextCount
-                cluster.clusterCount = nextCount
-                cluster.lastSeen = tick
-                cluster.amount = Math.max(cluster.amount ?? 1, entity.amount ?? 1)
-                cluster.confidence = Math.min(1.0, (cluster.confidence ?? 0.5) + 0.03)
-                this.increaseSkill('memoryClustering', 0.04)
-                return
-            }
-        }
-
-        // Check if already remembered (same location and type)
-        const existing = this.resourceMemory.find(r => {
-            const dx = Math.abs(r.x - entity.x)
-            const dy = Math.abs(r.y - entity.y)
-            return dx < 5 && dy < 5 && r.type === resourceType
-        })
-        
-        if (existing) {
-            existing.lastSeen = tick
-            existing.amount = entity.amount ?? 1
-            existing.x = entity.x
-            existing.y = entity.y
-            return
-        }
-        
-        // Add new memory
-        if (this.resourceMemory.length >= this.maxResourceMemory) {
-            this.resourceMemory.sort((a, b) => {
-                const confA = a.confidence ?? 0.5
-                const confB = b.confidence ?? 0.5
-                const ageA = tick - a.lastSeen
-                const ageB = tick - b.lastSeen
-                return (confA - ageA * 0.001) - (confB - ageB * 0.001)
-            })
-            const removed = this.resourceMemory.shift()
-            if (!removed) return
-        }
-        
-        const initialConfidence = 0.7
-        this.resourceMemory.push({
-            type: resourceType,
-            tags: [],
-            x: entity.x,
-            y: entity.y,
-            lastSeen: tick,
-            amount: entity.amount ?? 1,
-            id: entity.id,
-            successCount: 0,
-            failCount: 0,
-            confidence: initialConfidence,
-            memoryPhase: this.memoryPhase,
-            clusterCount: 1,
-            source: 'self'
-        })
-    }
-    
-    recallResourcesByType(type) {
-        const tick = this.world?.clock?.currentTick ?? 0
-        const maxAge = 2000
-        const minConfidence = 0.2
-        
-        // Memory decay: remove very stale or low-confidence memories
-        this.resourceMemory = this.resourceMemory.filter(r => {
-            if ((tick - r.lastSeen) > maxAge) return false
-            const conf = r.confidence ?? 0.5
-            if (conf < 0.1) return false
-            return true
-        })
-        
-        return this.resourceMemory
-            .filter(r => {
-                const conf = r.confidence ?? 0.5
-                return r.type === type && (tick - r.lastSeen) < maxAge && conf >= minConfidence
-            })
-            .sort((a, b) => {
-                const distA = Math.sqrt((this.x - a.x) ** 2 + (this.y - a.y) ** 2)
-                const distB = Math.sqrt((this.x - b.x) ** 2 + (this.y - b.y) ** 2)
-                const ageA = tick - a.lastSeen
-                const ageB = tick - b.lastSeen
-                const confA = a.confidence ?? 0.5
-                const confB = b.confidence ?? 0.5
-                const clusterA = a.clusterCount ?? 1
-                const clusterB = b.clusterCount ?? 1
-                const observedSignalA = ((a.observedSuccessCount ?? 0) * 7) - ((a.observedFailCount ?? 0) * 4)
-                const observedSignalB = ((b.observedSuccessCount ?? 0) * 7) - ((b.observedFailCount ?? 0) * 4)
-                const routeSkill = this.skills.routePlanning ?? 0
-                const clusterWeight = routeSkill >= 5 ? 6 : 0
-                
-                return (distA + ageA * 0.1 - confA * 100 - clusterA * clusterWeight - observedSignalA) - (distB + ageB * 0.1 - confB * 100 - clusterB * clusterWeight - observedSignalB)
-            })
-    }
-
-    updateResourceMemoryConfidence(resource, success) {
-        if (!resource?.x || !resource?.y) return
-
-        const tick = this.world?.clock?.currentTick ?? 0
-        const resourceType = resource.subtype || resource.type
-        const memory = this.resourceMemory.find(r => {
-            const dx = Math.abs(r.x - resource.x)
-            const dy = Math.abs(r.y - resource.y)
-            return dx < 5 && dy < 5 && r.type === resourceType
-        })
-
-        if (memory) {
-            memory.lastVisited = tick
-
-            if (success) {
-                memory.successCount = (memory.successCount ?? 0) + 1
-                memory.revisitFailStreak = 0
-                const recoveryBoost = Math.min(0.06, (memory.failCount ?? 0) * 0.01)
-                memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.12 + recoveryBoost)
-            } else {
-                memory.failCount = (memory.failCount ?? 0) + 1
-                memory.revisitFailStreak = (memory.revisitFailStreak ?? 0) + 1
-                const revisitPenalty = Math.min(0.35, 0.16 + memory.revisitFailStreak * 0.05)
-                memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - revisitPenalty)
-            }
-        }
-
-        this.broadcastGatheringObservation(resource, success)
-    }
-
-    observeGatheringOutcome(outcome = {}, observerWeight = 1) {
-        const type = outcome.type
-        const x = outcome.x
-        const y = outcome.y
-        const success = outcome.success === true
-
-        if (!type || typeof type !== 'string') return
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return
-
-        const normalizedWeight = Math.max(0.5, Math.min(1.5, observerWeight))
-
-        const memory = this.resourceMemory.find(r => {
-            if (r.type !== type) return false
-            const dx = r.x - x
-            const dy = r.y - y
-            return Math.sqrt(dx * dx + dy * dy) <= 20
-        })
-
-        if (!memory) {
-            if (success) {
-                this.learnResourceLocation({
-                    type,
-                    x,
-                    y,
-                    confidence: 0.4 * normalizedWeight,
-                    clusterCount: 1,
-                    sourcePawnId: outcome.sourcePawnId ?? null
-                })
-            }
-            return
-        }
-
-        if (success) {
-            memory.observedSuccessCount = (memory.observedSuccessCount ?? 0) + 1
-            memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.05 * normalizedWeight)
-        } else {
-            memory.observedFailCount = (memory.observedFailCount ?? 0) + 1
-            memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - 0.04 * normalizedWeight)
-        }
-    }
-
-    broadcastGatheringObservation(resource, success) {
-        if (!this.world?.entitiesMap) return
-
-        const type = resource.subtype || resource.type
-        if (!type) return
-
-        const outcome = {
-            type,
-            x: resource.x,
-            y: resource.y,
-            success,
-            sourcePawnId: this.id
-        }
-
-        for (const entity of this.world.entitiesMap.values()) {
-            if (entity === this || entity?.subtype !== 'pawn') continue
-            entity.observeGatheringOutcome?.(outcome, 1)
-        }
-    }
-
-    planGatheringRoute(requirements = []) {
-        if (!Array.isArray(requirements) || requirements.length === 0) return []
-
-        const routeSkill = this.skills.routePlanning ?? 0
-        const usesOptimizedRoute = routeSkill >= 5
-        const route = []
-
-        let currentX = this.x
-        let currentY = this.y
-
-        for (const requirement of requirements) {
-            const type = requirement?.type
-            const count = requirement?.count ?? 1
-            if (!type) continue
-
-            const memories = this.recallResourcesByType(type)
-            if (!memories.length) {
-                route.push({ type, count, location: null })
-                continue
-            }
-
-            let selected = memories[0]
-            if (usesOptimizedRoute) {
-                selected = [...memories].sort((a, b) => {
-                    const distA = Math.sqrt((a.x - currentX) ** 2 + (a.y - currentY) ** 2)
-                    const distB = Math.sqrt((b.x - currentX) ** 2 + (b.y - currentY) ** 2)
-                    const routeObservationWeight = routeSkill >= 8 ? 12 : 6
-                    const observedSignalA = ((a.observedSuccessCount ?? 0) * routeObservationWeight) - ((a.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
-                    const observedSignalB = ((b.observedSuccessCount ?? 0) * routeObservationWeight) - ((b.observedFailCount ?? 0) * (routeObservationWeight * 0.75))
-                    const scoreA = distA - ((a.confidence ?? 0.5) * 40) - ((a.clusterCount ?? 1) * 10) - observedSignalA
-                    const scoreB = distB - ((b.confidence ?? 0.5) * 40) - ((b.clusterCount ?? 1) * 10) - observedSignalB
-                    return scoreA - scoreB
-                })[0]
-            }
-
-            route.push({ type, count, location: { x: selected.x, y: selected.y } })
-            currentX = selected.x
-            currentY = selected.y
-        }
-
-        if (route.length > 1) {
-            this.increaseSkill('routePlanning', usesOptimizedRoute ? 0.05 : 0.02)
-        }
-
-        return route
-    }
-
-    learnResourceLocation(knowledge = {}) {
-        const type = knowledge.type
-        const x = knowledge.x
-        const y = knowledge.y
-
-        if (!type || typeof type !== 'string') return false
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return false
-
-        const tick = this.world?.clock?.currentTick ?? 0
-        const incomingConfidence = Math.max(0, Math.min(1, knowledge.confidence ?? 0.5))
-        const incomingClusterCount = Math.max(1, knowledge.clusterCount ?? 1)
-
-        const existing = this.resourceMemory.find(mem => {
-            if (mem.type !== type) return false
-            const dx = mem.x - x
-            const dy = mem.y - y
-            return Math.sqrt(dx * dx + dy * dy) <= 20
-        })
-
-        if (existing) {
-            existing.confidence = Math.min(1, (existing.confidence ?? 0.5) + incomingConfidence * 0.2)
-            existing.clusterCount = Math.max(existing.clusterCount ?? 1, incomingClusterCount)
-            existing.lastSeen = tick
-            existing.source = 'shared'
-            this.increaseSkill('memoryClustering', 0.02)
-            return true
-        }
-
-        this.resourceMemory.push({
-            type,
-            x,
-            y,
-            lastSeen: tick,
-            confidence: incomingConfidence,
-            clusterCount: incomingClusterCount,
-            source: 'shared'
-        })
-        this.increaseSkill('memoryClustering', 0.03)
-        return true
-    }
-
-    shareResourceMemory(otherPawn, options = {}) {
-        if (!otherPawn || otherPawn === this) return 0
-
-        const maxShare = options.maxShare ?? 3
-        const minConfidence = options.minConfidence ?? 0.6
-
-        const sharable = this.resourceMemory
-            .filter(mem => (mem.confidence ?? 0.5) >= minConfidence)
-            .sort((a, b) => (b.confidence ?? 0.5) - (a.confidence ?? 0.5))
-            .slice(0, maxShare)
-
-        let sharedCount = 0
-        for (const memory of sharable) {
-            const accepted = otherPawn.learnResourceLocation({
-                type: memory.type,
-                x: memory.x,
-                y: memory.y,
-                confidence: Math.max(0.3, (memory.confidence ?? 0.5) * 0.85),
-                clusterCount: memory.clusterCount ?? 1,
-                sourcePawnId: this.id
-            })
-            if (accepted) sharedCount++
-        }
-
-        if (sharedCount > 0) {
-            this.increaseSkill('storytelling', 0.03 * sharedCount)
-            this.increaseSkill('routePlanning', 0.01 * sharedCount)
-        }
-
-        return sharedCount
-    }
+/** A real pawn in a real world, because every memory method reads `this.world`. */
+function lonePawn(id, { x = 500, y = 500 } = {}) {
+    const pawn = new Pawn(id, id, x, y)
+    worldWith(pawn)
+    return pawn
 }
 
-test('Pawn Memory System - Resource Validation', async (t) => {
-    await t.test('should reject resources with invalid coordinates', () => {
-        const pawn = new MockPawn()
-        
-        assert.strictEqual(pawn.resourceMemory.length, 0)
-        
-        // Try to remember with NaN coordinates
-        pawn.rememberResource({ type: 'rock', x: NaN, y: 500 })
-        assert.strictEqual(pawn.resourceMemory.length, 0, 'Should not remember resource with NaN x')
-        
-        // Try to remember with missing coordinates
-        pawn.rememberResource({ type: 'rock' })
-        assert.strictEqual(pawn.resourceMemory.length, 0, 'Should not remember resource without coordinates')
-        
-        // Try to remember with string coordinates
-        pawn.rememberResource({ type: 'rock', x: 'invalid', y: 500 })
-        assert.strictEqual(pawn.resourceMemory.length, 0, 'Should not remember resource with string x')
-    })
-    
-    await t.test('should reject resources without valid type', () => {
-        const pawn = new MockPawn()
-        
-        pawn.rememberResource({ x: 100, y: 100, type: '' })
-        assert.strictEqual(pawn.resourceMemory.length, 0, 'Should not remember resource with empty type')
-        
-        pawn.rememberResource({ x: 100, y: 100, type: null })
-        assert.strictEqual(pawn.resourceMemory.length, 0, 'Should not remember resource with null type')
-        
-        pawn.rememberResource({ x: 100, y: 100, type: 123 })
-        assert.strictEqual(pawn.resourceMemory.length, 0, 'Should not remember resource with number type')
-    })
-    
-    await t.test('should successfully remember valid resources', () => {
-        const pawn = new MockPawn()
-        
-        pawn.rememberResource({ type: 'rock', x: 100, y: 100 })
-        assert.strictEqual(pawn.resourceMemory.length, 1)
-        assert.strictEqual(pawn.resourceMemory[0].type, 'rock')
-        assert.strictEqual(pawn.resourceMemory[0].confidence, 0.7)
-    })
+/**
+ * Trains a pawn and re-derives its memory phase from the skills, the way the
+ * sim does, rather than assigning `memoryPhase` by hand.
+ */
+function train(pawn, skills = {}) {
+    for (const [skill, amount] of Object.entries(skills)) pawn.increaseSkill(skill, amount)
+    pawn.updateMemoryPhase()
+    return pawn
+}
+
+/**
+ * Remembers a resource through the production path, then tunes the fields the
+ * production path has no verb for (confidence, cluster size, proven sightings).
+ * The entry stays whatever `rememberResource` decided to make it.
+ */
+function rememberAt(pawn, type, x, y, tweaks = {}) {
+    pawn.rememberResource({ type, x, y })
+    const memory = pawn.resourceMemory.find(m => m.type === type && m.x === x && m.y === y)
+    if (memory && Object.keys(tweaks).length) Object.assign(memory, tweaks)
+    return memory
+}
+
+// --- validation -------------------------------------------------------------
+
+test('a pawn only remembers resources it can actually describe', (t) => {
+    t.mock.method(console, 'warn', () => {})
+    const pawn = lonePawn('ada')
+
+    const junk = [
+        { type: 'rock', x: NaN, y: 100 },
+        { type: 'rock', x: 100, y: undefined },
+        { type: 'rock', x: '100', y: '100' },
+        { type: 'rock', x: null, y: 100 }
+    ]
+    for (const bad of junk) {
+        pawn.rememberResource(bad)
+        assert.equal(pawn.resourceMemory.length, 0, `${JSON.stringify(bad)} is not a location`)
+    }
+
+    // No type, a numeric type, an empty type: the pawn has seen something but
+    // cannot say what, and a memory of "something at (100,100)" is useless to
+    // the planner that reads it back.
+    pawn.rememberResource({ x: 100, y: 100 })
+    pawn.rememberResource({ type: 7, x: 100, y: 100 })
+    pawn.rememberResource({ type: '', x: 100, y: 100 })
+    assert.equal(pawn.resourceMemory.length, 0)
+
+    pawn.rememberResource({ type: 'rock', x: 100, y: 100, amount: 3, tags: ['quarry'] })
+    assert.equal(pawn.resourceMemory.length, 1, 'a valid sighting is remembered')
+    const memory = pawn.resourceMemory[0]
+    assert.equal(memory.type, 'rock')
+    assert.equal(memory.amount, 3)
+    assert.deepEqual(memory.tags, ['quarry'], 'tags ride along - they drive recall-by-tag')
+    assert.equal(memory.confidence, 0.7, 'a pawn starts optimistic about what it saw')
+    assert.equal(memory.source, 'self', 'it knows it saw it itself')
+    assert.equal(memory.clusterCount, 1)
+    assert.equal(memory.lastSeen, pawn.world.clock.currentTick)
 })
 
-test('Pawn Memory System - Memory Decay', async (t) => {
-    await t.test('should remove stale memories (older than maxAge)', () => {
-        const pawn = new MockPawn()
-        
-        // Add a memory
-        pawn.rememberResource({ type: 'rock', x: 100, y: 100 })
-        assert.strictEqual(pawn.resourceMemory.length, 1)
-        
-        // Simulate time passage
-        pawn.world.clock.currentTick = 3000 // Older than maxAge (2000)
-        
-        // Recall should trigger decay
-        const recalled = pawn.recallResourcesByType('rock')
-        
-        // Should remove the stale memory
-        assert.strictEqual(recalled.length, 0, 'Should not recall memories older than maxAge')
-    })
-    
-    await t.test('should remove very low confidence memories', () => {
-        const pawn = new MockPawn()
-        
-        // Add memory with low confidence
-        pawn.resourceMemory.push({
-            type: 'rock',
-            x: 100,
-            y: 100,
-            lastSeen: 0,
-            confidence: 0.05,  // Very low confidence
-            successCount: 0,
-            failCount: 10
-        })
-        
-        pawn.world.clock.currentTick = 100
-        
-        const recalled = pawn.recallResourcesByType('rock')
-        assert.strictEqual(recalled.length, 0, 'Should not recall memories with confidence < 0.1')
-    })
-    
-    await t.test('should keep recent memories with good confidence', () => {
-        const pawn = new MockPawn()
-        
-        pawn.rememberResource({ type: 'rock', x: 100, y: 100 })
-        pawn.world.clock.currentTick = 100  // Recent
-        
-        const recalled = pawn.recallResourcesByType('rock')
-        assert.strictEqual(recalled.length, 1)
-        assert.strictEqual(recalled[0].type, 'rock')
-    })
-    
-    await t.test('should sort by confidence, distance, and recency', () => {
-        const pawn = new MockPawn()
-        
-        // Add multiple memories
-        pawn.resourceMemory = [
-            { type: 'rock', x: 600, y: 600, lastSeen: 0, confidence: 0.5, successCount: 0, failCount: 0 },
-            { type: 'rock', x: 500, y: 500, lastSeen: 0, confidence: 0.9, successCount: 0, failCount: 0 },
-            { type: 'rock', x: 510, y: 510, lastSeen: 0, confidence: 0.3, successCount: 0, failCount: 0 }
-        ]
-        
-        pawn.world.clock.currentTick = 100
-        
-        const recalled = pawn.recallResourcesByType('rock')
-        
-        // Should prefer high confidence
-        assert.strictEqual(recalled[0].confidence, 0.9, 'First recalled should have highest confidence')
-    })
+test('a resource on the edge of the map is still a resource', () => {
+    // #95 fixed this for landmarks ("a place on the map's zero axes counts as a
+    // place"); the resource path had the same truthiness test and was silently
+    // dropping anything on x = 0 or y = 0, which is the whole shoreline.
+    const pawn = lonePawn('quina')
+    pawn.rememberResource({ type: 'reed', x: 0, y: 640 })
+    pawn.rememberResource({ type: 'clay', x: 410, y: 0 })
+    assert.deepEqual(pawn.resourceMemory.map(m => m.type).sort(), ['clay', 'reed'])
+
+    // And the confidence update can find them again, which is the other half of
+    // the same bug.
+    pawn.updateResourceMemoryConfidence({ type: 'reed', x: 0, y: 640 }, true)
+    const reed = pawn.resourceMemory.find(m => m.type === 'reed')
+    assert.equal(reed.successCount, 1, 'a successful gather at x = 0 counts')
+    assert.ok(reed.confidence > 0.7)
 })
 
-test('Pawn Memory System - Duplicate Detection', async (t) => {
-    await t.test('should update existing memory at same location', () => {
-        const pawn = new MockPawn()
-        
-        pawn.rememberResource({ type: 'rock', x: 100, y: 100, amount: 5 })
-        assert.strictEqual(pawn.resourceMemory.length, 1)
-        
-        pawn.world.clock.currentTick = 100
-        
-        // Remember same rock at same location
-        pawn.rememberResource({ type: 'rock', x: 102, y: 102, amount: 10 })
-        assert.strictEqual(pawn.resourceMemory.length, 1, 'Should update existing nearby memory')
-        assert.strictEqual(pawn.resourceMemory[0].amount, 10, 'Amount should be updated')
-        assert.strictEqual(pawn.resourceMemory[0].lastSeen, 100, 'lastSeen should be updated')
-    })
+// --- phases, caps, clustering ----------------------------------------------
+
+test('the memory phase is what the skills say it is', () => {
+    const pawn = lonePawn('bo')
+    assert.equal(pawn.memoryPhase, 1, 'a fresh pawn thinks egocentrically')
+    assert.equal(pawn.maxResourceMemory, 20, 'and holds very little of it')
+
+    train(pawn, { orienteering: 15 })
+    assert.deepEqual([pawn.memoryPhase, pawn.maxResourceMemory], [2, 40])
+
+    train(pawn, { cartography: 25 })
+    assert.deepEqual([pawn.memoryPhase, pawn.maxResourceMemory], [3, 60], 'clusters unlock with cartography')
+
+    train(pawn, { cartography: 25 })
+    assert.deepEqual([pawn.memoryPhase, pawn.maxResourceMemory], [4, 100], 'conceptual maps at 50')
 })
 
-test('Pawn Memory System - Clustering and Route Learning', async (t) => {
-    await t.test('should merge nearby same-type memories into a cluster', () => {
-        const pawn = new MockPawn()
+test('a young pawn evicts what it cannot hold; its cap is a promise only then', () => {
+    const pawn = lonePawn('cid')
+    // 21 rocks, 40 units apart: no clustering, no near-same-type nudge, so each
+    // sighting is its own memory and the cap has to bite 21 times.
+    for (let i = 0; i < 21; i++) pawn.rememberResource({ type: 'rock', x: 100 + i * 40, y: 100 })
 
-        pawn.rememberResource({ type: 'rock', x: 100, y: 100 })
-        pawn.rememberResource({ type: 'rock', x: 112, y: 108 })
+    assert.equal(pawn.resourceMemory.length, pawn.maxResourceMemory, 'the cap holds')
+    assert.ok(!pawn.resourceMemory.some(m => m.x === 100), 'the first sighting is what went')
+    assert.equal(pawn.resourceMemory[0].x, 140, 'memories are evicted oldest-first when all else ties')
+    assert.equal(pawn.resourceMemory.at(-1).x, 900, 'the newest sighting survives')
 
-        assert.strictEqual(pawn.resourceMemory.length, 1, 'Nearby resources should cluster into one memory')
-        assert.strictEqual(pawn.resourceMemory[0].clusterCount, 2, 'Cluster count should increase')
-        assert.ok((pawn.skills.memoryClustering ?? 0) > 0, 'Clustering skill should gain experience')
-    })
-
-    await t.test('should produce route stops and improve routePlanning skill', () => {
-        const pawn = new MockPawn()
-        pawn.skills.routePlanning = 6
-
-        pawn.resourceMemory.push(
-            { type: 'rock', x: 490, y: 500, lastSeen: 0, confidence: 0.9, clusterCount: 2 },
-            { type: 'fiber_plant', x: 520, y: 500, lastSeen: 0, confidence: 0.8, clusterCount: 3 }
-        )
-
-        const route = pawn.planGatheringRoute([
-            { type: 'rock', count: 1 },
-            { type: 'fiber_plant', count: 2 }
-        ])
-
-        assert.strictEqual(route.length, 2, 'Route should include one stop per requirement')
-        assert.ok(route[0].location && route[1].location, 'Route should include target locations from memory')
-        assert.ok((pawn.skills.routePlanning ?? 0) > 6, 'Route planning skill should improve from use')
-    })
+    // Phase 3 is where the promise breaks. The eviction is gated on
+    // `memoryPhase <= 2` because "cluster compression will handle this
+    // differently", but compression only ever merges sightings that land inside
+    // the (18-45 unit) cluster radius, so thirty-unit spacing is never
+    // compressed and nothing is ever evicted. Pinned here as what the sim does
+    // today, not as what it should do - #119 is about making the cap mean it.
+    const cartographer = train(lonePawn('atlas'), { cartography: 25 })
+    assert.equal(cartographer.maxResourceMemory, 60)
+    for (let i = 0; i < 61; i++) cartographer.rememberResource({ type: 'rock', x: 40 + i * 30, y: 300 })
+    assert.equal(cartographer.resourceMemory.length, 61, 'the better the memory, the less bounded it is (#119)')
 })
 
-test('Pawn Memory System - Social Memory Sharing', async (t) => {
-    await t.test('should share high-confidence memories and improve learner confidence', () => {
-        const teacher = new MockPawn()
-        const learner = new MockPawn()
+test('clustering is earned, and its radius is a skill reading, not a constant', () => {
 
-        teacher.resourceMemory.push(
-            { type: 'rock', x: 300, y: 300, confidence: 0.9, clusterCount: 3, lastSeen: 0 },
-            { type: 'stick', x: 340, y: 300, confidence: 0.8, clusterCount: 2, lastSeen: 0 }
-        )
+    // Phase 1, no clustering skill: two sightings of the same patch twelve units
+    // apart stay two memories. The pawn notices the proximity (it is paid a
+    // little `memoryClustering` for it) but cannot yet compress it.
+    const blunt = train(lonePawn('pat'), {})
+    blunt.rememberResource({ type: 'rock', x: 100, y: 100 })
+    blunt.rememberResource({ type: 'rock', x: 112, y: 108 })
+    assert.equal(blunt.resourceMemory.length, 2, 'no clusters yet')
+    assert.ok(blunt.getSkill('memoryClustering') > 0, 'noticing the pair is itself practice')
+    assert.equal(blunt.skillLastUsed.memoryClustering, blunt.world.clock.currentTick, 'paid through the practice verb (#108)')
 
-        const shared = teacher.shareResourceMemory(learner, { maxShare: 2, minConfidence: 0.6 })
+    // A cartographer merges them instead: the centroid moves to the middle of
+    // the two sightings and the cluster counts both.
+    const sharp = train(lonePawn('ivy'), { cartography: 25 })
+    assert.equal(sharp.memoryPhase, 3)
+    sharp.rememberResource({ type: 'rock', x: 100, y: 100 })
+    sharp.rememberResource({ type: 'rock', x: 112, y: 108 })
+    assert.equal(sharp.resourceMemory.length, 1, 'one patch, not two')
+    const cluster = sharp.resourceMemory[0]
+    assert.equal(cluster.clusterCount, 2)
+    assert.deepEqual([cluster.x, cluster.y], [106, 104], 'the memory drifts toward the middle of the patch')
+    assert.ok(cluster.confidence > 0.7, 'seeing it twice makes it better remembered, not merely bigger')
 
-        assert.strictEqual(shared, 2, 'Teacher should share both high-confidence memories')
-        assert.strictEqual(learner.resourceMemory.length, 2, 'Learner should gain shared memories')
-        assert.ok((learner.skills.memoryClustering ?? 0) > 0, 'Learner should gain memory skill from shared knowledge')
-        assert.ok((teacher.skills.storytelling ?? 0) > 0, 'Teacher should gain storytelling from sharing')
-    })
+    // The radius is where the mock lied: it was a constant 20. Production is
+    // 18 + 0.8 per point of memoryClustering, ceiling 45 - so a thirty-unit
+    // pair merges only for a pawn that has practised it enough.
+    const novice = train(lonePawn('newt'), { cartography: 25 })
+    novice.rememberResource({ type: 'rock', x: 100, y: 100 })
+    novice.rememberResource({ type: 'rock', x: 130, y: 100 })
+    assert.equal(novice.resourceMemory.length, 2, 'at radius 18, thirty units is two places')
+
+    const expert = train(lonePawn('sol'), { cartography: 25, memoryClustering: 20 })
+    expert.rememberResource({ type: 'rock', x: 100, y: 100 })
+    expert.rememberResource({ type: 'rock', x: 130, y: 100 })
+    assert.equal(expert.resourceMemory.length, 1, 'at radius 34, thirty units is one place')
+    assert.equal(expert.resourceMemory[0].clusterCount, 2)
+
+    // Clustering also opens at 10 points of the skill on its own, with no
+    // cartography at all - the gate is `phase >= 3 || skill >= 10`.
+    const selfTaught = train(lonePawn('kit'), { memoryClustering: 10 })
+    assert.equal(selfTaught.memoryPhase, 1)
+    selfTaught.rememberResource({ type: 'rock', x: 100, y: 100 })
+    selfTaught.rememberResource({ type: 'rock', x: 112, y: 108 })
+    assert.equal(selfTaught.resourceMemory.length, 1, 'practice at grouping beats a phase gate')
 })
 
-test('Pawn Memory System - Revisit Decay and Observation Weighting', async (t) => {
-    await t.test('should apply stronger confidence decay on repeated failed revisits', () => {
-        const pawn = new MockPawn()
-        pawn.resourceMemory.push({
-            type: 'rock',
-            x: 200,
-            y: 200,
-            confidence: 0.9,
-            failCount: 0,
-            revisitFailStreak: 0,
-            lastSeen: 0
-        })
+test('a pawn at the same rock twice refreshes the memory instead of duplicating it', () => {
+    const pawn = train(lonePawn('dee'), {})
+    pawn.rememberResource({ type: 'rock', x: 100, y: 100, amount: 5 })
+    pawn.world.clock.currentTick = 11
+    pawn.rememberResource({ type: 'rock', x: 102, y: 102, amount: 10 })
 
+    assert.equal(pawn.resourceMemory.length, 1, 'two sightings within five units are one memory')
+    const memory = pawn.resourceMemory[0]
+    assert.equal(memory.amount, 10, 'the later sighting says how much is there')
+    assert.deepEqual([memory.x, memory.y], [102, 102], 'and where it is')
+    assert.equal(memory.lastSeen, 11, 'and when it was seen')
+})
+
+// --- decay and recall ------------------------------------------------------
+
+test('recall throws away what has gone stale or untrustworthy', () => {
+    const pawn = lonePawn('eve')
+
+    rememberAt(pawn, 'rock', 100, 100)
+    pawn.world.clock.currentTick = MAX_MEMORY_AGE + 500
+    assert.deepEqual(pawn.recallResourcesByType('rock'), [], 'a memory two thousand ticks old is not a plan')
+    assert.equal(pawn.resourceMemory.length, 0, 'and it is gone from the ledger, not merely filtered out')
+
+    // Low confidence is removed the same way; the sub-0.1 floor is the hard one.
+    const doubting = rememberAt(pawn, 'stick', 200, 200, { confidence: 0.05 })
+    assert.ok(doubting)
+    assert.deepEqual(pawn.recallResourcesByType('stick'), [])
+    assert.equal(pawn.resourceMemory.length, 0, 'a memory no one believes is not kept')
+
+    // Between the hard floor and the recall threshold a memory is kept but
+    // unserviceable: it survives the sweep and still fails to be recalled.
+    rememberAt(pawn, 'fiber', 300, 300, { confidence: 0.15 })
+    assert.deepEqual(pawn.recallResourcesByType('fiber'), [], 'below 0.2 it is not offered up')
+    assert.equal(pawn.resourceMemory.length, 1, 'above 0.1 it is not destroyed')
+
+    pawn.world.clock.currentTick = MAX_MEMORY_AGE + 501
+    rememberAt(pawn, 'rock', 120, 100)
+    const fresh = pawn.recallResourcesByType('rock')
+    assert.equal(fresh.length, 1, 'a memory seen this tick is usable however old the ledger is')
+    assert.equal(fresh[0].x, 120)
+})
+
+test('recall ranks by confidence, distance and what the pawn has heard, blended', () => {
+    const pawn = lonePawn('jo')
+    pawn.increaseSkill('routePlanning', 6)
+    // Three patches, all seen this tick: a well-remembered one underfoot, a
+    // half-remembered one nearby, a decently-remembered one across the map.
+    rememberAt(pawn, 'rock', 500, 500, { confidence: 0.9 })
+    rememberAt(pawn, 'rock', 510, 510, { confidence: 0.3 })
+    rememberAt(pawn, 'rock', 600, 600, { confidence: 0.5 })
+
+    const ranked = pawn.recallResourcesByType('rock')
+    assert.deepEqual(ranked.map(m => m.confidence), [0.9, 0.3, 0.5])
+    assert.equal(ranked[0].x, 500, 'confidence dominates')
+    assert.equal(ranked[1].x, 510, 'but ten units of walking outweighs twice the memory of the far patch')
+
+    // What other pawns report is a ranking term of its own (#105's evidence):
+    // proven ground outranks better-remembered ground.
+    const witness = lonePawn('kim')
+    const dubious = rememberAt(witness, 'rock', 505, 500, { confidence: 0.6 })
+    const proven = rememberAt(witness, 'rock', 545, 500, { confidence: 0.55, observedSuccessCount: 8 })
+    assert.ok(witness.recallResourcesByType('rock')[0] === proven, 'a patch everyone got rock from comes first')
+    assert.ok(dubious.clusterCount === proven.clusterCount, 'and it is not the cluster size doing the work')
+})
+
+test('a gathering plan is built from memory, and says so when it has none', () => {
+    const pawn = train(lonePawn('lin'), { cartography: 25 })
+    pawn.increaseSkill('routePlanning', 6)
+    rememberAt(pawn, 'rock', 490, 500, { confidence: 0.9, clusterCount: 2 })
+    rememberAt(pawn, 'fiber', 520, 500, { confidence: 0.8, clusterCount: 3 })
+
+    assert.deepEqual(pawn.planGatheringRoute([]), [], 'nothing asked, nothing planned')
+
+    const unknown = pawn.planGatheringRoute([{ type: 'diamond', count: 1 }])
+    assert.equal(unknown.length, 1)
+    assert.equal(unknown[0].location, null, 'a type with no memory is an expedition, not a route')
+    assert.equal(unknown[0].fromMemory, false)
+
+    const route = pawn.planGatheringRoute([{ type: 'rock', count: 2 }, { type: 'fiber', count: 1 }])
+    assert.equal(route.length, 2)
+    assert.deepEqual(route.map(s => s.type), ['rock', 'fiber'])
+    for (const stop of route) {
+        assert.ok(stop.location, `a remembered ${stop.type} has a destination`)
+        assert.equal(stop.fromMemory, true)
+        assert.ok(stop.confidence > 0)
+        assert.ok(stop.clusterCount >= 1)
+    }
+    assert.equal(route[0].count, 2, 'the request rides along with the stop')
+    assert.deepEqual(route[0].location, { x: 490, y: 500 })
+    assert.ok(pawn.getSkill('routePlanning') > 6, 'planning a multi-stop run is practice at planning (#108)')
+
+    // A single-stop plan is not worth the same praise as a route.
+    const before = pawn.getSkill('routePlanning')
+    pawn.planGatheringRoute([{ type: 'rock', count: 1 }])
+    assert.equal(pawn.getSkill('routePlanning'), before, 'one stop is an errand, not a route')
+})
+
+test('a trained planner chooses a different patch than an untrained one', () => {
+    // Below route planning 5 the pawn takes the top of its recall list, which
+    // confidence dominates. At 5 and above it re-scores the candidates against
+    // the cost of the walk, the size of the patch and what was seen there - so
+    // the same memory can send two pawns to two different rocks.
+    const seed = (pawn) => {
+        rememberAt(pawn, 'rock', 505, 500, { confidence: 0.9, clusterCount: 1 })
+        rememberAt(pawn, 'rock', 515, 500, { confidence: 0.6, clusterCount: 4 })
+        return pawn
+    }
+    // Phase 1 pawns, so the two sightings ten units apart stay two memories:
+    // clustering, which would merge them, is not earned until phase 3.
+    const novice = seed(lonePawn('naif'))
+    novice.increaseSkill('routePlanning', 3)
+    assert.deepEqual(novice.planGatheringRoute([{ type: 'rock', count: 1 }])[0].location, { x: 505, y: 500 },
+        'the unsure planner goes to the rock it is likeliest to remember')
+
+    const adept = seed(lonePawn('ada'))
+    adept.increaseSkill('routePlanning', 6)
+    assert.deepEqual(adept.planGatheringRoute([{ type: 'rock', count: 1 }])[0].location, { x: 515, y: 500 },
+        'the trained one walks ten units further for a patch it believes to be four rocks wide')
+
+    // The optimisation is also worth more practice, because it is the harder act.
+    const a = lonePawn('p1')
+    a.increaseSkill('routePlanning', 3)
+    const b = lonePawn('p2')
+    b.increaseSkill('routePlanning', 6)
+    seed(a)
+    seed(b)
+    const req = [{ type: 'rock', count: 1 }, { type: 'rock', count: 1 }]
+    const paidA = a.getSkill('routePlanning')
+    const paidB = b.getSkill('routePlanning')
+    a.planGatheringRoute(req)
+    b.planGatheringRoute(req)
+    assert.ok((b.getSkill('routePlanning') - paidB) > (a.getSkill('routePlanning') - paidA),
+        'optimising a route is better practice than listing one')
+})
+
+test('recall hands out a reading of the memory, not the memory itself', () => {
+    const pawn = lonePawn('rox')
+    rememberAt(pawn, 'rock', 100, 100)
+    rememberAt(pawn, 'rock', 200, 100)
+    const recalled = pawn.recallResourcesByType('rock')
+    assert.equal(recalled.length, 2)
+    recalled.length = 0
+    recalled.push({ type: 'rock', x: 999, y: 999 })
+    assert.equal(pawn.resourceMemory.length, 2, 'dropping a plan does not drop the memory')
+    assert.ok(!pawn.resourceMemory.some(m => m.x === 999), 'and inventing a stop does not invent a memory')
+})
+
+test('belief saturates at certainty; a patch never runs to positive confidence on hope alone', () => {
+    const pawn = lonePawn('pat')
+    const memory = rememberAt(pawn, 'rock', 300, 300)
+    for (let i = 0; i < 20; i++) pawn.updateResourceMemoryConfidence({ type: 'rock', x: 300, y: 300 }, true)
+    assert.equal(memory.confidence, 1, 'a patch never seen empty is finally certain')
+    pawn.updateResourceMemoryConfidence({ type: 'rock', x: 300, y: 300 }, true)
+    assert.equal(memory.confidence, 1, 'and certainty is a ceiling, not a number that keeps climbing')
+})
+
+test('an outcome a pawn hears about is booked against the memory of that place', () => {
+    // #105's evidence path, which is separate from the pawn's own gathering
+    // result: reports are matched to a memory by position, weighted by who said
+    // it, and can create a memory when the pawn had none.
+    const pawn = lonePawn('ob')
+    const near = rememberAt(pawn, 'rock', 300, 300, { confidence: 0.5 })
+    const far = rememberAt(pawn, 'rock', 900, 300, { confidence: 0.5 })
+
+    pawn.observeGatheringOutcome({ type: 'rock', x: 305, y: 300, success: true }, 2)
+    assert.equal(near.confidence, 0.5 + 0.05 * 1.5, 'a shouty report counts, but only up to 1.5x')
+    assert.equal(near.observedSuccessCount, 1, 'and it is booked as something somebody saw')
+    assert.equal(far.confidence, 0.5, 'the patch on the far side of the map is not the place they visited')
+
+    pawn.observeGatheringOutcome({ type: 'rock', x: 300, y: 300, success: false }, 0)
+    assert.equal(near.confidence, 0.575 - 0.04 * 0.5, 'a mumbled report still counts for half')
+
+    pawn.observeGatheringOutcome({ type: 'rock', x: 895, y: 300, success: false })
+    assert.equal(far.confidence, 0.46)
+    assert.equal(far.observedFailCount, 1)
+
+    // Nothing was remembered here, so a rumour of flint becomes one.
+    pawn.observeGatheringOutcome({ type: 'flint', x: 60, y: 60, success: true })
+    const learnt = pawn.resourceMemory.find(m => m.type === 'flint')
+    assert.ok(learnt, 'a second-hand sighting is still worth a place in the head')
+    assert.equal(learnt.confidence, 0.4, 'but it starts as a rumour, not a certainty')
+})
+
+// --- belief, gossip, and forgetting ----------------------------------------
+
+test('a gather that goes wrong is believed, and going wrong twice is nearly not believed at all', () => {
+    const pawn = lonePawn('may')
+    const memory = rememberAt(pawn, 'rock', 200, 200)
+    assert.equal(memory.confidence, 0.7)
+
+    pawn.updateResourceMemoryConfidence({ type: 'rock', x: 200, y: 200 }, false)
+    const once = pawn.resourceMemory[0].confidence
+    pawn.updateResourceMemoryConfidence({ type: 'rock', x: 200, y: 200 }, false)
+    const twice = pawn.resourceMemory[0].confidence
+
+    assert.ok(once < 0.7 && twice < once, `failures should bite harder each time, got ${once} then ${twice}`)
+    assert.equal(pawn.resourceMemory[0].failCount, 2)
+    assert.equal(pawn.resourceMemory[0].revisitFailStreak, 2, 'the streak is what makes the penalty grow')
+    assert.equal(pawn.resourceMemory[0].lastVisited, pawn.world.clock.currentTick)
+    assert.ok(twice > 0.2, 'but two failures still leave the memory standing')
+
+    // Success is not merely the absence of failure: it repays part of what the
+    // failures took, in proportion to how many there were.
+    Object.assign(pawn.resourceMemory[0], { confidence: 0.5, failCount: 3, revisitFailStreak: 2 })
+    pawn.updateResourceMemoryConfidence({ type: 'rock', x: 200, y: 200 }, true)
+    const healed = pawn.resourceMemory[0]
+    assert.equal(healed.successCount, 1)
+    assert.equal(healed.revisitFailStreak, 0, 'a win wipes the streak')
+    assert.ok(healed.confidence > 0.6, `a win should recover more than its base share, got ${healed.confidence}`)
+})
+
+test('a location that keeps failing is forgotten outright', () => {
+    // The mock never did this, so the whole cost of a bad memory was invisible
+    // to it: in the sim a thrice-failed patch leaves the pawn's head entirely.
+    const pawn = lonePawn('ned')
+    rememberAt(pawn, 'rock', 200, 200)
+    for (let attempt = 0; attempt < 3; attempt++) {
         pawn.updateResourceMemoryConfidence({ type: 'rock', x: 200, y: 200 }, false)
-        const afterFirst = pawn.resourceMemory[0].confidence
-        pawn.updateResourceMemoryConfidence({ type: 'rock', x: 200, y: 200 }, false)
-        const afterSecond = pawn.resourceMemory[0].confidence
-
-        assert.ok(afterSecond < afterFirst, 'Repeated failed revisits should continue reducing confidence')
-        assert.ok((pawn.resourceMemory[0].revisitFailStreak ?? 0) >= 2, 'Revisit fail streak should accumulate')
-    })
-
-    await t.test('should increase observer confidence when witnessing successful gathering', () => {
-        const gatherer = new MockPawn()
-        const observer = new MockPawn()
-
-        gatherer.world = observer.world
-        observer.world.entitiesMap.set(gatherer.id, gatherer)
-        observer.world.entitiesMap.set(observer.id, observer)
-
-        observer.resourceMemory.push({
-            type: 'stick',
-            x: 260,
-            y: 260,
-            confidence: 0.4,
-            lastSeen: 0
-        })
-
-        gatherer.updateResourceMemoryConfidence({ type: 'stick', x: 260, y: 260 }, true)
-
-        assert.ok((observer.resourceMemory[0].confidence ?? 0) > 0.4, 'Observed success should improve confidence')
-        assert.ok((observer.resourceMemory[0].observedSuccessCount ?? 0) >= 1, 'Observed success count should be tracked')
-    })
-
-    await t.test('should prefer higher observed-success memory in optimized route selection', () => {
-        const pawn = new MockPawn()
-        pawn.skills.routePlanning = 9
-
-        pawn.resourceMemory.push(
-            {
-                type: 'rock',
-                x: 505,
-                y: 500,
-                lastSeen: 0,
-                confidence: 0.6,
-                clusterCount: 1,
-                observedSuccessCount: 0,
-                observedFailCount: 0
-            },
-            {
-                type: 'rock',
-                x: 545,
-                y: 500,
-                lastSeen: 0,
-                confidence: 0.55,
-                clusterCount: 1,
-                observedSuccessCount: 8,
-                observedFailCount: 0
-            }
-        )
-
-        const route = pawn.planGatheringRoute([{ type: 'rock', count: 1 }])
-
-        assert.strictEqual(route.length, 1)
-        assert.ok(route[0].location?.x === 545, 'Route should prefer observed-success location over nearer but unproven location')
-    })
+    }
+    assert.deepEqual(pawn.resourceMemory, [], 'three failures and the pawn stops believing the place had rock')
 })
 
-test('Pawn Memory System - Broad Resource Specialization', async (t) => {
-    await t.test('farmer-type exposure should improve value comprehension for similar agriculture class', () => {
-        const pawn = new MockPawn()
+test('pawns learn from watching each other, but only from what they were close enough to see', () => {
+    const gatherer = new Pawn('gath', 'Gath', 300, 300)
+    const near = new Pawn('near', 'Near', 330, 300)
+    const far = new Pawn('far', 'Far', 700, 700)
+    worldWith(gatherer, near, far)
 
-        pawn.trackMaterialEncounter({ type: 'wheat_seed', soilType: 'loam', seedType: 'wheat' })
-        pawn.trackMaterialEncounter({ type: 'barley_seed', soilType: 'loam', seedType: 'barley' })
-        pawn.trackMaterialEncounter({ type: 'crop_bundle', soilType: 'silt', seedType: 'corn' })
+    const nearMemory = rememberAt(near, 'stick', 260, 260, { confidence: 0.4 })
+    const farMemory = rememberAt(far, 'stick', 260, 260, { confidence: 0.4 })
+    assert.ok(nearMemory && farMemory)
 
-        const unfamiliarBase = pawn.getResourceValue('corn_seed')
-        const withKnownSoil = pawn.getResourceValue('corn_seed', { soilType: 'loam' })
-        const withSoilAndSeed = pawn.getResourceValue('corn_seed', { soilType: 'loam', seedType: 'wheat' })
+    gatherer.updateResourceMemoryConfidence({ type: 'stick', x: 265, y: 260 }, true)
 
-        assert.ok(withKnownSoil > unfamiliarBase, 'Known soil classes should improve comprehension/value for similar agriculture materials')
-        assert.ok(withSoilAndSeed > withKnownSoil, 'Known seed classes should further improve valuation for similar items')
-    })
+    assert.equal(near.resourceMemory[0].observedSuccessCount, 1, 'the witness files what it saw')
+    assert.ok(near.resourceMemory[0].confidence > 0.4, 'and believes the patch a little more')
+    assert.equal(near.resourceMemory[0].lastObservedAt, near.world.clock.currentTick)
+    assert.ok(near.getSkill('routePlanning') > 0, 'watching someone else gather is practice')
 
-    await t.test('stick gatherer discernment should bias value by intended use', () => {
-        const pawn = new MockPawn()
+    assert.equal(far.resourceMemory[0].observedSuccessCount ?? 0, 0, 'fifty units past the earshot and nothing lands')
+    assert.equal(far.resourceMemory[0].confidence, 0.4)
 
-        pawn.trackMaterialEncounter({ type: 'timber_stick', tags: ['construction'] })
-        pawn.trackMaterialEncounter({ type: 'straight_shaft', tags: ['tool'] })
-        pawn.trackMaterialEncounter({ type: 'spear_branch', tags: ['weapon'] })
+    // A witness with no memory of its own learns the spot from the success.
+    const apprentice = new Pawn('app', 'App', 310, 310)
+    worldWith(gatherer, near, far, apprentice)
+    gatherer.updateResourceMemoryConfidence({ type: 'flint', x: 320, y: 320 }, true)
+    assert.equal(apprentice.resourceMemory.length, 1, 'seeing someone succeed is itself a location')
+    const learned = apprentice.resourceMemory[0]
+    assert.equal(learned.type, 'flint')
+    assert.equal(learned.source, 'shared')
+    assert.equal(learned.sharedBy, 'gath', 'and it knows whose success it was')
+    assert.ok(learned.confidence > 0 && learned.confidence < 0.4, 'hearsay is worth less than eyes-on: 0.4 scaled by proximity')
+})
 
-        const constructionValue = pawn.getResourceValue('stick', { intent: 'construction' })
-        const toolValue = pawn.getResourceValue('stick', { intent: 'tool' })
-        const weaponValue = pawn.getResourceValue('stick', { intent: 'weapon' })
+test('a cartographer teaches what it is sure of, and keeps the rest', () => {
+    const teacher = new Pawn('tch', 'Teacher', 100, 100)
+    const learner = new Pawn('lrn', 'Learner', 200, 200)
+    worldWith(teacher, learner)
+    train(teacher, { cartography: 25, storytelling: 8 })
 
-        assert.ok(constructionValue !== toolValue || constructionValue !== weaponValue, 'Stick valuation should diverge by intended use as discernment develops')
-        assert.ok(Math.max(constructionValue, toolValue, weaponValue) > 0.5, 'At least one use-specific valuation should exceed neutral baseline')
-    })
+    rememberAt(teacher, 'rock', 300, 300, { confidence: 0.4, clusterCount: 1 })
+    rememberAt(teacher, 'rock', 340, 300, { confidence: 0.8, clusterCount: 2 })
+    rememberAt(teacher, 'rock', 380, 300, { confidence: 0.9, clusterCount: 3 })
+
+    assert.equal(teacher.shareResourceMemory(teacher), 0, 'one does not brief oneself')
+    assert.equal(teacher.shareResourceMemory(null), 0)
+
+    const shared = teacher.shareResourceMemory(learner, { maxShare: 2, minConfidence: 0.6 })
+    assert.equal(shared, 2, 'two of the three were worth saying')
+    assert.equal(learner.resourceMemory.length, 2)
+    assert.deepEqual(learner.resourceMemory.map(m => m.confidence).sort((a, b) => b - a), [0.9 * 0.85, 0.8 * 0.85], 'hearsay arrives discounted')
+    for (const memory of learner.resourceMemory) {
+        assert.equal(memory.source, 'shared')
+        assert.equal(memory.sharedBy, 'tch')
+        assert.ok(memory.clusterCount >= 2, 'the size of the patch travels with the news')
+    }
+    assert.ok(!learner.resourceMemory.some(m => m.x === 300), 'the doubtful memory stayed home')
+    assert.ok(teacher.getSkill('storytelling') > 8, 'telling is practice at telling (#108)')
+    assert.ok(teacher.getSkill('routePlanning') > 0, 'and at saying where things are')
+    assert.ok(learner.getSkill('memoryClustering') > 0, 'being told is practice at filing')
+    assert.equal(learner.skillLastUsed.memoryClustering, learner.world.clock.currentTick)
+
+    // Two pawns told about the same patch converge on it rather than doubling up.
+    const again = new Pawn('lrn2', 'Learner2', 210, 210)
+    worldWith(teacher, learner, again)
+    again.learnResourceLocation({ type: 'rock', x: 375, y: 302, confidence: 0.5, clusterCount: 4, sourcePawnId: 'tch' })
+    const before = again.resourceMemory.length
+    teacher.shareResourceMemory(again, { maxShare: 1, minConfidence: 0.6 })
+    assert.equal(again.resourceMemory.length, before, 'a patch the pawn has already heard of is not a new place')
+    const merged = again.resourceMemory.find(m => m.x === 375)
+    assert.ok(merged.confidence > 0.5, 'the second source raises confidence instead')
+    assert.equal(merged.clusterCount, 4, 'and the bolder claim about how big the patch is survives the merge')
+    assert.equal(merged.source, 'shared')
+})
+
+test('a pupil only holds so much of what it is told', () => {
+    const teacher = new Pawn('tch2', 'Teacher', 100, 100)
+    const pupil = new Pawn('ptl', 'Pupil', 100, 120)
+    worldWith(teacher, pupil)
+    train(pupil, { cartography: 25 })
+    assert.equal(pupil.maxResourceMemory, 60)
+
+    // Fill the pupil to its cap with weak but survivable memories, then teach it
+    // something strong: the weakest memory goes rather than the cap breaking.
+    for (let i = 0; i < pupil.maxResourceMemory; i++) {
+        pupil.rememberResource({ type: 'rock', x: 40 + i * 30, y: 100 })
+    }
+    assert.equal(pupil.resourceMemory.length, 60)
+    for (const [i, memory] of pupil.resourceMemory.entries()) memory.confidence = 0.3 + i * 0.001
+
+    const accepted = pupil.learnResourceLocation({ type: 'flint', x: 1200, y: 1200, confidence: 0.95, sourcePawnId: 'tch2' })
+    assert.equal(accepted, true)
+    assert.equal(pupil.resourceMemory.length, 60, 'the cap is a cap even for news')
+    assert.ok(pupil.resourceMemory.some(m => m.type === 'flint'), 'the strong memory was admitted')
+    assert.ok(!pupil.resourceMemory.some(m => m.confidence <= 0.3001), 'the weakest one was what went')
+})
+
+// --- what a pawn is good at -------------------------------------------------
+
+test('a farmer values the ground and the seed it knows', () => {
+    const pawn = lonePawn('grub')
+    pawn.world.clock.currentTick = 77
+
+    pawn.trackMaterialEncounter({ type: 'wheat_seed', soilType: 'loam', seedType: 'wheat' })
+    pawn.trackMaterialEncounter({ type: 'barley_grain', soilType: 'silt' })
+    assert.ok(pawn.knownMaterials.has('wheat_seed'), 'encounters are recorded, not merely scored')
+    assert.ok(pawn.getSkill('agronomy') > 0, 'husbandry is practice, paid through the verb (#108)')
+    assert.equal(pawn.skillLastUsed.agronomy, 77)
+    assert.ok(pawn.getSkill('materialAppraisal') > 0)
+
+    const base = pawn.getResourceValue('corn_seed')
+    const onKnownSoil = pawn.getResourceValue('corn_seed', { soilType: 'loam' })
+    const withKnownSeed = pawn.getResourceValue('corn_seed', { soilType: 'loam', seedType: 'wheat' })
+    assert.ok(base > 0.5, 'working the agriculture domain lifts its value at all')
+    assert.ok(onKnownSoil > base, 'knowing the soil is worth something')
+    assert.ok(withKnownSeed > onKnownSoil, 'knowing the seed is worth something on top of that')
+    assert.equal(pawn.getResourceValue('corn_seed', { soilType: 'peat' }), base, 'a soil it has never turned is not a known soil')
+    assert.ok(pawn.resourceSpecialization.knownSoilTypes.has('silt'))
+})
+
+test('a carpenter values wood by what it is for', () => {
+    const pawn = lonePawn('wright')
+    pawn.trackMaterialEncounter({ type: 'log' })
+    pawn.trackMaterialEncounter({ type: 'branch' })
+    pawn.trackMaterialEncounter({ type: 'stick' })
+
+    const profile = pawn.resourceSpecialization.woodUse
+    assert.ok(profile.construction > profile.tool, 'a log, a branch and a stick read as building timber with a bit of tool shaft')
+    assert.ok(profile.weapon > profile.tool, 'and a branch reads as a spear shaft before it reads as a handle')
+
+    for (const intent of ['construction', 'tool', 'weapon', 'general']) {
+        assert.ok(pawn.getResourceValue('stick', { intent }) > 0.5, `${intent} intent should value wood above neutral`)
+    }
+    const building = pawn.getResourceValue('stick', { intent: 'construction' })
+    const carving = pawn.getResourceValue('stick', { intent: 'tool' })
+    assert.ok(building > carving, 'the pawn wants the stick for the wall it has built with sticks before')
+    assert.equal(pawn.getResourceValue('stick'), building, 'no stated intent means "whatever I am best at", not "nothing"')
+
+    // A preference set by the player still frames the number.
+    pawn.setResourceValuePreferences({ fiber: 0.9, rock: 0.5 })
+    assert.equal(pawn.getResourceValue('fiber'), 0.9, 'a favoured material starts from its preference')
+    assert.ok(pawn.getResourceValue('rock') <= 0.5)
+    assert.ok(pawn.getResourceValue('nothing_invented'), 'unknown material still gets a sane value')
 })

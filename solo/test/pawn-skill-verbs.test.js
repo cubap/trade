@@ -27,7 +27,13 @@ const ACTOR_FILES = [
     'solo/js/models/entities/mobile/PawnGoals.js',
     'solo/js/models/entities/mobile/PawnLearning.js',
     'solo/js/models/entities/mobile/PawnMercantile.js',
-    'solo/js/models/entities/mobile/PawnCivic.js'
+    'solo/js/models/entities/mobile/PawnCivic.js',
+    // #111: the landmark half of memory. It pays no skill today, which is
+    // precisely the sort of claim this guard cannot make about a file it never
+    // opens - so the memory module is in its scope now. It is also where #95's
+    // "a place on the zero axes is still a place" rule lives, and the resource
+    // half of memory needed that same rule (see pawn-memory.test.js).
+    'solo/js/models/entities/mobile/PawnMemory.js'
 ]
 
 // Payments an actor file may make with the primitive, `file#method` keyed, each

@@ -218,13 +218,23 @@ npm test
 - Pawns use hierarchical goal planning - complex goals decompose into subgoals
 - Goals have priorities and descriptions
 - Resource memory is consulted before exploration
-- Failed gathering attempts should update memory confidence (future enhancement)
+- A failed gather lowers that memory's confidence, and a patch that fails three
+  times is forgotten outright; `observeGatheringOutcome` books what other pawns
+  report about the same place
 
 ### Memory System
-- Pawns remember up to 100 resource locations
-- Memories have timestamps and age naturally
+- The cap is a phase ladder, not a constant: 20 places at memory phase 1, then 40,
+  60 and 100 (`updateMemoryPhase`, driven by orienteering and cartography). Above
+  phase 2 nothing evicts at all, which is a bug being tracked in #119.
+- Memories have timestamps and age naturally; recall throws away anything below
+  0.1 confidence or older than 2000 ticks, and ranks the rest by distance
+  (weighted by tiredness), age, confidence, cluster size and observed outcomes
 - Resource types: rock, stick, fiber_plant, forage_food, water
-- Memory clustering prevents duplicates within 30 units
+- Clustering merges nearby sightings into one patch, but only once a pawn reaches
+  memory phase 3 or earns `memoryClustering` 10; the radius is
+  `min(45, 18 + memoryClustering * 0.8)`, so it grows with practice rather than
+  being a fixed distance
+- `solo/test/pawn-memory.test.js` is the executable version of all of the above
 
 ### Crafting
 - Recipes define inputs (materials + quantities) and outputs
@@ -299,7 +309,6 @@ NODE_ENV=development
 
 ## Known Limitations
 
-- Test script in package.json needs updating to use `node --test`
-- Memory system doesn't yet track gathering success/failure (planned enhancement)
+- Resource memory stops honouring its cap above memory phase 2 (#119)
 - No UI for crafting/inventory (console-based for now)
 - Single pawn in solo mode (multi-pawn planned)
