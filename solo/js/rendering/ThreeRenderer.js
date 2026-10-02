@@ -829,15 +829,30 @@ class ThreeRenderer {
             this._disposeMesh(id)
         }
 
-        this.scene.remove(this._ambient)
-        this.scene.remove(this._sun)
-        this.scene.remove(this._ground)
-        this.scene.remove(this._gridHelper)
-        this.scene.remove(this._skyDome)
-        this._ground.geometry?.dispose?.()
-        this._ground.material?.dispose?.()
-        this._skyDome.geometry?.dispose?.()
-        this._skyDome.material?.dispose?.()
+        // Release everything the scene still holds. One sweep rather than a list of
+        // known meshes: the terrain and sky dome were handled here before, but the
+        // trail overlay (#93), the grid, the sight ring and any model that was still
+        // attached all survived teardown, so a renderer that is thrown away and
+        // rebuilt (hot-swap, solo restart) leaked GPU memory every time (#97).
+        // Shared resources are released once, and the scene is emptied so a stale
+        // renderer cannot be drawn by accident.
+        const released = new Set()
+        const release = resource => {
+            if (!resource || released.has(resource)) return
+            released.add(resource)
+            resource.dispose?.()
+        }
+        this.scene.traverse(obj => {
+            release(obj.geometry)
+            const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
+            for (const material of materials) release(material)
+        })
+        this.scene.clear()
+
+        this._trailMesh = null
+        this._trailPaint = null
+        this._trailSignature = ''
+        this._sightRing = null
         this._skyboxTexture?.dispose?.()
         this._pawnTexture?.dispose?.()
 
