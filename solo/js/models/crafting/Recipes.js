@@ -182,23 +182,32 @@ export const RECIPES = [
     name: 'Basic Shelter',
     description: 'Simple lean-to structure',
     requiredSkills: { construction_basics: 1 },
+    // #120. This used to ask for 20 `grass`, and no item of type `grass` has ever
+    // existed: grass patches are flora that browsers eat (`Grass.consume()` returns a
+    // population count, not an item), and nothing in the tree makes thatch. The frame
+    // now costs what the civic `build_structure` route has always cost - 8 sticks and
+    // 4 fibre - plus two cords to lash it, so the two routes to a shelter are
+    // comparable and neither is free.
     requiredItems: [
-      { type: 'stick', count: 10 },
-      { type: 'grass', count: 20 },
-      { type: 'cordage', count: 3 }
+      { type: 'stick', count: 8 },
+      { type: 'fiber', count: 4 },
+      { type: 'cordage', count: 2 }
     ],
+    // No `capacity`: a building you can put in your pack is a bug, not a storehouse.
+    // `restBonus` is read by `createShelter` and lands on the entity (#120).
     output: {
       type: 'shelter',
       name: 'Lean-to Shelter',
       baseQuality: 1,
       tags: ['structure', 'cover', 'shelter'],
-      capacity: 2,
       restBonus: 1.3
     },
     craftTime: 100,
     primarySkill: 'construction_basics',
     experience: 2.0,
-    placeable: true // Creates structure entity in world
+    // Honoured: `Pawn.craft` raises a Structure on the spot instead of handing back
+    // an item. See solo/test/recipe-placement.test.js (#120).
+    placeable: true
   }
 ]
 

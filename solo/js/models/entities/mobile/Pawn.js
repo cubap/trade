@@ -5,6 +5,7 @@ import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
 import INVENTION_CONFIG from './InventionConfig.js'
 import ResourceCache from '../immobile/ResourceCache.js'
+import { createShelter, SHELTER_SIZE } from '../immobile/Structure.js'
 import * as PawnCivic from './PawnCivic.js'
 import * as PawnSocial from './PawnSocial.js'
 import * as PawnTactical from './PawnTactical.js'
@@ -5223,12 +5224,47 @@ class Pawn extends MobileEntity {
         return null
     }
 
+    /**
+     * Can a building stand here? A structure occupies ground, so the only thing that
+     * stops a new one is another building already on the spot (#120). Pawns, caches
+     * and sticks are all fine to share a clearing with; a second lean-to on the first
+     * one is how a village becomes a diagram of overlapping purple discs.
+     *
+     * @param {number} x
+     * @param {number} y
+     * @param {number} [footprint] Centre-to-centre minimum, in world units
+     * @returns {boolean}
+     */
+    groundIsFreeForStructure(x, y, footprint = SHELTER_SIZE) {
+        const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        return !entities.some(entity => {
+            if (entity?.subtype !== 'structure') return false
+            const dx = entity.x - x
+            const dy = entity.y - y
+            return Math.sqrt(dx * dx + dy * dy) < footprint
+        })
+    }
+
     craft(recipe) {
         // Modern craft using Recipe data structure from Recipes.js
         // Check skills
         for (const [skill, level] of Object.entries(recipe.requiredSkills ?? {})) {
             if (this.getSkill(skill) < level) {
                 console.warn(`${this.name} lacks skill ${skill} (need ${level})`)
+                return null
+            }
+        }
+
+        // A `placeable` recipe makes a building rather than a burden (#120), and a
+        // building needs ground. Asked before a single stick leaves the pack: a craft
+        // that eats ten sticks and then fails because the clearing is full is the #112
+        // mistake wearing a different hat.
+        let buildSite = null
+        if (recipe.placeable) {
+            buildSite = { x: this.x, y: this.y }
+            if (!this.groundIsFreeForStructure(buildSite.x, buildSite.y)) {
+                console.warn(`${this.name} cannot raise ${recipe.name}: the ground is taken`)
+                this.setRecentAction('No clear ground for a shelter')
                 return null
             }
         }
@@ -5359,6 +5395,40 @@ class Pawn extends MobileEntity {
 
         // Evaluate unlocks after crafting
         this.evaluateSkillUnlocks?.()
+
+        if (recipe.placeable) {
+            // `placeable: true` used to be a comment on nothing: the output went into
+            // the pack, `capacity: 2` read like a storehouse and behaved like an
+            // oversized backpack, and the world gained nothing (#120). It is a
+            // Structure now, raised on the ground the pawn is standing on, through the
+            // same factory the civic build route uses - so a crafted lean-to and a
+            // built one are the same building and rot at the same rate.
+            const shelter = createShelter({
+                id: `shelter_${this.id}_${this.world?.clock?.currentTick ?? 0}_${Math.random().toString(36).slice(2, 7)}`,
+                name: output.name,
+                x: buildSite.x,
+                y: buildSite.y,
+                ownerId: this.id,
+                quality: output.quality,
+                restBonus: output.restBonus
+            })
+            shelter.placed = true
+            shelter.craftedBy = this.id
+            shelter.craftedAt = output.craftedAt
+            this.world?.addEntity?.(shelter)
+            this.rememberLandmark?.({
+                x: shelter.x,
+                y: shelter.y,
+                type: 'shelter',
+                significance: 8,
+                name: shelter.name,
+                event: 'raised'
+            })
+
+            this.setRecentAction(`Raised a ${shelter.name}`)
+            console.log(`${this.name} raised ${shelter.name} at ${Math.round(shelter.x)},${Math.round(shelter.y)} (quality: ${output.quality.toFixed(2)})`)
+            return shelter
+        }
 
         this.setRecentAction(`Crafted ${output.name}`)
 

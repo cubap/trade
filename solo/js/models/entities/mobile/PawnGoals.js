@@ -12,7 +12,7 @@ import {
     routeCostTo,
     ROUTE_MEMORY_MIN_TRIP
 } from './MovementPlan.js'
-import Structure from '../immobile/Structure.js'
+import { createShelter } from '../immobile/Structure.js'
 import { TRADE_DAY_TICKS } from '../../../core/TradeRoutes.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnLearning from './PawnLearning.js'
@@ -1705,7 +1705,14 @@ class PawnGoals {
 
                 // Attempt to craft
                 const crafted = this.pawn.craft?.(recipe)
-                if (crafted) {
+                if (crafted?.placed) {
+                    // #120: a `placeable` recipe raises a Structure in the world rather
+                    // than an item, so there is nothing to put in the pack - and a full
+                    // pack is no reason a lean-to failed to appear. The pawn is standing
+                    // in it.
+                    this.pawn.log?.('craft_goal', `${this.pawn.name} raised ${crafted.name}`)
+                    this.completeCurrentGoal()
+                } else if (crafted) {
                     const added = this.pawn.addItemToInventory(crafted)
                     if (!added) console.log(`${this.pawn.name} could not carry crafted ${crafted.name}`)
                     this.completeCurrentGoal()
@@ -1863,14 +1870,13 @@ class PawnGoals {
             }
 
             const shelterId = `shelter_${this.pawn.id}_${tick}_${Math.random().toString(36).slice(2, 7)}`
-            const shelter = new Structure(shelterId, `${this.pawn.name} Shelter`, site.x, site.y)
-            shelter.tags.add('cover')
-            shelter.tags.add('shelter')
-            shelter.tags.add('built')
-            shelter.ownerId = this.pawn.id
-            shelter.size = 18
-            shelter.condition = 110
-            shelter.maxCondition = 110
+            const shelter = createShelter({
+                id: shelterId,
+                name: `${this.pawn.name} Shelter`,
+                x: site.x,
+                y: site.y,
+                ownerId: this.pawn.id
+            })
 
             this.pawn.world?.addEntity?.(shelter)
             this.pawn.rememberLandmark?.({
@@ -2661,6 +2667,11 @@ class PawnGoals {
                 const { getAvailableRecipes, canCraftRecipe } = module
                 
                 const available = getAvailableRecipes(this.pawn)
+                    // #120: hoarding is about things you can carry and sell. A
+                    // `placeable` recipe spends the materials on a building in the
+                    // ground, which is the craft goal's job, not an accumulation of
+                    // stock - and it would always fail the `addItemToInventory` below.
+                    .filter(r => !r.placeable)
                     .filter(r => canCraftRecipe(this.pawn, r))
                     .sort((a, b) => (b.output.baseQuality ?? 1) - (a.output.baseQuality ?? 1))
                 

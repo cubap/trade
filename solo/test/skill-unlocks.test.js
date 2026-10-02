@@ -70,8 +70,10 @@ test('the exemptions are real recipes with a stated reason', () => {
     assert.ok(String(reason).trim().length > 20, `${recipeId} needs a reason worth reading`)
   }
   // Saying the set out loud, so adding a recipe cannot slip past unmentioned.
-  // #121 removed durable_cordage from this list: it has a driver now.
-  assert.deepStrictEqual(Object.keys(UNREACHABLE_RECIPES).sort(), ['basic_shelter'])
+  // #121 removed durable_cordage and #120 removed basic_shelter, which leaves the
+  // list empty: every recipe in the book is now something a pawn can learn to make.
+  // Emptiness is still an assertion, not an absence.
+  assert.deepStrictEqual(Object.keys(UNREACHABLE_RECIPES).sort(), [])
 })
 
 function grantsRecipe(recipeId) {
@@ -113,8 +115,9 @@ test('a granted skill qualifies the pawn, once', () => {
   assert.strictEqual(pawn.getSkill('weaving'), 0, 'a stranger has no weaving at all')
 
   pawn.skills.manipulation = 1
-  stow(pawn, 'grass', 3)
-  stow(pawn, 'fiber', 2)
+  // Three fibres, which is what the gate can actually be met with: no item of type
+  // `grass` has ever existed (#120).
+  stow(pawn, 'fiber', 3)
   pawn.evaluateSkillUnlocks()
 
   assert.ok(pawn.unlocked.skills.has('weaving'), 'the table says she worked it out')
@@ -290,7 +293,7 @@ test('making room still comes before a new thought', () => {
 
 test('ideas come from the table in the order the pawn had them', () => {
   const { pawn } = learner()
-  pawn.itemExposure = { fiber: 4, grass: 3 }
+  pawn.itemExposure = { fiber: 4 }
   pawn.skills.manipulation = 1
   pawn.evaluateSkillUnlocks()
 

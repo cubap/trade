@@ -37,7 +37,15 @@ export const SKILL_UNLOCKS = [
     description: 'Handling grasses reveals cordage and weaving basics',
     conditions: {
       skills: { manipulation: 1 },
-      itemExposure: { grass: 3, fiber: 2 }
+      // #120: this asked for 3 `grass`, and no item of type `grass` has ever existed.
+      // Grass is flora a browser eats (`Grass.consume()` returns a population count,
+      // there is no `gather()`), and nothing in the tree makes thatch - so cordage,
+      // the first rung of the whole crafting ladder, could never be learned and every
+      // recipe behind it (durable_cordage, and now `basic_shelter`, which lashes its
+      // frame with two cords) was unreachable through a phantom material. Fibre from a
+      // fibre plant is the same discovery made with the hands the world actually has.
+      // #129 is the ticket for giving grass something to be.
+      itemExposure: { fiber: 3 }
     },
     unlocks: {
       skills: ['weaving'],
@@ -62,18 +70,22 @@ export const SKILL_UNLOCKS = [
     }
   },
   {
-    // #115: this entry used to grant a `build_shelter` goal. No goal by that name
-    // exists anywhere - building happens through the civic `build_structure`
-    // goal, which long-term planning pushes on its own - so the grant was a
-    // label on nothing. The skill stays because construction_basics is what the
-    // shelter recipe asks for; the recipe itself is in UNREACHABLE_RECIPES.
+    // #120: this entry used to grant a `build_shelter` goal, then (in #115) nothing
+    // at all - so `basic_shelter`, the only recipe in the book that is a building
+    // rather than a burden, was unreachable twice over: no pawn could ever have it
+    // unlocked, and its `placeable` flag was read by nobody while its 20 grass asked
+    // for an item that does not exist. It now grants the recipe and the idea, and the
+    // recipe costs sticks, fibre and cordage a pawn can actually gather.
+    // The skill stays as the qualification, because the craft gate reads pawn.skills.
     id: 'construction_basics',
     description: 'Observing structures suggests basic construction',
     conditions: {
       structureExposure: { structure: 1 }
     },
     unlocks: {
-      skills: ['construction_basics']
+      skills: ['construction_basics'],
+      goals: ['craft_basic_shelter'],
+      recipes: ['basic_shelter']
     }
   },
   {
@@ -173,19 +185,17 @@ export const SKILL_UNLOCKS = [
 ]
 
 // #115: recipes the table deliberately does not grant. The guard test asserts
-// this set exactly, so a recipe is unreachable on purpose or not at all.
-export const UNREACHABLE_RECIPES = {
-  // A crafted shelter is an inventory item. `placeable: true` on the recipe is
-  // read by nothing, so granting it would let a pawn put a building in its pack.
-  // Shelters get built instead, by the civic `build_structure` goal, which
-  // creates a Structure in the world with an owner, condition and landmark.
-  basic_shelter: 'Shelters are built, not carried. Needs a place-from-recipe path.'
-  // durable_cordage is not here any more (#121). It used to be exempt because
-  // its only input, soaked_fiber, had no driver in the game; the `soaking_pit`
-  // entry above grants the recipe and the `soak_fiber` household errand in
-  // PawnGoals fills the pit. If that errand is ever removed, this exemption has
-  // to come back with it - the recipe is only reachable through the chore.
-}
+// this set exactly, so a recipe is unreachable on purpose or not at all - an
+// empty list is a claim, not an absence.
+//
+// `basic_shelter` was the last exemption (#120). It was unreachable twice over: no
+// entry granted it, and its inputs asked for 20 grass, an item no entity in the tree
+// can yield (grass patches are flora a browser eats; nothing gathers thatch). The
+// `construction_basics` entry now grants it, the frame is priced in sticks, fibre and
+// cordage, and `placeable` is honoured - `Pawn.craft` raises a Structure on the spot
+// through the same `createShelter` factory the civic `build_structure` goal uses, so
+// a pawn never carries a building in its pack.
+export const UNREACHABLE_RECIPES = {}
 
 // Every recipe id the table grants, for the guard test and for anyone reading
 // the table to see the whole reachable set at once.
