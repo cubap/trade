@@ -288,6 +288,14 @@ test('a sleeping pawn has room to think', () => {
     assert.ok(Math.abs(resting.getPonderWindowBonus() - awake.getPonderWindowBonus() - 0.08) < 1e-9)
 })
 
+test('the camera attention branch reads labels a pawn can hold (#131)', () => {
+    const src = fs.readFileSync(path.join(repoRoot, 'solo/js/rendering/CameraController3D.js'), 'utf8')
+    assert.ok(!/behaviorState === 'studying'/.test(src), "'studying' is not a state the goal map can produce")
+    assert.ok(!/behaviorState === 'resting'/.test(src), "'resting' belongs to animals, not pawns")
+    assert.match(src, /behaviorState === 'learning'/)
+    assert.match(src, /situations\?\.has\('resting'\)/)
+})
+
 test('the situation reader survives a world it cannot see into', () => {
     const pawn = makePawn({ world: { width: 10, height: 10 } })
     assert.equal(pawn.needs.readSituation().size, 0)
