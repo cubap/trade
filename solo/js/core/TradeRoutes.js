@@ -19,6 +19,18 @@ export const ROUTE_TRADE_MARGIN = 1.2
 /** Below this a road is too dangerous to plan anything along (unchanged since #95). */
 export const ROUTE_SAFETY_FLOOR = 0.3
 
+/**
+ * #99: how long a trading day is, in ticks, for both halves of a journey.
+ *
+ * The route table used to distrust any trip over 600 ticks, which was the right
+ * ceiling when a "journey" was the last few steps of a chance meeting and the
+ * wrong one the moment a merchant sets out to cross the map: a real crossing is
+ * thrown away as noise. One figure, in the module both travellers and route
+ * tables can import without a cycle, so the goal that gives up and the ledger
+ * that refuses to believe cannot drift apart.
+ */
+export const TRADE_DAY_TICKS = 2400
+
 /** True for a real, usable duration; a trip nobody timed must not poison the average. */
 function positive(value) {
     return typeof value === 'number' && Number.isFinite(value) && value > 0

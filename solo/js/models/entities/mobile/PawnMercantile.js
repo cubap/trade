@@ -9,6 +9,7 @@
 import { recordTrade, getPrice, getKnownPrices, isPriceStale, detectArbitrage } from '../../../core/PriceRegistry.js'
 import { findBestRoute, ROUTE_TRADE_MARGIN } from '../../../core/TradeRoutes.js'
 import { countItem as countHeld, getItemTypes } from './PawnInventory.js'
+import { routeCostTo } from './MovementPlan.js'
 
 /**
  * How much dearer a good must be elsewhere before a merchant bothers (#114).
@@ -448,6 +449,145 @@ export function bestMarketToSell(pawn, itemTypes = null) {
         if (isPriceStale(registry, type, market, tick, PRICE_STALE_AFTER)) continue
 
         if (!best || route.spread > best.gain) best = { type, market, gain: route.spread, route }
+    }
+
+    return best
+}
+
+/**
+ * How much dearer per tick of walking makes a trip worth taking (#99).
+ *
+ * A doubling of price buys a thousand ticks of walking, a 50% spread three
+ * hundred and fifty: below that a merchant is better employed trading with
+ * whoever is standing nearby, and the road will not be built by pawns who
+ * never set out. The figure is a rate rather than a distance on purpose - the
+ * question #99 asks is not "how far is too far" but "what is out there worth
+ * going that far for", which is the same arithmetic a route table records.
+ */
+export const JOURNEY_MIN_RATE = 0.001
+
+/**
+ * Anything shorter than this is not a journey, it is the last few steps the
+ * barter handler already knows how to walk. Without the floor a merchant two
+ * fields from a dear market would commit to a travel goal, arrive in a tick and
+ * churn the goal log for nothing.
+ */
+export const JOURNEY_MIN_TICKS = 24
+
+/** Every pawn in the world, for choosing a partner by value rather than by earshot. */
+function pawnsIn(world) {
+    if (!world?.entitiesMap) return []
+    return Array.from(world.entitiesMap.values()).filter(e => e?.subtype === 'pawn')
+}
+
+/** The coordinates a place name has in this pawn's memory, or null. */
+function placeInMemory(pawn, name) {
+    if (!name) return null
+    return pawn?.memoryMap?.find?.(entry => entry.name === name) ?? null
+}
+
+/**
+ * Ticks this pawn would spend walking to a place, priced the way a merchant
+ * prices it (#99, item 1).
+ *
+ * An established corridor is measured by the traffic that uses it - `averageTravelTime`
+ * is what #95's ledger recorded from real departures and arrivals, and it is the
+ * only figure in the sim that knows worn ground is cheaper than bushwhacking.
+ * Failing that, the surveyed length; failing that, what #94's cost field says
+ * about the straight line, which for a pawn that cannot read the land is the
+ * straight line.
+ */
+export function walkTicks(pawn, x, y, route = null) {
+    const speed = Number.isFinite(pawn?.speed) && pawn.speed > 0 ? pawn.speed : 1
+    if (route && Number.isFinite(route.averageTravelTime) && route.averageTravelTime > 0) {
+        return Math.round(route.averageTravelTime)
+    }
+    if (route && Number.isFinite(route.distance) && route.distance > 0) {
+        return Math.round(route.distance / speed)
+    }
+    const cost = routeCostTo(pawn, pawn?.x ?? 0, pawn?.y ?? 0, x, y, {
+        tick: pawn?.world?.tick ?? pawn?.world?.clock?.currentTick ?? 0
+    })
+    return Math.round(cost / speed)
+}
+
+/**
+ * The trade worth crossing the map for (#99).
+ *
+ * Until now, everywhere trade was chosen, it was chosen by proximity:
+ * findTradePartner() searched a radius, and `establish_trade` picked a random
+ * pawn off the entity map and walked to whichever it happened to draw first.
+ * Nobody compared what a trip would earn with what it cost, so a distant town
+ * with the thing you need lost to a neighbour with nothing. This ranks every
+ * candidate by profit rate - how much dearer the far end is, per tick of
+ * walking - over two kinds of candidate the tables can actually name: a market
+ * a road reaches from here (#118's `bestMarketToSell`) and a pawn whose home
+ * pays better than ours (#114's `priceAdvantage`), both costed by `walkTicks()`.
+ *
+ * A candidate has to clear the margin twice over: the price spread has to be
+ * real (`PRICE_TRADE_MARGIN`, inherited by the route table) and the walk has to
+ * be worth it (`JOURNEY_MIN_RATE`). Everything else is a stroll.
+ *
+ * @param {Pawn} pawn - the merchant considering setting out
+ * @param {Object} [options] - {itemTypes, candidates, includeNearby} for tests
+ *   and for callers that have already enumerated the world
+ * @returns {{kind: ('market'|'partner'), market: string|null, type: string,
+ *   gain: number, ticks: number, rate: number, destination: {x: number, y: number, name: string|null},
+ *   partner?: Pawn, route?: Object}|null}
+ */
+export function findTradeJourney(pawn, options = {}) {
+    if (!pawn) return null
+    const candidates = []
+
+    // A market the road table says we can reach. `bestMarketToSell` already
+    // filters by margin, staleness and the direction the walker is standing in;
+    // what it cannot know is where the place is, which is memory's job (#118).
+    const market = bestMarketToSell(pawn, options.itemTypes)
+    if (market) {
+        const place = options.destination ?? placeInMemory(pawn, market.market)
+        if (place && Number.isFinite(place.x) && Number.isFinite(place.y)) {
+            candidates.push({
+                kind: 'market',
+                market: market.market,
+                type: market.type,
+                gain: market.gain,
+                route: market.route,
+                destination: { x: place.x, y: place.y, name: market.market }
+            })
+        }
+    }
+
+    // Somebody else's home market, reached through the pawn who lives there.
+    const types = options.itemTypes ?? getSurplusItems(pawn).map(s => s.type)
+    if (types.length) {
+        const ours = new Set(types)
+        for (const partner of options.candidates ?? pawnsIn(pawn.world)) {
+            if (!partner || partner === pawn) continue
+            // They have to hold something we are not already drowning in, which is
+            // the test findTradePartner() applies. A pawn with an empty pack is a
+            // greeting, not a market, however dear their town's prices are (#99).
+            if (!getItemTypes(partner).some(type => !ours.has(type))) continue
+            const signal = priceAdvantage(pawn, partner, types)
+            if (!signal || signal.gain <= PRICE_TRADE_MARGIN) continue
+            candidates.push({
+                kind: 'partner',
+                partner,
+                market: signal.market ?? null,
+                type: signal.type,
+                gain: signal.gain,
+                destination: { x: partner.x, y: partner.y, name: signal.market ?? null }
+            })
+        }
+    }
+
+    let best = null
+    for (const candidate of candidates) {
+        const ticks = walkTicks(pawn, candidate.destination.x, candidate.destination.y, candidate.route ?? null)
+        if (!(ticks >= JOURNEY_MIN_TICKS)) continue
+        candidate.ticks = ticks
+        candidate.rate = (candidate.gain - 1) / Math.max(1, ticks)
+        if (candidate.rate < JOURNEY_MIN_RATE) continue
+        if (!best || candidate.rate > best.rate) best = candidate
     }
 
     return best

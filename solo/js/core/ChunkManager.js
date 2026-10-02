@@ -1,4 +1,5 @@
 import Chunk from './Chunk.js'
+import { TRADE_DAY_TICKS } from './TradeRoutes.js'
 
 class ChunkManager {
     constructor(worldWidth, worldHeight, chunkSize = 200, options = {}) {
@@ -563,7 +564,92 @@ class ChunkManager {
 
     _isDormantTradeGoal(goal) {
         if (!goal) return false
+        // A journey is its own kind of off-screen trade: the merchant is not haggling
+        // where nobody can see, they are walking, and pretending otherwise hands them
+        // a trade_bundle for a market they have not reached yet. #99 sends them down
+        // the road instead, into _simulateDormantTravel below.
+        if (goal.type === 'travel_route' && goal.destination) return false
         return goal.type === 'establish_trade' || goal.action === 'trade'
+    }
+
+    // The journey continues while the market is off-screen: the pawn keeps covering
+    // ground at their own speed, and the arrival is the real one, run by the same
+    // code an on-screen merchant uses, so wear, routes, prices and the clock all
+    // agree about what happened. Without this a merchant crossing dormant chunks
+    // freezes mid-trip and gives up at the commitment timeout. #99
+    _simulateDormantTravel(world, pawn, goal, tick, stepTicks) {
+        // A journey to a person ends where that person is now, not where they were
+        // when the merchant set out.
+        const partner = goal.tradePartner
+        const dest = (partner && goal.tradeKind === 'partner')
+            ? { x: partner.x, y: partner.y, name: goal.destination?.name ?? null }
+            : goal.destination
+        if (!dest || !Number.isFinite(dest.x) || !Number.isFinite(dest.y)) return
+
+        const stride = Math.max(1, (pawn.speed ?? 0.6) * Math.max(1, stepTicks ?? 1))
+        const dx = dest.x - pawn.x
+        const dy = dest.y - pawn.y
+        const dist = Math.hypot(dx, dy)
+
+        if (dist <= (goal.arriveRadius ?? 10) || dist <= stride) {
+            pawn.x = dest.x
+            pawn.y = dest.y
+            pawn.nextTargetX = dest.x
+            pawn.nextTargetY = dest.y
+            // Trading needs both parties in the same place, and the world's
+            // neighbour index is where "in the same place" is written down. If the
+            // market is a chunk the game has set down, the merchant has nowhere to
+            // sell; she keeps her walking and the ledger keeps her out of sight.
+            if (this._rehomesIntoWorld(world, pawn)) {
+                pawn.goals?.arriveAtTradeDestination?.(goal, dest)
+            } else {
+                // She walked all that way to a market nobody was trading at. There
+                // is no point standing there for the rest of the day.
+                pawn.goals?.abandonTradeJourney?.(goal, 'the market was not there')
+            }
+            return
+        }
+
+        pawn.x += (dx / dist) * stride
+        pawn.y += (dy / dist) * stride
+        pawn.nextTargetX = pawn.x
+        pawn.nextTargetY = pawn.y
+
+        const limit = pawn.tradeTrip?.maxTicks ?? TRADE_DAY_TICKS
+        if ((pawn.tradeTripAge?.() ?? 0) > limit) {
+            pawn.goals?.abandonTradeJourney?.(goal, 'the trading day ran out off-screen')
+        }
+    }
+
+    // Put a merchant who has walked into the watched part of the map back into the
+    // world there. Her age is carried across, because `addEntity` stamps `spawned`
+    // on anything the world takes on and a pawn who has been walking since yesterday
+    // should not be a day younger for having been unseen. Returns false when the
+    // ground she arrived on is not being simulated, which is the caller's cue not to
+    // pretend a trade happened.
+    _rehomesIntoWorld(world, pawn) {
+        if (!world || !pawn) return false
+        if (world.entitiesMap.has(pawn.id)) return true
+
+        const { chunkX, chunkY } = this.getChunkCoordsAtPosition(pawn.x, pawn.y)
+        if (!this.activeChunkKeys.has(this._chunkKey(chunkX, chunkY))) return false
+
+        // The dormant ledger files her under the chunk she was standing on when the
+        // player looked away, and it is the only place she is written down now. The
+        // filing has to be torn up as the world registration is made, or both
+        // simulations move her every tick.
+        for (const [key, entities] of this.dormantEntitiesByChunk) {
+            const at = entities.findIndex(e => e && (e.id || e.name) === (pawn.id || pawn.name))
+            if (at < 0) continue
+            entities.splice(at, 1)
+            if (entities.length === 0) this.dormantEntitiesByChunk.delete(key)
+            break
+        }
+
+        const born = pawn.spawned
+        world.addEntity(pawn)
+        if (born !== undefined) pawn.spawned = born
+        return true
     }
 
     _isDormantForagingGoal(goal) {
@@ -710,6 +796,11 @@ class ChunkManager {
             }
 
             if (!goal.startTime) goal.startTime = tick
+
+            if (goal.type === 'travel_route' && goal.destination) {
+                this._simulateDormantTravel(world, pawn, goal, tick + i, step)
+                continue
+            }
 
             if (this._isDormantTradeGoal(goal)) {
                 this._simulateDormantTrade(world, pawn, goal, tick + i)

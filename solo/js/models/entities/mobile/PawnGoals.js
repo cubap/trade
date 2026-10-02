@@ -13,6 +13,7 @@ import {
     ROUTE_MEMORY_MIN_TRIP
 } from './MovementPlan.js'
 import Structure from '../immobile/Structure.js'
+import { TRADE_DAY_TICKS } from '../../../core/TradeRoutes.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnLearning from './PawnLearning.js'
 
@@ -21,6 +22,16 @@ import * as PawnLearning from './PawnLearning.js'
 const COMMITMENT_STEP_TICKS = 60 // invested ticks per +1 preemption cost
 const COMMITMENT_MAX_COST = 1 // cost cap; critical needs (p4) can always preempt
 const GOAL_SWITCH_LOG_CAP = 12
+
+// How far a merchant will look for somebody to trade with once it has decided
+// to trade (#99: it was a bare 50 in two handlers, and the same figure now
+// decides whether the market it walked to is empty).
+const TRADE_SEARCH_RANGE = 50
+
+// Close enough to a market that the walk is over. The old `travel_route` used
+// the same figure; #99 makes it mean something, because arriving is now the
+// start of the barter rather than the end of a goal.
+const TRADE_ARRIVE_RADIUS = 10
 
 class PawnGoals {
     constructor(pawn) {
@@ -693,7 +704,10 @@ class PawnGoals {
     rememberGoalCorridor(goal) {
         if (!goal || goal.tripRecorded) return
         const from = goal.tripStart
-        const to = goal.target
+        // #99: a journey to a market has a destination and no target, and it is
+        // precisely the kind of corridor worth remembering - the errand is
+        // repeated, the ground under it wears.
+        const to = goal.target ?? goal.destination
         if (!from || !to) return
         const fx = Number(from.x)
         const fy = Number(from.y)
@@ -952,6 +966,205 @@ class PawnGoals {
         }
     }
     
+    /**
+     * The barter itself, lifted out of the `barter` branch of the update loop
+     * (#99) because a journey's last step is a trade, not an arrival: whoever
+     * walked across the map needs the same code that a chance meeting uses.
+     */
+    executeBarter(goal) {
+        // Execute a trade with another pawn. Proximity still wins when there is
+        // somebody nearby to swap with - the goods move sooner - but the partner
+        // a journey was taken for is not forgotten just because they stepped out
+        // of earshot on the far side of the market.
+        const partner = PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE) ?? goal.tradePartner ?? null
+
+        if (!partner) {
+            // Nobody to swap with after all. The clock goes with them (#99): a
+            // trip nobody closed would time the next journey from this departure.
+            this.pawn.endTradeTrip?.()
+            this.completeCurrentGoal()
+            return
+        }
+
+        // Move to partner
+        const dx = partner.x - this.pawn.x
+        const dy = partner.y - this.pawn.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+
+        if (dist > PawnMercantile.TRADE_REACH) {
+            this.pawn.nextTargetX = partner.x
+            this.pawn.nextTargetY = partner.y
+            // #95: the journey is what makes the road, so time it. A merchant who
+            // set out for a market already has the clock running; beginTradeTrip()
+            // will not reset it.
+            this.pawn.beginTradeTrip?.(partner, null)
+        } else {
+            // Close enough to trade
+            const surplus = PawnMercantile.getSurplusItems(this.pawn)
+
+            if (surplus.length === 0) {
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+                return
+            }
+
+            // Find something partner has that we want. `inventory` is an
+            // array, so Object.keys() here used to hand back indices and
+            // partner.countItem() is not a method on Pawn - the lookup threw
+            // or came up empty and no goal-driven barter ever completed (#107).
+            const offer = surplus[0]
+            const wantType = PawnMercantile.getItemTypes(partner).find(
+                type => type !== offer.type
+            )
+
+            if (!wantType) {
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+                return
+            }
+
+            const tradeOffer = PawnMercantile.initiateBarter(
+                this.pawn, partner,
+                offer.type, Math.min(offer.surplus, 2),
+                wantType, 1
+            )
+
+            if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
+                // acceptBarter pays both sides for the completed exchange;
+                // paying the initiator again here made a single trade worth
+                // twice as much bartering to whoever asked for it (#107).
+                // #95: the trip that just happened maintains the road and
+                // the route table entry for it. #99 made that trip longer.
+                this.pawn.noteTradeRoute?.(partner)
+                this.completeCurrentGoal()
+            } else {
+                // The offer was refused - one of the two packs had no room for
+                // what it would receive. Before #109 this branch could not be
+                // reached, because a refusal was reported as a success and the
+                // goods were destroyed; standing here and asking the same pawn
+                // again every tick would have been a new way to waste a life.
+                this.pawn.addThought?.(`${partner.name}'s hands are full`, 'social')
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+            }
+        }
+    }
+
+    /**
+     * Commit to a journey to the trade `findTradeJourney()` picked out (#99).
+     *
+     * The goal stops being a target and becomes a route: `goal.target` is cleared
+     * on purpose, because the generic completion test is "standing next to the
+     * target", and that test is the reason `establish_trade` used to finish as a
+     * greeting with both packs unchanged. The clock starts here, at the real
+     * departure, which is what makes `averageTravelTime` measure a journey rather
+     * than the last few steps of a chance meeting.
+     */
+    beginTradeJourney(goal, journey) {
+        const destination = journey?.destination ?? null
+        if (!destination || !Number.isFinite(destination.x) || !Number.isFinite(destination.y)) return null
+
+        goal.destination = destination
+        goal.tradeKind = journey.kind
+        goal.tradeItem = journey.type ?? null
+        goal.tradeMarket = journey.market ?? null
+        goal.tradePartner = journey.partner ?? null
+        goal.target = null
+        goal.type = 'travel_route'
+
+        // The trip worth timing is the one being walked. A clock left over from a
+        // goal somebody else abandoned would measure this journey from a place
+        // the merchant stopped standing hours ago.
+        this.pawn.tradeTrip = null
+        this.pawn.beginTradeTrip?.(goal.tradePartner, destination)
+
+        // Point at the prize on the tick the decision is made; the waypoint plan
+        // takes over from the next tick. A merchant who has decided to cross the
+        // map should be seen to start walking, not spend a tick thinking about it.
+        this.pawn.nextTargetX = destination.x
+        this.pawn.nextTargetY = destination.y
+        return goal
+    }
+
+    /**
+     * A journey that is not going to pay for itself is over. The clock goes with
+     * it: a trip that ended in a shrug must not lend its travel time to the road
+     * the merchant eventually walks, and a goal that is still current must not
+     * stay current. #99
+     */
+    abandonTradeJourney(goal, reason = 'the market was not worth the walk') {
+        this.pawn.endTradeTrip?.()
+        this.pawn.addThought?.(reason, 'social')
+        if (this.currentGoal === goal) this.completeCurrentGoal()
+    }
+
+    /**
+     * The walk itself (#99): follow a plan to the market, give up when the day is
+     * spent, and trade when there.
+     */
+    executeTradeJourney(goal) {
+        const destination = goal.destination
+
+        if (!destination || !Number.isFinite(destination.x) || !Number.isFinite(destination.y)) {
+            this.pawn.endTradeTrip?.()
+            this.completeCurrentGoal()
+            return
+        }
+
+        // A journey is a commitment with a deadline. TRADE_DAY_TICKS is both the
+        // figure the route table will believe and the point at which a merchant
+        // admits the market was not worth the walk, so an over-long trip is
+        // abandoned *and* stopped, rather than left running to distrust the road
+        // it eventually got to.
+        if (this.pawn.tradeTripAge?.() > TRADE_DAY_TICKS) {
+            this.abandonTradeJourney(goal, `${destination.name ?? 'the market'} was not worth the walk`)
+            return
+        }
+
+        const dist = Math.hypot(this.pawn.x - destination.x, this.pawn.y - destination.y)
+        if (dist <= TRADE_ARRIVE_RADIUS) {
+            this.arriveAtTradeDestination(goal)
+            return
+        }
+
+        const tick = this.currentTick()
+        let plan = this.pawn.movementPlan
+        if (!plan || plan.goal !== goal) {
+            plan = createMovementPlan(this.pawn, destination.x, destination.y, goal, tick)
+            this.pawn.movementPlan = plan
+        } else {
+            // Roads are made by walking on them, so the way ahead can get cheaper
+            // while you are on it; the planner re-reads the ground on its interval.
+            replanIfNeeded(plan, this.pawn, tick)
+        }
+
+        const waypoint = currentWaypoint(plan)
+        this.pawn.nextTargetX = waypoint?.x ?? destination.x
+        this.pawn.nextTargetY = waypoint?.y ?? destination.y
+        // A plan is advanced by whoever walks it, and until now only the
+        // explore/wander handlers did that - a merchant following a route it
+        // planned itself would have stood at the first waypoint forever.
+        advanceWaypoint(plan, this.pawn.x, this.pawn.y)
+    }
+
+    /**
+     * Arrived. The journey ends where a trade begins: at the market, trade with
+     * whoever is there (#99's point 2 - the walk, then the handshake, in that order).
+     */
+    arriveAtTradeDestination(goal) {
+        goal.tradeArrived = true
+        this.pawn.addThought?.(`reached ${goal.destination?.name ?? 'the market'}`, 'social')
+        if (!PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE)) {
+            // The far end was empty. Walking there still wore the ground, but no
+            // goods changed hands, so no route may claim a travel time - and the
+            // clock has to go with the hope, or the next journey is timed from
+            // this departure.
+            this.abandonTradeJourney(goal, `${goal.destination?.name ?? 'the market'} had nobody to trade with`)
+            return
+        }
+        this.executeBarter(goal)
+    }
+
     updateGoalSpecificLogic() {
         // Goal-specific update logic can be added here
         const goal = this.currentGoal
@@ -2008,73 +2221,8 @@ class PawnGoals {
                 }
             }
         }
-
-        if (goal.type === 'barter') {
-            // Execute a trade with another pawn
-            const partner = PawnMercantile.findTradePartner(this.pawn, 50)
-
-            if (!partner) {
-                this.completeCurrentGoal()
-                return
-            }
-
-            // Move to partner
-            const dx = partner.x - this.pawn.x
-            const dy = partner.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > PawnMercantile.TRADE_REACH) {
-                this.pawn.nextTargetX = partner.x
-                this.pawn.nextTargetY = partner.y
-                // #95: the journey is what makes the road, so time it.
-                this.pawn.beginTradeTrip?.(partner)
-            } else {
-                // Close enough to trade
-                const surplus = PawnMercantile.getSurplusItems(this.pawn)
-
-                if (surplus.length === 0) {
-                    this.completeCurrentGoal()
-                    return
-                }
-
-                // Find something partner has that we want. `inventory` is an
-                // array, so Object.keys() here used to hand back indices and
-                // partner.countItem() is not a method on Pawn - the lookup threw
-                // or came up empty and no goal-driven barter ever completed (#107).
-                const offer = surplus[0]
-                const wantType = PawnMercantile.getItemTypes(partner).find(
-                    type => type !== offer.type
-                )
-
-                if (!wantType) {
-                    this.completeCurrentGoal()
-                    return
-                }
-
-                const tradeOffer = PawnMercantile.initiateBarter(
-                    this.pawn, partner,
-                    offer.type, Math.min(offer.surplus, 2),
-                    wantType, 1
-                )
-
-                if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
-                    // acceptBarter pays both sides for the completed exchange;
-                    // paying the initiator again here made a single trade worth
-                    // twice as much bartering to whoever asked for it (#107).
-                    // #95: the trip that just happened maintains the road and
-                    // the route table entry for it.
-                    this.pawn.noteTradeRoute?.(partner)
-                    this.completeCurrentGoal()
-                } else {
-                    // The offer was refused - one of the two packs had no room for
-                    // what it would receive. Before #109 this branch could not be
-                    // reached, because a refusal was reported as a success and the
-                    // goods were destroyed; standing here and asking the same pawn
-                    // again every tick would have been a new way to waste a life.
-                    this.pawn.addThought?.(`${partner.name}'s hands are full`, 'social')
-                    this.completeCurrentGoal()
-                }
-            }
+        if (goal.type === 'barter') {
+            this.executeBarter(goal)
         }
 
         if (goal.type === 'seek_trade') {
@@ -2084,52 +2232,83 @@ class PawnGoals {
                 return
             }
 
-            const partner = PawnMercantile.findTradePartner(this.pawn, 50)
-            if (partner) {
+            const partner = PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE)
+            // #114 ranked nearby partners by what the recorded prices said their
+            // market paid; #99 asks the wider question - is anybody's market worth
+            // crossing the map for - and the answer has to be weighed before the
+            // neighbour is settled for, or "a distant town with what you need"
+            // loses to whoever happens to be standing in the same field.
+            const localGain = partner
+                ? (PawnMercantile.priceAdvantage(this.pawn, partner)?.gain ?? 0)
+                : 0
+
+            if (partner && localGain > PawnMercantile.PRICE_TRADE_MARGIN) {
                 // Switch to barter goal
                 goal.type = 'barter'
-            } else {
-                // Nobody within earshot. A coin flip is a poor way to spend the
-                // afternoon, so when the price table and the road table together
-                // say our goods would fetch more somewhere a road reaches, and
-                // memory holds where that place is, walk towards it instead
-                // (#114). Actually setting out along a long road is #99's job.
-                const sought = PawnMercantile.bestMarketToSell(this.pawn)
-                const place = sought
-                    ? this.pawn.memoryMap?.find(entry => entry.name === sought.market)
-                    : null
-
-                if (place) {
-                    this.pawn.nextTargetX = place.x
-                    this.pawn.nextTargetY = place.y
-                } else {
-                    // No partner, no price worth chasing: wander to find one.
-                    this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
-                    this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
-                }
-            }
-        }
-
-        if (goal.type === 'travel_route') {
-            // Travel to a trade destination
-            const destination = goal.destination
-            if (!destination) {
-                this.completeCurrentGoal()
+                this.executeBarter(goal)
                 return
             }
 
-            // Move toward destination
-            const dx = destination.x - this.pawn.x
-            const dy = destination.y - this.pawn.y
-            const dist = Math.sqrt(dx * dx + dy * dy)
-
-            if (dist > 10) {
-                this.pawn.nextTargetX = destination.x
-                this.pawn.nextTargetY = destination.y
-            } else {
-                // Arrived at destination
-                this.completeCurrentGoal()
+            const journey = PawnMercantile.findTradeJourney(this.pawn)
+            if (journey && this.beginTradeJourney(goal, journey)) {
+                this.pawn.addThought?.(`${journey.market ?? 'a dear market'} pays ${journey.gain.toFixed(1)}x for ${journey.type}`, 'social')
+                return
             }
+
+            if (partner) {
+                goal.type = 'barter'
+                this.executeBarter(goal)
+                return
+            }
+
+            // Nobody within earshot and no price worth chasing. A coin flip is a
+            // poor way to spend the afternoon, so wander outwards from home, which
+            // is what #118 left here: memory may hold a name the road table likes
+            // but no coordinates, and a place you cannot locate is not a destination.
+            this.pawn.nextTargetX = this.pawn.x + (Math.random() - 0.5) * 100
+            this.pawn.nextTargetY = this.pawn.y + (Math.random() - 0.5) * 100
+        }
+
+        if (goal.type === 'establish_trade') {
+            // #99: the planner emits this goal and nothing used to execute it.
+            // startGoal() drew a random pawn out of the entity map for any
+            // entity-targeted goal, and the generic completion test is "standing
+            // next to the target", so the merchant walked up to whoever came out of
+            // the hat, was 0.3 more convincing, and went home with both packs
+            // unchanged. Trading is not a greeting: choose the trade worth making,
+            // and if there is nobody to make it with, say so and go and find out.
+            const journey = PawnMercantile.findTradeJourney(this.pawn)
+            if (journey && this.beginTradeJourney(goal, journey)) return
+
+            const partner = goal.target ?? PawnMercantile.findTradePartner(this.pawn, TRADE_SEARCH_RANGE)
+            if (!partner || partner === this.pawn) {
+                this.pawn.endTradeTrip?.()
+                this.completeCurrentGoal()
+                return
+            }
+            // Keep the walk, but make the arrival the start of a barter instead of
+            // the end of a call: the partner travels in goal.tradePartner now, the
+            // clock runs from this departure, and completion is measured against
+            // where they are rather than against brushing past them.
+            goal.tradePartner = partner
+            goal.tradeKind = 'partner'
+            goal.target = null
+            goal.destination = {
+                x: partner.x,
+                y: partner.y,
+                name: partner.getHomeLandmark?.()?.name ?? null
+            }
+            this.pawn.tradeTrip = null
+            this.pawn.beginTradeTrip?.(partner, goal.destination)
+            goal.type = 'travel_route'
+            this.pawn.nextTargetX = goal.destination.x
+            this.pawn.nextTargetY = goal.destination.y
+        }
+
+        if (goal.type === 'travel_route') {
+            // Travel to a trade destination, and trade when there (#99)
+            this.executeTradeJourney(goal)
+            return
         }
 
         // Accumulate valuables: craft high-quality items

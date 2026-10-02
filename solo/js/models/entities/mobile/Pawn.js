@@ -22,7 +22,7 @@ import { createTerrainLosContext, createLineOfSightCache, describeBlocker } from
 import { VISION_HIDDEN_CAP, hiddenAt, describeHiddenEntry, describeSight } from '../../../core/SightRange.js'
 import { routeCostTo, canSurveyRoutes, trailPlanningBias } from './MovementPlan.js'
 import { trailFieldFor, TRAIL_COST_DISCOUNT } from '../../../core/TrailField.js'
-import { createRoute, findRoute, recordTrip } from '../../../core/TradeRoutes.js'
+import { createRoute, findRoute, recordTrip, TRADE_DAY_TICKS } from '../../../core/TradeRoutes.js'
 
 // Pathways (#77): tuning for how a pawn reads and benefits from worn ground.
 const TRAIL_BASE_AFFINITY = 0.35      // an untrained pawn still drifts a little
@@ -32,9 +32,12 @@ const TRAIL_XP_TRACKING = 0.006       // per step on ground someone else wore
 const TRAIL_XP_ROAD = 0.25            // per road opened (#95, a rare act)
 // Below this combined share of other species' wear, a corridor is just ground.
 const TRAIL_TRACKING_SHARE = 0.1
-// A trading trip longer than this was not a journey to a market and back; it
-// says nothing about how long the road takes (#95).
-const TRADE_ROUTE_MAX_TRIP_TICKS = 600
+// A trading trip is timed, not guessed. #95 allowed 600 ticks because anything
+// longer could not have been a walk between two neighbours; #99 sends merchants
+// across the map to a market, so the ceiling is a trading day - and it is the
+// same figure the journey goal gives up at, not a second number somebody has to
+// remember to change when the first one is tuned.
+const TRADE_ROUTE_MAX_TRIP_TICKS = TRADE_DAY_TICKS
 const TRAIL_THOUGHT_COOLDOWN = 320    // ticks between remarks about a path
 const TRAIL_REMARK_WEAR = 6           // how worn it must be to be worth noting
 // #96: what trail work was for, phrased for the player instead of the log. A
@@ -1081,19 +1084,55 @@ class Pawn extends MobileEntity {
     }
 
     /**
-     * Routes (#95): start the clock when a merchant sets out for a partner, so
-     * the route table can hold a measured travel time instead of a guess. Only
-     * the departure is recorded; refreshing it mid-journey would reset the
-     * measurement the arrival is supposed to read.
+     * Routes (#95): start the clock when a merchant sets out, so the route table
+     * can hold a measured travel time instead of a guess. Only the departure is
+     * recorded; refreshing it mid-journey would reset the measurement the arrival
+     * is supposed to read.
+     *
+     * #99 adds the second form: a merchant may set out for a *place* - a market
+     * whose prices the road table and the price table together recommended -
+     * before knowing whose hand it will shake there. Pass the destination for
+     * that, and whoever is standing at the far end closes the trip.
+     *
+     * @param {Object|null} partner - the pawn the trade is with, or null for a
+     *   journey to a place
+     * @param {{name?: string, x?: number, y?: number}|null} destination - the
+     *   market being travelled to, when no partner is known yet
      */
-    beginTradeTrip(partner) {
-        if (!partner || this.tradeTrip) return
+    beginTradeTrip(partner, destination = null) {
+        if (this.tradeTrip) return
+        if (!partner && !destination) return
         this.tradeTrip = {
-            partner: partner.id ?? null,
+            partner: partner?.id ?? null,
+            place: destination?.name ?? null,
             fromX: this.x,
             fromY: this.y,
             startTick: this._trailTick()
         }
+    }
+
+    /**
+     * #99: stop the clock on a journey that ended some other way - the market
+     * was empty, the partner wandered off, the walk outlasted the day. Someone
+     * has to clear it, or the next barter is timed from a departure nobody
+     * remembers and the road it opens is measured from the wrong place.
+     * @returns {number|null} ticks spent on the trip, or null if none was running
+     */
+    endTradeTrip() {
+        const trip = this.tradeTrip
+        this.tradeTrip = null
+        if (!trip) return null
+        return this._trailTick() - trip.startTick
+    }
+
+    /**
+     * Ticks since the current trade trip began, 0 when none is running. Measured
+     * on the same clock `beginTradeTrip` started, so a caller can decide the walk
+     * has outlasted its welcome without clearing the measurement (#99).
+     */
+    tradeTripAge() {
+        if (!this.tradeTrip) return 0
+        return this._trailTick() - this.tradeTrip.startTick
     }
 
     /**
@@ -1113,7 +1152,10 @@ class Pawn extends MobileEntity {
         this.tradeTrip = null
         const tick = this._trailTick()
         const road = this.openRoadTo(other.x, other.y, { fromX: trip?.fromX, fromY: trip?.fromY })
-        if (trip && trip.partner !== (other.id ?? null)) return { road, route: null }
+        // A trip begun *for a partner* belongs to that partner. A trip begun for
+        // a place (#99) belongs to the road, and whoever is standing at the far
+        // end when the goods change hands is the one who walked it with you.
+        if (trip && trip.partner != null && trip.partner !== (other.id ?? null)) return { road, route: null }
 
         const elapsed = trip ? tick - trip.startTick : null
         const travelTime = elapsed > 0 && elapsed <= TRADE_ROUTE_MAX_TRIP_TICKS ? elapsed : null
