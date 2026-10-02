@@ -4738,14 +4738,94 @@ class Pawn extends MobileEntity {
         }
     }
 
+    /**
+     * Why this item could not go into the pack right now, or null if it could.
+     *
+     * This is the only place the carrying limits are stated. addItemToInventory()
+     * asks it before it mutates anything, and a pawn that has to decide in advance
+     * - whether it can accept somebody's offer before the goods are touched (#109)
+     * - asks the same question instead of keeping a private copy of the rules that
+     * would quietly drift out of sync with the real ones.
+     *
+     * `state` tests a hypothetical pack (items held, weight, size so far) rather
+     * than this pawn's, which is how canHold() stacks several items up.
+     *
+     * @param {Object} item - prospective item
+     * @param {{count:number, weight:number, size:number}|null} [state]
+     * @returns {string|null} 'need_water_container' | 'inventory_full' | 'over_weight' | 'over_size' | null
+     */
+    carryRejection(item, state = null) {
+        if (!item) return 'invalid_item'
+        // A container-widening item counts its own bonus, as it does on the way in.
+        const bonus = item.increasesCapacity || {}
+        const count = state ? state.count : this.inventory.length
+        const weight = state ? state.weight : this.inventoryWeight
+        const size = state ? state.size : this.getInventorySize()
+        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
+            return 'need_water_container'
+        }
+        if (count >= this.inventorySlots + (bonus.slots ?? 0)) return 'inventory_full'
+        if ((weight + (item.weight ?? 1)) > this.maxWeight + (bonus.weight ?? 0)) return 'over_weight'
+        if ((size + (item.size ?? 1)) > this.maxSize + (bonus.size ?? 0)) return 'over_size'
+        return null
+    }
+
+    /**
+     * Could this pawn take `amount` more of `itemType`? Non-mutating.
+     *
+     * `frees` are items the pawn is about to give up - the other half of a barter -
+     * whose slot, weight and size are counted as available, because that is the
+     * order the real placement uses: goods leave a pack before the goods replacing
+     * them arrive. Without it, a pawn one rock short of room would be refused a
+     * trade it could actually have made.
+     *
+     * @param {string} itemType
+     * @param {number} [amount]
+     * @param {Object[]|null} [frees] - items expected to leave the pack first
+     * @returns {boolean}
+     */
+    canHold(itemType, amount = 1, frees = null) {
+        if (!(amount > 0)) return true
+        const leaving = Array.isArray(frees) ? frees : []
+        const state = {
+            count: this.inventory.length - leaving.length,
+            weight: this.inventoryWeight - leaving.reduce((sum, item) => sum + (item?.weight ?? 1), 0),
+            size: this.getInventorySize() - leaving.reduce((sum, item) => sum + (item?.size ?? 1), 0)
+        }
+        // A pack cannot be freer than empty; clamp rather than inventing space.
+        if (state.count < 0) state.count = 0
+        if (state.weight < 0) state.weight = 0
+        if (state.size < 0) state.size = 0
+        for (let i = 0; i < amount; i++) {
+            const probe = { type: itemType }
+            if (this.carryRejection(probe, state)) return false
+            state.count++
+            state.weight += probe.weight ?? 1
+            state.size += probe.size ?? 1
+        }
+        return true
+    }
+
     addItemToInventory(item) {
         // item: { id, name, weight, size, slotType, increasesCapacity, ... }
         // Track as known material
         this.trackMaterialEncounter(item)
-        
-        // Prevent water from being added unless pawn has a container
-        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
-            // Can't carry water without a container - trigger pondering!
+
+        const rejection = this.carryRejection(item)
+        if (!rejection) {
+            if (item.increasesCapacity) {
+                this.inventorySlots += item.increasesCapacity.slots ?? 0
+                this.maxWeight += item.increasesCapacity.weight ?? 0
+                this.maxSize += item.increasesCapacity.size ?? 0
+            }
+            this.inventory.push(item)
+            this.inventoryWeight += item.weight ?? 1
+            return true
+        }
+
+        // The two refusals a pawn learns from both widen into a thought: water
+        // needs something to hold it, and a full pack needs better carrying.
+        if (rejection === 'need_water_container') {
             this.recordChallengeContext('water_handling_hardship', 0.06, {
                 durationTicks: 700,
                 itemType: 'water'
@@ -4756,15 +4836,7 @@ class Pawn extends MobileEntity {
                 reason: 'Cannot carry water without container',
                 possibleSolutions: ['waterskin', 'clay_pot', 'gourd']
             })
-            return false
-        }
-        if (item.increasesCapacity) {
-            this.inventorySlots += item.increasesCapacity.slots ?? 0
-            this.maxWeight += item.increasesCapacity.weight ?? 0
-            this.maxSize += item.increasesCapacity.size ?? 0
-        }
-        if (this.inventory.length >= this.inventorySlots) {
-            // Inventory full - trigger pondering!
+        } else if (rejection === 'inventory_full') {
             this.recordChallengeContext('inventory_pressure', 0.06, {
                 durationTicks: 700,
                 itemType: item.type
@@ -4776,13 +4848,8 @@ class Pawn extends MobileEntity {
                 reason: 'No more hands to carry items',
                 possibleSolutions: ['basket', 'backpack', 'pouch', 'drop_items']
             })
-            return false
         }
-        if ((this.inventoryWeight + (item.weight ?? 1)) > this.maxWeight) return false
-        if ((this.getInventorySize() + (item.size ?? 1)) > this.maxSize) return false
-        this.inventory.push(item)
-        this.inventoryWeight += item.weight ?? 1
-        return true
+        return false
     }
     
     // Item durability and degradation

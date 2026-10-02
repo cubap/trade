@@ -2061,6 +2061,14 @@ class PawnGoals {
                     // the route table entry for it.
                     this.pawn.noteTradeRoute?.(partner)
                     this.completeCurrentGoal()
+                } else {
+                    // The offer was refused - one of the two packs had no room for
+                    // what it would receive. Before #109 this branch could not be
+                    // reached, because a refusal was reported as a success and the
+                    // goods were destroyed; standing here and asking the same pawn
+                    // again every tick would have been a new way to waste a life.
+                    this.pawn.addThought?.(`${partner.name}'s hands are full`, 'social')
+                    this.completeCurrentGoal()
                 }
             }
         }

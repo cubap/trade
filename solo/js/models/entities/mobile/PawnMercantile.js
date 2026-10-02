@@ -40,19 +40,49 @@ export { getItemTypes }
 
 /**
  * Remove N items of a type from pawn's inventory.
- * 
+ *
+ * Returns the items that actually came out, which is what lets a caller undo a
+ * move it no longer wants: an exchange that has to be refused should be able to
+ * put back exactly what it took (#109).
+ *
  * @param {Pawn} pawn - The pawn to remove items from
  * @param {string} itemType - Item type to remove
  * @param {number} amount - Number of items to remove
+ * @returns {Object[]} the removed items, fewer than `amount` if the pawn ran out
  */
 export function takeItems(pawn, itemType, amount) {
-    let removed = 0
-    for (const item of pawn.inventory) {
-        if (item.type === itemType && removed < amount) {
-            pawn.removeItemFromInventory(item.id)
-            removed++
+    const taken = []
+    // Iterating the live array while removeItemFromInventory splices it makes the
+    // cursor skip items, so a pawn with three sticks could only ever give up two.
+    for (const item of [...pawn.inventory]) {
+        if (item.type === itemType && taken.length < amount) {
+            const removed = pawn.removeItemFromInventory(item.id)
+            if (removed) taken.push(removed)
         }
     }
+    return taken
+}
+
+/**
+ * Can this pawn take what a trade would leave it, counting the goods it is about
+ * to hand over as room? The mirror of the "do you still have it" checks around a
+ * barter. Anything that does not answer the question (not a Pawn, or a Pawn from
+ * before the carry rules lived in one method) is assumed to have room rather than
+ * having a trade refused on a technicality.
+ *
+ * @param {Object} receiver - the pawn that would take the goods
+ * @param {string} incomingType - item type it would receive
+ * @param {number} incomingAmount
+ * @param {string|null} [outgoingType] - item type it hands over in the same trade
+ * @param {number} [outgoingAmount]
+ * @returns {boolean}
+ */
+function willCarry(receiver, incomingType, incomingAmount, outgoingType = null, outgoingAmount = 0) {
+    if (typeof receiver?.canHold !== 'function') return true
+    const frees = outgoingType && outgoingAmount > 0
+        ? receiver.inventory.filter(item => item.type === outgoingType).slice(0, outgoingAmount)
+        : null
+    return receiver.canHold(incomingType, incomingAmount, frees)
 }
 
 /**
@@ -121,6 +151,18 @@ export function initiateBarter(pawn, target, offerType, offerAmount, wantType, w
         return null
     }
 
+    // And that neither pack has room problems. Asking for a trade the other pawn
+    // physically cannot carry wastes the approach; asking for goods the initiator
+    // cannot bring back is the same mistake pointed the other way. acceptBarter
+    // decides for itself when the offer comes back, because a pack can fill in
+    // between asking and answering.
+    if (!willCarry(target, offerType, offerAmount, wantType, wantAmount)) {
+        return null
+    }
+    if (!willCarry(pawn, wantType, wantAmount, offerType, offerAmount)) {
+        return null
+    }
+
     // Create trade offer
     const offer = {
         id: `trade_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
@@ -153,14 +195,39 @@ export function acceptBarter(pawn, offer) {
     if (countItem(initiator, offer.offerType) < offer.offerAmount) return false
     if (countItem(pawn, offer.wantType) < offer.wantAmount) return false
 
-    // Execute trade
-    takeItems(initiator, offer.offerType, offer.offerAmount)
-    takeItems(pawn, offer.wantType, offer.wantAmount)
-    for (let i = 0; i < offer.wantAmount; i++) {
-        initiator.addItemToInventory({ type: offer.wantType })
-    }
-    for (let i = 0; i < offer.offerAmount; i++) {
-        pawn.addItemToInventory({ type: offer.offerType })
+    // Verify both packs can hold what they are about to receive. This mirror of the
+    // two checks above used to be missing entirely: the goods came out of both packs
+    // first, the placements were attempted, and their answer was thrown away, so a
+    // pawn with a full pack deleted the difference and was still paid the practice
+    // for a trade that had not happened (#109).
+    if (!willCarry(initiator, offer.wantType, offer.wantAmount, offer.offerType, offer.offerAmount)) return false
+    if (!willCarry(pawn, offer.offerType, offer.offerAmount, offer.wantType, offer.wantAmount)) return false
+
+    // Move both ways. canHold() should have made this a formality, so anything that
+    // still will not land undoes the whole exchange rather than eating it.
+    const toPawn = takeItems(initiator, offer.offerType, offer.offerAmount)
+    const toInitiator = takeItems(pawn, offer.wantType, offer.wantAmount)
+    const placedForPawn = []
+    const placedForInitiator = []
+    const stuck = []
+    for (const item of toPawn) (pawn.addItemToInventory(item) ? placedForPawn : stuck).push(item)
+    for (const item of toInitiator) (initiator.addItemToInventory(item) ? placedForInitiator : stuck).push(item)
+
+    if (stuck.length > 0 || toPawn.length < offer.offerAmount || toInitiator.length < offer.wantAmount) {
+        // Undo: every item goes back to the pawn it came from. Its own removal just
+        // made the room for it, so this normally cannot fail. If it somehow does -
+        // a pack too small to hold its own contents - the other side carries the
+        // goods rather than the item stopping existing: there is no ground to set
+        // anything down on.
+        for (const item of placedForPawn) pawn.removeItemFromInventory(item.id)
+        for (const item of placedForInitiator) initiator.removeItemFromInventory(item.id)
+        for (const item of toPawn) {
+            if (!initiator.addItemToInventory(item)) pawn.addItemToInventory(item)
+        }
+        for (const item of toInitiator) {
+            if (!pawn.addItemToInventory(item)) initiator.addItemToInventory(item)
+        }
+        return false
     }
 
     // Both parties gain bartering skill
