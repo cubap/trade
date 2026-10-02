@@ -68,8 +68,14 @@ export const RECIPES = [
     description: 'Knapped flint cutting tool',
     requiredSkills: { knapping: 1 },
     requiredItems: [
-      { type: 'rock', count: 2 },
-      { type: 'stone', count: 1 }
+      // #129: this used to ask for one `stone`, which is an item no entity in the
+      // world has ever produced - `Rock.gather()` drops a `rock` that is merely
+      // *tagged* 'stone', and `canCraftRecipe()` matches on type. Knapping and
+      // everything above it (`stone_knife`, the shelter that wants the knife) were
+      // waiting on a material that did not exist. Three rocks is the same pile of
+      // stone the recipe already wanted; the difference between a hammerstone and a
+      // flake belongs in the craft, not in the shopping list.
+      { type: 'rock', count: 3 }
     ],
     output: {
       type: 'sharp_stone',
@@ -286,5 +292,19 @@ export function calculateCraftQuality(pawn, recipe) {
   const quality = baseQuality + skillBonus + (Math.random() * 0.3 - 0.15) // ±15% variance
   return Math.max(0.5, quality)
 }
+
+/**
+ * #129: not every material comes out of the ground or off a bench. The soak pit
+ * spends a day turning `fiber` into `soaked_fiber`, which is a transformation the
+ * recipe book depends on but cannot express here, because a recipe is something a
+ * pawn does with its hands and a soak is something a pit does with its time.
+ *
+ * It is written down so that `solo/test/material-reachability.test.js` can tell
+ * "made slowly" apart from "never made", and `Pawn.startFiberSoakAtCache()` reads
+ * it back, so the two lists cannot drift away from each other.
+ */
+export const FIBER_SOAK = { id: 'fiber_soak', inputType: 'fiber', outputType: 'soaked_fiber' }
+
+export const PROCESS_TRANSFORMS = [FIBER_SOAK]
 
 export default RECIPES

@@ -2,6 +2,7 @@ import MobileEntity from './MobileEntity.js'
 import PawnNeeds from './PawnNeeds.js'
 import PawnGoals from './PawnGoals.js'
 import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
+import { FIBER_SOAK } from '../../crafting/Recipes.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
 import INVENTION_CONFIG from './InventionConfig.js'
 import ResourceCache from '../immobile/ResourceCache.js'
@@ -5602,7 +5603,7 @@ class Pawn extends MobileEntity {
         const tick = this.world?.clock?.currentTick ?? 0
         const moved = this.stashInventoryInCache({
             cache: targetCache,
-            itemTypes: ['fiber'],
+            itemTypes: [FIBER_SOAK.inputType],
             maxItems: fiberCount,
             purpose: 'fiber_soak'
         }).stashed
@@ -5610,14 +5611,14 @@ class Pawn extends MobileEntity {
         if (moved <= 0) return false
 
         const started = targetCache.startSoakJob({
-            inputType: 'fiber',
-            outputType: 'soaked_fiber',
+            inputType: FIBER_SOAK.inputType,
+            outputType: FIBER_SOAK.outputType,
             quantity: moved,
             durationTicks: dayTicks,
             tick,
             itemFactory: index => ({
-                id: `soaked_fiber_${tick}_${index}_${Math.random().toString(36).slice(2, 8)}`,
-                type: 'soaked_fiber',
+                id: `${FIBER_SOAK.outputType}_${tick}_${index}_${Math.random().toString(36).slice(2, 8)}`,
+                type: FIBER_SOAK.outputType,
                 name: 'Soaked Fiber',
                 quality: 1.1,
                 durability: 1.2,

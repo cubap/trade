@@ -1,12 +1,13 @@
 // FloraGenerator.js
-// Populate the world with Trees, Bushes, and Grass using chunk-aware placement
+// Populate the world with Trees, Bushes, Grass, and Herb patches using chunk-aware placement
 
 import { Tree, Bush, Grass } from '../models/entities/plants/Flora.js'
+import Herb from '../models/entities/resources/Herb.js'
 
 class FloraGenerator {
     constructor(world) {
         this.world = world
-        this.ids = { tree: 0, bush: 0, grass: 0 }
+        this.ids = { tree: 0, bush: 0, grass: 0, herb: 0 }
     }
 
     generateFlora() {
@@ -26,10 +27,15 @@ class FloraGenerator {
         const baseTrees = biome === 'forest' ? 20 : biome === 'plains' ? 6 : biome === 'hills' ? 9 : 8
         const baseBushes = biome === 'forest' ? 12 : biome === 'plains' ? 9 : biome === 'hills' ? 10 : 10
         const baseGrass = biome === 'plains' ? 30 : biome === 'forest' ? 18 : biome === 'hills' ? 20 : 22
+        // #129: herbs are the rarest thing placed here, on purpose. A poultice costs
+        // three of them, and a material under everyone's foot teaches nobody its value.
+        // Damp beats shade: wetland grows them in the open, dry biomes hide them in it.
+        const baseHerbs = biome === 'wetland' ? 7 : biome === 'hills' ? 6 : biome === 'forest' ? 5 : biome === 'plains' ? 3 : 2
 
         this.placeTrees(chunk, baseTrees)
         this.placeBushes(chunk, baseBushes)
         this.placeGrass(chunk, baseGrass)
+        this.placeHerbs(chunk, baseHerbs)
     }
 
     placeTrees(chunk, count) {
@@ -114,6 +120,29 @@ class FloraGenerator {
             // Grass is food for herbivores
             grass.tags.add('food')
             this.world.addEntity(grass)
+            placed++
+        }
+    }
+
+    /**
+     * #129: herb patches. Before this existed the recipe book asked for `herb` in
+     * two crafts and the unlock table asked for two of them in a pawn's hands twice
+     * over, and there was no plant anywhere in the world that could be picked.
+     *
+     * They favour the treeline in the dry biomes because that is where a gatherer
+     * would look for them, and they skip the shade in wetland, where the damp does
+     * the work the canopy does elsewhere.
+     */
+    placeHerbs(chunk, count) {
+        let placed = 0
+        let attempts = 0
+        while (placed < count && attempts < count * 8) {
+            attempts++
+            const wantShade = chunk.biome !== 'wetland' && Math.random() < 0.7
+            const pos = (wantShade ? this.findNearTypeInChunk(chunk, 'tree', 16) : null)
+                || this.randomPointInChunk(chunk, 12)
+            const herb = new Herb(`herb_${chunk.x}_${chunk.y}_${this.ids.herb++}`, pos.x, pos.y)
+            this.world.addEntity(herb)
             placed++
         }
     }
