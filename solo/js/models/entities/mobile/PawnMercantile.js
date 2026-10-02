@@ -234,26 +234,82 @@ export function acceptBarter(pawn, offer) {
     pawn.useSkill('bartering', 1)
     initiator.useSkill('bartering', 1)
 
+    // And the world learns what the goods are worth. A completed exchange is the
+    // only thing in the sim that knows a price, and until #110 it wrote nothing
+    // down: PriceRegistry's consumers all read null, and kept reading null no
+    // matter how much trade happened.
+    const world = pawn.world ?? initiator.world
+    if (world) {
+        const registry = world.priceRegistry ?? (world.priceRegistry = { prices: {} })
+        recordTradeObservation(pawn, offer, registry, tradeMarket(pawn, initiator))
+    }
+
     pawn.addThought(`Traded ${offer.wantAmount} ${offer.wantType} for ${offer.offerAmount} ${offer.offerType}`, 'trade')
     return true
 }
 
 /**
+ * The market a barter belongs to (#110).
+ *
+ * A price is a property of a place, and the only place-names this sim has are
+ * landmarks a pawn remembers. An exchange happened where the two pawns are
+ * standing, and the `barter` goal walks the initiator to the partner, so the
+ * resident's home is the ground it was struck on; the visitor's landmark is the
+ * fallback for a trade made in the field where only one of them knows where
+ * they are.
+ *
+ * Deliberately not `'unknown'`, which is what this used to fall back to. Filing
+ * every homeless pawn's trades in one global bucket puts numbers under a name no
+ * route can ever be keyed by - TradeRoutes needs two distinct landmarks at its
+ * ends (#95) - so the registry would have had data in it and still nothing that
+ * could read it. A price nobody can locate is not a known price yet.
+ *
+ * @param {Pawn} resident - the pawn that was asked, i.e. the one at home
+ * @param {Pawn} visitor - the pawn that travelled
+ * @returns {string|null}
+ */
+function tradeMarket(resident, visitor) {
+    return resident?.getHomeLandmark?.()?.name
+        ?? visitor?.getHomeLandmark?.()?.name
+        ?? null
+}
+
+/**
  * Record a trade observation in the price registry.
- * 
+ *
+ * Called from acceptBarter for the exchange it just completed (#110). One call
+ * books one pair of numbers: the ratio the offer states, and its reciprocal for
+ * the other good, both in the market the trade happened in. Booking it once per
+ * *pawn* instead - which is what "both sides observe" might suggest - would give
+ * the two ends of a single route opposite prices, and every merchant walking
+ * between them would find a profit that the trade which created the numbers
+ * already realised.
+ *
  * @param {Pawn} pawn - The pawn recording the trade
  * @param {Object} offer - The trade offer that was executed
- * @param {Object} registry - Price registry object (from world or shared scope)
+ * @param {Object} registry - Price registry object (the world's `priceRegistry`)
+ * @param {string|null} [location] - Market name; defaults to the pawn's home landmark
+ * @returns {boolean} True when the observation was bookable and written
  */
-export function recordTradeObservation(pawn, offer, registry) {
-    if (!registry) return
+export function recordTradeObservation(pawn, offer, registry, location = null) {
+    if (!registry || !offer || !offer.offerType || !offer.wantType) return false
 
-    const location = pawn.getHomeLandmark()?.name ?? 'unknown'
-    const tick = pawn.world?.clock?.currentTick ?? 0
+    const market = location ?? pawn?.getHomeLandmark?.()?.name ?? null
+    if (!market) return false
+
+    // An offer that did not come through initiateBarter may carry no ratio;
+    // the two amounts it names still mean the same exchange.
+    const ratio = Number.isFinite(offer.ratio) && offer.ratio > 0
+        ? offer.ratio
+        : (offer.wantAmount > 0 ? offer.offerAmount / offer.wantAmount : null)
+    if (ratio === null) return false
+
+    const tick = pawn?.world?.clock?.currentTick ?? 0
 
     // Record from both perspectives
-    recordTrade(registry, offer.offerType, location, offer.ratio, tick)
-    recordTrade(registry, offer.wantType, location, 1 / offer.ratio, tick)
+    recordTrade(registry, offer.offerType, market, ratio, tick)
+    recordTrade(registry, offer.wantType, market, 1 / ratio, tick)
+    return true
 }
 
 /**

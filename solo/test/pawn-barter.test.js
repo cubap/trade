@@ -4,6 +4,8 @@ import assert from 'node:assert'
 import World from '../js/core/World.js'
 import Pawn from '../js/models/entities/mobile/Pawn.js'
 import * as PawnMercantile from '../js/models/entities/mobile/PawnMercantile.js'
+import { getPrice } from '../js/core/PriceRegistry.js'
+import { findBestRoute } from '../js/core/TradeRoutes.js'
 
 // Bartering is the one skill a pawn can earn from somebody else's decision, so
 // who gets paid for it matters. acceptBarter already pays both sides of a
@@ -275,3 +277,119 @@ test('the placement is a net under the pre-check, not a second way to lose goods
   assert.strictEqual(ada.getSkill('bartering'), 1)
 })
 
+
+// ---------------------------------------------------------------------------
+// #110: a completed exchange is the only thing in the sim that knows a price,
+// and it wrote nothing down. recordTradeObservation existed with no caller, so
+// PriceRegistry stayed empty forever and every consumer - findBestRoute above
+// all - skipped every candidate on a null price and behaved exactly as it would
+// have if prices were merely unknown. These tests are the wire: goods in, number
+// out, at the place the trade happened.
+
+function homed(pawn, name) {
+  pawn.memoryMap.push({ type: 'shelter', name, x: pawn.x, y: pawn.y, significance: 8 })
+  return pawn
+}
+
+test('a completed barter teaches the market its price', () => {
+  const { world, ada, bo } = tradingPair()
+  homed(ada, 'Hill')
+  homed(bo, 'Lake')
+
+  const offer = PawnMercantile.initiateBarter(ada, bo, 'stick', 2, 'rock', 1)
+  assert.strictEqual(PawnMercantile.acceptBarter(bo, offer), true)
+
+  assert.strictEqual(getPrice(world.priceRegistry, 'stick', 'Lake'), 2, 'the offer ratio, in the market it was paid')
+  assert.strictEqual(getPrice(world.priceRegistry, 'rock', 'Lake'), 0.5, 'and its reciprocal for the other good')
+  assert.strictEqual(
+    getPrice(world.priceRegistry, 'stick', 'Hill'),
+    null,
+    'Ada travelled to Lake, so nothing was learnt about Hill'
+  )
+})
+
+test('one exchange books one observation, not one per side', () => {
+  const { world, ada, bo } = tradingPair()
+  homed(ada, 'Hill')
+  homed(bo, 'Lake')
+  PawnMercantile.acceptBarter(bo, PawnMercantile.initiateBarter(ada, bo, 'stick', 2, 'rock', 1))
+
+  // Recording the same trade once for each pawn would either double-weight one
+  // market or, worse, state the mirror as a price somewhere else - and the two
+  // ends of a route made by that very trade would disagree about what a stick
+  // costs, which is a profit no merchant earned.
+  assert.strictEqual(world.priceRegistry.prices.stick.Lake.observations.length, 1)
+  assert.strictEqual(world.priceRegistry.prices.rock.Lake.observations.length, 1)
+  assert.strictEqual(world.priceRegistry.prices.stick.Hill, undefined)
+})
+
+test('a trade between pawns with no landmark invents no market', () => {
+  const { world, ada, bo } = tradingPair()
+  assert.strictEqual(PawnMercantile.acceptBarter(bo, PawnMercantile.initiateBarter(ada, bo, 'stick', 2, 'rock', 1)), true)
+
+  // The old fallback was the string 'unknown', which filed every homeless pawn's
+  // trades in one global bucket no route can ever be keyed after (#95 needs two
+  // distinct landmarks). That is unread machinery with data in it.
+  assert.deepStrictEqual(world.priceRegistry.prices, {})
+  assert.strictEqual(getPrice(world.priceRegistry, 'stick', 'unknown'), null)
+})
+
+test('a barter that was refused teaches the market nothing', () => {
+  const { world, ada, bo } = tradingPair()
+  homed(bo, 'Lake')
+  bo.inventorySlots = 3
+  const refused = handOffer({
+    initiator: ada.id,
+    offerType: 'stick',
+    offerAmount: 2,
+    wantType: 'rock',
+    wantAmount: 1
+  })
+
+  assert.strictEqual(PawnMercantile.acceptBarter(bo, refused), false)
+  assert.deepStrictEqual(world.priceRegistry.prices, {}, 'a price for an exchange that did not happen is a rumour')
+})
+
+test('the price a barter writes is a price the route table can read', () => {
+  const { world, ada, bo } = tradingPair()
+  homed(ada, 'Hill')
+  homed(bo, 'Lake')
+  const routes = { list: [{ from: 'Hill', to: 'Lake', trips: 1, safetyScore: 1 }] }
+  assert.strictEqual(
+    findBestRoute(routes, world.priceRegistry, 'stick'),
+    null,
+    'an untouched registry skips every candidate - this is the no-op #110 is about'
+  )
+
+  // Sticks go for three rocks' worth of value at Lake...
+  assert.strictEqual(PawnMercantile.acceptBarter(bo, PawnMercantile.initiateBarter(ada, bo, 'stick', 3, 'rock', 1)), true)
+  // ...and one at Hill, where Bo has to travel to buy them.
+  assert.strictEqual(PawnMercantile.acceptBarter(ada, PawnMercantile.initiateBarter(bo, ada, 'rock', 1, 'stick', 1)), true)
+
+  assert.strictEqual(getPrice(world.priceRegistry, 'stick', 'Lake'), 3)
+  assert.strictEqual(getPrice(world.priceRegistry, 'stick', 'Hill'), 1)
+
+  const best = findBestRoute(routes, world.priceRegistry, 'stick')
+  assert.ok(best, 'with two markets priced, the ranking has numbers to work with')
+  assert.strictEqual(best.spread, 3)
+})
+
+test('an offer that never carried a ratio is still priced by its amounts', () => {
+  const { world, ada, bo } = tradingPair()
+  const registry = { prices: {} }
+
+  const written = PawnMercantile.recordTradeObservation(
+    bo,
+    { offerType: 'stick', offerAmount: 4, wantType: 'rock', wantAmount: 1 },
+    registry,
+    'Lake'
+  )
+  assert.strictEqual(written, true)
+  assert.strictEqual(getPrice(registry, 'stick', 'Lake'), 4)
+
+  assert.strictEqual(
+    PawnMercantile.recordTradeObservation(ada, { offerType: 'stick', offerAmount: 1, wantType: 'rock', wantAmount: 1 }, registry),
+    false,
+    'Ada has no landmark, so there is no market to book it in'
+  )
+})

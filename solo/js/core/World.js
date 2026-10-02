@@ -14,6 +14,11 @@ class World {
             seed: options.mapSeed,
             mapStyle: options.mapStyle
         })
+        // #110: a price belongs to the world, not to whoever saw the trade.
+        // acceptBarter is the only producer; TradeRoutes and the merchant
+        // features in #99/#100 are the readers. Shape is PriceRegistry's own:
+        // { prices: { [itemType]: { [location]: { observations, average, lastObserved } } } }
+        this.priceRegistry = { prices: {} }
     }
 
     setActiveChunkWindow(centerX, centerY, radius = this.activeChunkRadius) {
