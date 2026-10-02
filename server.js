@@ -21,6 +21,9 @@ app.get('/', (req, res) => {
   res.send('Server is running')
 })
 
+// Client code references assets as /solo/... (repo-root style); serve them both ways
+app.use('/solo', express.static('solo'))
+
 app.use(express.static('solo'))
 // The solo client loads three.js as plain ES modules with no bundler. Serving
 // node_modules would expose every installed package (CodeQL
