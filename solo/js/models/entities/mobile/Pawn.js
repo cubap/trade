@@ -164,6 +164,7 @@ class Pawn extends MobileEntity {
         // Phase 1: Egocentric (direction-based, must update as pawn moves)
         // Phase 2: Allocentric (compass directions, fixed origin, compressed vectors)
         this.resourceMemory = [] // { type, tags, x, y, lastSeen, amount, successCount, failCount, confidence, memoryPhase }
+        this.routeMemory = [] // #105: { x, y, savings, legs, trips, tick } - what walking somewhere actually saved
         this.maxResourceMemory = 20 // Can be increased by skills
         this.memoryOrigin = { x, y } // Origin point for allocentric memory (spawn location)
         this.memoryPhase = 1 // 1=egocentric, 2=allocentric, 3=clusters, 4=conceptual

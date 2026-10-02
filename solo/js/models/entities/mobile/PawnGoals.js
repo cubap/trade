@@ -7,7 +7,10 @@ import {
     planComplete,
     replanIfNeeded,
     sortByRouteCost,
-    recordRouteRecall
+    recordRouteRecall,
+    rememberRouteSavings,
+    routeCostTo,
+    ROUTE_MEMORY_MIN_TRIP
 } from './MovementPlan.js'
 import Structure from '../immobile/Structure.js'
 import * as PawnMercantile from './PawnMercantile.js'
@@ -601,6 +604,12 @@ class PawnGoals {
         console.log(`${this.pawn.name} starting goal: ${goal.description}`)
         this.pawn.movementPlan = null // routes belong to the goal that made them
         if (goal.startedAtTick == null) goal.startedAtTick = this.currentTick()
+        // #105: where the pawn set out from, so a finished errand can be
+        // measured as a corridor. Re-starting a goal (commitment, preemption)
+        // must not move the departure point or the trip reads as a stroll.
+        if (goal.tripStart == null) {
+            goal.tripStart = { x: this.pawn.x, y: this.pawn.y, tick: this.currentTick() }
+        }
         // High-priority and command goals stay freely preemptible; routine goals
         // earn commitment (see getCommitmentCost / #82).
         if (goal.preemptible == null) {
@@ -668,6 +677,36 @@ class PawnGoals {
         if (!Array.isArray(list)) return list
         sortByRouteCost(this.pawn, list).forEach((item, i) => { list[i] = item })
         return list
+    }
+
+    /**
+     * #105: score the corridor a finished goal just used and file it against
+     * the destination. Plans only exist for waypointed routes, so without this
+     * the memory would collect random exploration points that are never
+     * revisited while the berry patch the pawn harvests weekly stayed unknown.
+     *
+     * The figure is what the worn ground gave between the departure point and
+     * the target at the moment of the walk, which is what "it was cheap when I
+     * came this way" means: `sortByRouteCost()` reads it back later, even after
+     * the wear itself has faded.
+     */
+    rememberGoalCorridor(goal) {
+        if (!goal || goal.tripRecorded) return
+        const from = goal.tripStart
+        const to = goal.target
+        if (!from || !to) return
+        const fx = Number(from.x)
+        const fy = Number(from.y)
+        const tx = Number(to.x)
+        const ty = Number(to.y)
+        if (![fx, fy, tx, ty].every(Number.isFinite)) return
+        const straight = Math.hypot(tx - fx, ty - fy)
+        if (straight < ROUTE_MEMORY_MIN_TRIP) return
+
+        goal.tripRecorded = true
+        const tick = this.currentTick()
+        const cost = routeCostTo(this.pawn, fx, fy, tx, ty, { tick })
+        rememberRouteSavings(this.pawn, tx, ty, straight - cost, { tick })
     }
 
     findTargetForGoal(goal) {
@@ -813,6 +852,10 @@ class PawnGoals {
         }
         
         console.log(`${this.pawn.name} completed goal: ${goal.description}`)
+
+        // #105: an errand the pawn just walked is worth remembering, because
+        // resource nodes are the destinations it actually returns to.
+        this.rememberGoalCorridor(goal)
         
         // Apply completion rewards
         if (goal.completionReward) {
