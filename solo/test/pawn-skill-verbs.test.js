@@ -45,7 +45,13 @@ const NON_ACT_PAYMENTS = new Set([
     // of the drinking.
     'solo/js/models/entities/mobile/Pawn.js#consumeFoodOrDrink',
     // Keeping regular hours is a condition the pawn is in, not a thing it does.
-    'solo/js/models/entities/mobile/Pawn.js#applyRegularHoursBonus'
+    'solo/js/models/entities/mobile/Pawn.js#applyRegularHoursBonus',
+    // #116: an unlock that grants a skill is a qualification, not practice. The
+    // pawn did not repeat an action to earn the level; the table said it can now
+    // do something requiring one, and every gate in the game reads pawn.skills.
+    // Growth rules are exactly what this list exists for - deliberate, named, and
+    // paid once per unlock rather than once per evaluation.
+    'solo/js/models/entities/mobile/Pawn.js#qualifySkill'
 ])
 
 const AURA_FILES = [

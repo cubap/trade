@@ -572,6 +572,9 @@ class Pawn extends MobileEntity {
 
         const used = neededCount - remaining
         if (used > 0) {
+            // #115: material worked at its source passed through the pawn's
+            // hands just as surely as material carried home.
+            this.noteItemHandled(req.type, used)
             this.setRecentAction(`Combining at ${req.sourceTag ?? req.type} source`)
         }
         return used
@@ -733,6 +736,33 @@ class Pawn extends MobileEntity {
     }
 
     /**
+     * The qualification verb: paying a skill because something now requires it.
+     *
+     * #116. Not practice - nobody repeated an action, so nothing accumulated -
+     * and not a buff either, which is why it does not hide in `increaseSkill`
+     * at some call site. An unlock entry that says `skills: ['weaving']` is a
+     * promise about what the pawn can do next, and every gate in the game reads
+     * `pawn.skills` (getAvailableRecipes, the craft executors, the goal
+     * classifiers), so the promise has to be paid here or `unlocked.skills` is
+     * a list of intentions no code consults.
+     *
+     * It tops the skill up to `level` instead of adding to it: a pawn that has
+     * already knapped its way to 0.8 needs 0.2 of qualification, not a second
+     * level, and a pawn past the level is left exactly where it was. Growth
+     * rules are on the exception list in pawn-skill-verbs.test.js, which exists
+     * to keep this kind of payment deliberate and visible.
+     * @param {string} skill - Skill name
+     * @param {number} level - The level the pawn is now qualified for (default 1)
+     * @returns {boolean} true if the skill number moved
+     */
+    qualifySkill(skill, level = 1) {
+        const current = this.skills[skill] ?? 0
+        if (current >= level) return false
+        this.increaseSkill(skill, level - current)
+        return true
+    }
+
+    /**
      * #96: pay trail skill *and* keep the reason. `useSkill` alone leaves the
      * player with a number that moved and no story attached, which is exactly
      * the complaint: walking a corridor for 400 ticks and seeing a nicer brown
@@ -846,12 +876,33 @@ class Pawn extends MobileEntity {
         this.evaluateSkillUnlocks?.()
     }
 
+    /**
+     * #115: the writer for `itemExposure`, which counts material that has passed
+     * through the pawn's hands.
+     *
+     * It used to be `examineItem` that incremented this, which made the counter
+     * measure *looking*: a pawn could satisfy "handled four fibres" by studying
+     * the same bundle over and over, and a pawn that carried a sack of rocks
+     * without pausing to admire them registered nothing. Exposure is now paid
+     * where material is acquired - stowed in the pack, or drawn from a source
+     * during a craft - and attention keeps paying what attention earns, which is
+     * practice. Both readings were true about learning; only the second one is
+     * true about the number, and one call site cannot tell them apart.
+     * @param {string} type - Item type being handled
+     * @param {number} count - How many units (default 1)
+     */
+    noteItemHandled(type, count = 1) {
+        if (!type || !(count > 0)) return
+        this.itemExposure = this.itemExposure ?? {}
+        this.itemExposure[type] = (this.itemExposure[type] ?? 0) + count
+    }
+
     examineItem(item, amount = 0.2) {
         if (!item) return
-        // Track exposure to item types to support unlocks later
+        // #115: no exposure payment here on purpose. Studying a packed item is
+        // attention, not handling; the pack already recorded the handling when
+        // the item went in (see noteItemHandled).
         const type = item.type ?? item.name ?? 'unknown'
-        this.itemExposure = this.itemExposure ?? {}
-        this.itemExposure[type] = (this.itemExposure[type] ?? 0) + 1
         
         // Track as known material for lateral learning
         this.trackMaterialEncounter(item)
@@ -1444,6 +1495,10 @@ class Pawn extends MobileEntity {
                     if (!this.unlocked.skills.has(sk)) {
                         this.unlocked.skills.add(sk)
                         newly.skills.push(sk)
+                        // #116: the grant is a qualification, so pay the first
+                        // level. Once, here - re-evaluating the table every
+                        // commit must not hand out another level each time.
+                        this.qualifySkill(sk)
                     }
                 }
                 for (const g of (unlock.unlocks?.goals ?? [])) {
@@ -4837,6 +4892,14 @@ class Pawn extends MobileEntity {
      * the pack was the one it never chose (#112). Selection follows the complaint
      * that opens the pondering queue - full hands want the thing that makes room.
      *
+     * #117 adds the other half. The unlock table has always listed goals -
+     * `craft_cordage`, `craft_sharp_stone`, `craft_basket` - and nothing read
+     * them, so an idea the pawn had was ranked below the order a source file was
+     * written in. Now the newest idea the pawn can actually carry out wins, which
+     * is what "unlocked a goal" is for. Making room still comes first: urgency
+     * outranks novelty, or a pawn with a new thought and no space keeps weaving
+     * rope it cannot hold.
+     *
      * @param {Object[]} candidates - recipes already filtered to unlocked + craftable
      * @returns {Object|null}
      */
@@ -4846,7 +4909,29 @@ class Pawn extends MobileEntity {
             const widening = candidates.find(r => (r.output?.increasesCapacity?.slots ?? 0) > 0)
             if (widening) return widening
         }
+        for (const recipeId of this.craftIdeas()) {
+            const thought = candidates.find(r => r.id === recipeId)
+            if (thought) return thought
+        }
         return candidates[0]
+    }
+
+    /**
+     * The pawn's craft ideas, newest first.
+     *
+     * `unlocked.goals` is a Set, so insertion order is the order the ideas
+     * arrived, and the last one in is the thought the pawn just had. Goals that
+     * are not craft ideas are skipped: the convention in the table is
+     * craft_&lt;recipeId&gt;, and anything else is a name the planner cannot act on.
+     * @returns {string[]} recipe ids, most recently conceived first
+     */
+    craftIdeas() {
+        const goals = this.unlocked?.goals
+        if (!goals || typeof goals[Symbol.iterator] !== 'function') return []
+        return [...goals]
+            .map(goal => /^craft_(.+)$/.exec(String(goal))?.[1])
+            .filter(Boolean)
+            .reverse()
     }
 
     /**
@@ -4884,6 +4969,15 @@ class Pawn extends MobileEntity {
 
         const rejection = this.carryRejection(item)
         if (!rejection) {
+            // #115: this is what "handled it" means - it came into the pack. The
+            // stamp is the item's memory of whose hands it last filled, so a
+            // failed transfer (which rolls itself back by re-adding the very same
+            // object) does not count as a second encounter with a known material.
+            const handledType = item.type ?? item.name ?? 'unknown'
+            if (item._handledBy !== this.id) {
+                this.noteItemHandled(handledType, 1)
+                item._handledBy = this.id
+            }
             this.applyItemCapacity(item, true)
             this.inventory.push(item)
             this.inventoryWeight += item.weight ?? 1
