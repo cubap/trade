@@ -1976,7 +1976,7 @@ class PawnGoals {
             const dy = partner.y - this.pawn.y
             const dist = Math.sqrt(dx * dx + dy * dy)
 
-            if (dist > 10) {
+            if (dist > PawnMercantile.TRADE_REACH) {
                 this.pawn.nextTargetX = partner.x
                 this.pawn.nextTargetY = partner.y
                 // #95: the journey is what makes the road, so time it.
@@ -1990,10 +1990,13 @@ class PawnGoals {
                     return
                 }
 
-                // Find something partner has that we want
+                // Find something partner has that we want. `inventory` is an
+                // array, so Object.keys() here used to hand back indices and
+                // partner.countItem() is not a method on Pawn - the lookup threw
+                // or came up empty and no goal-driven barter ever completed (#107).
                 const offer = surplus[0]
-                const wantType = Object.keys(partner.inventory || {}).find(
-                    type => partner.countItem(type) > 0 && type !== offer.type
+                const wantType = PawnMercantile.getItemTypes(partner).find(
+                    type => type !== offer.type
                 )
 
                 if (!wantType) {
@@ -2008,7 +2011,9 @@ class PawnGoals {
                 )
 
                 if (tradeOffer && PawnMercantile.acceptBarter(partner, tradeOffer)) {
-                    this.pawn.useSkill('bartering', 1)
+                    // acceptBarter pays both sides for the completed exchange;
+                    // paying the initiator again here made a single trade worth
+                    // twice as much bartering to whoever asked for it (#107).
                     // #95: the trip that just happened maintains the road and
                     // the route table entry for it.
                     this.pawn.noteTradeRoute?.(partner)
