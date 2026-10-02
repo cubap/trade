@@ -1,6 +1,7 @@
 import MobileEntity from './MobileEntity.js'
 import PawnNeeds from './PawnNeeds.js'
 import PawnGoals from './PawnGoals.js'
+import { SITUATION_RADIUS, hasTag } from './PawnBehaviors.js'
 import { SKILL_UNLOCKS, isUnlockSatisfied } from '../../skills/SkillUnlocks.js'
 import { FIBER_SOAK } from '../../crafting/Recipes.js'
 import { emitUnlocks } from '../../skills/UnlockEvents.js'
@@ -2982,8 +2983,13 @@ class Pawn extends MobileEntity {
 
         let behaviorBonus = 0
         if (behavior === 'idle') behaviorBonus += 0.05
-        if (behavior === 'resting' || behavior === 'sleeping') behaviorBonus += 0.08
-        if (behavior === 'learning' || behavior === 'study') behaviorBonus += 0.1
+        // #131: this used to ask `behaviorState` for 'resting'/'sleeping', neither
+        // of which the pawn's own goal system can write ('resting' is an animal
+        // state - see AnimalBehavior.js), and for 'study', which nothing writes at
+        // all. Rest is a fact about where the pawn is, so it comes from the
+        // snapshot the needs system reads out of the world.
+        if (this.needs?.situations?.has('resting')) behaviorBonus += 0.08
+        if (behavior === 'learning') behaviorBonus += 0.1
 
         return Math.max(0, (calmWindow * 0.05) + behaviorBonus)
     }
@@ -3041,20 +3047,22 @@ class Pawn extends MobileEntity {
     registerRestOutcome(goal = null) {
         const tick = this.world?.clock?.currentTick ?? 0
         const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        // #131: the radii and the cover test come from `PawnBehaviors`, which is
+        // what `PawnNeeds.readSituation()` now uses to decide whether the pawn is
+        // under a roof at all. The night used to be judged by one pair of numbers
+        // and the need model by another.
         const nearCover = entities.some(entity => {
-            const tags = entity?.tags
-            const hasCover = Array.isArray(tags) ? tags.includes('cover') : typeof tags?.has === 'function' ? tags.has('cover') : false
-            if (!hasCover) return false
+            if (!hasTag(entity, 'cover')) return false
             const dx = (entity.x ?? 0) - this.x
             const dy = (entity.y ?? 0) - this.y
-            return Math.sqrt(dx * dx + dy * dy) <= 26
+            return Math.sqrt(dx * dx + dy * dy) <= SITUATION_RADIUS.shelter
         })
 
         const nearbyPawns = entities.filter(entity => {
             if (entity?.subtype !== 'pawn' || entity.id === this.id) return false
             const dx = (entity.x ?? 0) - this.x
             const dy = (entity.y ?? 0) - this.y
-            return Math.sqrt(dx * dx + dy * dy) <= 30
+            return Math.sqrt(dx * dx + dy * dy) <= SITUATION_RADIUS.company
         })
 
         if (!nearCover) {

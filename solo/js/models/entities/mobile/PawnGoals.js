@@ -13,6 +13,7 @@ import {
     ROUTE_MEMORY_MIN_TRIP
 } from './MovementPlan.js'
 import { createShelter } from '../immobile/Structure.js'
+import { behaviorForGoal } from './PawnBehaviors.js'
 import { TRADE_DAY_TICKS } from '../../../core/TradeRoutes.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnLearning from './PawnLearning.js'
@@ -1104,41 +1105,10 @@ class PawnGoals {
     }
     
     getBehaviorForGoal(goal) {
-        const behaviorMap = {
-            'find_food': 'seeking_food',
-            'find_water': 'seeking_water',
-            'rest': 'seeking_rest',
-            'seek_shelter': 'seeking_shelter',
-            'socialize': 'seeking_social',
-            'negotiate_group': 'negotiating',
-            'work': 'working',
-            'explore': 'exploring',
-            'build_structure': 'building',
-            'establish_trade': 'trading',
-            'map_territory': 'surveying',
-            'train_skill': 'teaching',
-            'teach_skill': 'teaching',
-            'apprentice_skill': 'learning',
-            'observe_skill': 'observing',
-            'follow_leader': 'following',
-            'protect_target': 'guarding',
-            'escort_target': 'escorting',
-            'mark_target': 'coordinating',
-            'obey_leader': 'obeying',
-            'craft_item': 'crafting',
-            'craft_cordage': 'crafting',
-            'craft_sharp_stone': 'crafting',
-            'craft_poultice': 'crafting',
-            'gather_materials': 'gathering',
-            'stage_build_materials': 'hauling',
-            'gather_specific': 'gathering',
-            'soak_fiber': 'hauling',
-            'search_resource': 'exploring',
-            'collaborative_craft': 'collaborating',
-            'accumulate_valuables': 'crafting'
-        }
-        
-        return behaviorMap[goal.type] || 'idle'
+        // #131: the map moved to `PawnBehaviors.js` so the vocabulary the goal
+        // system writes and the vocabulary `PawnNeeds` reads are one list, checked
+        // against each other by solo/test/need-behaviors.test.js.
+        return behaviorForGoal(goal)
     }
     
     /**

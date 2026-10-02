@@ -166,7 +166,16 @@ export default function createCameraController(renderer) {
                     renderer._tmpAttnDir.copy(renderer._tmpTravelDir)
                 }
 
-                const isStudying = pawn.behaviorState === 'studying' || pawn.behaviorState === 'resting'
+                // #131: 'studying' was never a state a pawn could hold, and
+                // 'resting' only belongs to animals, so this branch never fired
+                // and a settled pawn's camera always followed its travel vector.
+                // The labels that do mean "standing still, paying attention" are
+                // the learning/teaching/observing goals; being asleep is a fact
+                // the needs system reads out of the world.
+                const isStudying = pawn.behaviorState === 'learning'
+                    || pawn.behaviorState === 'teaching'
+                    || pawn.behaviorState === 'observing'
+                    || pawn.needs?.situations?.has('resting')
                 const attnWeight = isStudying ? 0.85 : (isMoving ? 0.35 : 0.6)
                 renderer._tmpBlendDir
                     .addScaledVector(renderer._tmpTravelDir, 1 - attnWeight)

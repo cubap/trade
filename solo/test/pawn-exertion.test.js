@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import PawnNeeds, { EXERTION } from '../js/models/entities/mobile/PawnNeeds.js'
 import MobileEntity from '../js/models/entities/mobile/MobileEntity.js'
 import Pawn from '../js/models/entities/mobile/Pawn.js'
+import { createShelter } from '../js/models/entities/immobile/Structure.js'
 import { TRAIL_PLANNING_SKILL_MASTERY } from '../js/models/entities/mobile/MovementPlan.js'
 import TrailField, {
     TRAIL_CELL_SIZE,
@@ -228,20 +229,32 @@ test('a full pack makes the same walking feel harder', () => {
     assert.ok(loaded() <= EXERTION.MAX, 'and still respect the ceiling')
 })
 
-test('exertion settles at rest, and settles fastest asleep', () => {
-    const cool = (behaviorState, updates) => {
-        const n = new PawnNeeds({ behaviorState })
+test('exertion settles at rest, and settles fastest in a bed', () => {
+    // #131: this test used to hand the pawn the words 'resting' and 'sleeping'
+    // and check the arithmetic that followed - in #111's phrase, a test of a copy
+    // of a pawn. Neither string was something the real game could ever write into
+    // `behaviorState`, so the recovery it proved off was never actually available.
+    // The pawn is now put in the situation instead of told to claim it.
+    const cool = ({ rest = false, bed = null } = {}, updates = 4) => {
+        const pawn = makePawn()
+        if (bed) pawn.world.entitiesMap = new Map([[bed.id, bed]])
+        if (rest) pawn.goals.currentGoal = { type: 'rest', target: bed, startTime: 1 }
+        const n = pawn.needs
         n.exertion = 1
         n.lastNeedsUpdate = 0
         for (let t = 1; t <= updates * 5; t++) n.updateNeeds(t)
         return n.exertion
     }
+    const leanTo = createShelter({ id: 'lean-to', name: 'Lean-to', x: 1, y: 0, restBonus: 1.3 })
     // Linear, so the arithmetic is checkable rather than merely smaller.
-    assert.ok(Math.abs(cool('idle', 4) - (1 - 4 * EXERTION.DECAY)) < 1e-12, `idle: ${cool('idle', 4)}`)
-    assert.ok(Math.abs(cool('resting', 4) - (1 - 4 * EXERTION.DECAY * EXERTION.REST_DECAY)) < 1e-12, `resting: ${cool('resting', 4)}`)
-    assert.ok(cool('sleeping', 4) < cool('resting', 4), 'sleep is the best recovery')
-    assert.equal(cool('sleeping', 20), 0, 'a night asleep should clear any afternoon')
-    assert.ok(cool('idle', 20) > 0, 'but standing about does not')
+    assert.ok(Math.abs(cool({}, 4) - (1 - 4 * EXERTION.DECAY)) < 1e-12, `idle: ${cool({}, 4)}`)
+    assert.ok(
+        Math.abs(cool({ rest: true }, 4) - (1 - 4 * EXERTION.DECAY * EXERTION.REST_DECAY)) < 1e-12,
+        `asleep on bare ground: ${cool({ rest: true }, 4)}`
+    )
+    assert.ok(cool({ rest: true, bed: leanTo }, 4) < cool({ rest: true }, 4), 'a bed is the best recovery')
+    assert.equal(cool({ rest: true, bed: leanTo }, 20), 0, 'a night in a bed should clear any afternoon')
+    assert.ok(cool({}, 20) > 0, 'but standing about does not')
 })
 
 // --- the decision it feeds -------------------------------------------------
