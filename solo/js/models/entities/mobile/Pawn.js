@@ -828,18 +828,18 @@ class Pawn extends MobileEntity {
         const subtype = target?.subtype
         // Interacting with plants improves herbalism slightly
         if ((Array.isArray(tags) ? tags.includes('plant') : (typeof tags?.has === 'function' ? tags.has('plant') : false)) || subtype === 'plant') {
-            this.increaseSkill('herbalism', amount)
+            this.useSkill('herbalism', amount)
         }
         // Interacting with structures (e.g., school) improves planning/cartography a bit
         if ((Array.isArray(tags) ? tags.includes('structure') : (typeof tags?.has === 'function' ? tags.has('structure') : false)) || subtype === 'structure') {
-            this.increaseSkill('planning', amount * 0.8)
-            this.increaseSkill('cartography', amount * 0.4)
+            this.useSkill('planning', amount * 0.8)
+            this.useSkill('cartography', amount * 0.4)
         }
         // Interacting with another pawn improves social skills slightly
         if (subtype === 'pawn') {
-            this.increaseSkill('storytelling', amount * 0.5)
-            this.increaseSkill('convincing', amount * 0.3)
-            this.increaseSkill('manipulation', amount * 0.2)
+            this.useSkill('storytelling', amount * 0.5)
+            this.useSkill('convincing', amount * 0.3)
+            this.useSkill('manipulation', amount * 0.2)
         }
         // Light unlock evaluation on interaction
         this.evaluateSkillUnlocks?.()
@@ -859,20 +859,20 @@ class Pawn extends MobileEntity {
         const tags = item.tags ?? []
         const has = t => Array.isArray(tags) ? tags.includes(t) : (typeof tags?.has === 'function' ? tags.has(t) : false)
         if (has('herb') || /herb|leaf|flower/i.test(String(type))) {
-            this.increaseSkill('herbalism', amount)
+            this.useSkill('herbalism', amount)
         }
         if (has('potion') || /potion|elixir/i.test(String(type))) {
-            this.increaseSkill('alchemy', amount)
+            this.useSkill('alchemy', amount)
         }
         if (has('medical') || has('bandage') || /salve|bandage|medicine/i.test(String(type))) {
-            this.increaseSkill('medicine', amount * 0.8)
+            this.useSkill('medicine', amount * 0.8)
         }
         // Food/drink inform basic survival
         if (has('food') || item.type === 'food') {
-            this.increaseSkill('planning', amount * 0.2)
+            this.useSkill('planning', amount * 0.2)
         }
         if (has('drink') || item.type === 'drink' || has('water')) {
-            this.increaseSkill('planning', amount * 0.2)
+            this.useSkill('planning', amount * 0.2)
         }
 
         this.addItemExperience?.(type, 1)
@@ -889,11 +889,11 @@ class Pawn extends MobileEntity {
         if (isStructure) this.structureExposure.structure = (this.structureExposure.structure ?? 0) + 1
         if (isSchool) this.structureExposure.school = (this.structureExposure.school ?? 0) + 1
         if (isStructure) {
-            this.increaseSkill('planning', amount)
+            this.useSkill('planning', amount)
             if (isSchool) {
                 // Studying environment nudges cartography/intuition a bit
-                this.increaseSkill('cartography', amount * 0.5)
-                this.increaseSkill('intuition', amount * 0.2)
+                this.useSkill('cartography', amount * 0.5)
+                this.useSkill('intuition', amount * 0.2)
             }
         }
         this.evaluateSkillUnlocks?.()
@@ -909,12 +909,12 @@ class Pawn extends MobileEntity {
     passiveSkillTick() {
         // Example: exploring increases orienteering, guarding increases composure
         if (this.behaviorState === 'exploring') {
-            this.increaseSkill('orienteering', 0.1)
+            this.useSkill('orienteering', 0.1)
             // Remember resources while exploring
             this.observeNearbyResources()
         }
         if (this.behaviorState === 'guarding') {
-            this.increaseSkill('composure', 0.1)
+            this.useSkill('composure', 0.1)
         }
         // Add more passive skill checks as needed
         // Observation now requires interaction/training, not mere proximity
@@ -1281,14 +1281,14 @@ class Pawn extends MobileEntity {
     trainSkill(skill, student, amount = 0.5) {
         // Training another pawn increases their skill
         if (student && student.increaseSkill) {
-            student.increaseSkill(skill, amount)
+            student.useSkill(skill, amount)
         }
     }
 
     apprenticeSkill(skill, teacher, amount = 0.5) {
         // Apprenticing under a teacher (only learn if teacher is better)
         if (teacher && teacher.getSkill(skill) > this.getSkill(skill)) {
-            this.increaseSkill(skill, amount)
+            this.useSkill(skill, amount)
         }
     }
 
@@ -1407,7 +1407,7 @@ class Pawn extends MobileEntity {
     }
     
     increasePlanningSkill() {
-        this.increaseSkill('planning', 1)
+        this.useSkill('planning', 1)
         // Optionally, trigger events or unlock features as planning increases
     }
 
@@ -1707,8 +1707,8 @@ class Pawn extends MobileEntity {
         if (seedType) this.resourceSpecialization.knownSeedTypes.add(seedType)
 
         if (domain === 'agriculture') {
-            this.increaseSkill('agronomy', 0.05)
-            this.increaseSkill('materialAppraisal', 0.02)
+            this.useSkill('agronomy', 0.05)
+            this.useSkill('materialAppraisal', 0.02)
         }
 
         if (domain === 'woods') {
@@ -1716,7 +1716,7 @@ class Pawn extends MobileEntity {
             this.resourceSpecialization.woodUse.tool = Math.min(1, (this.resourceSpecialization.woodUse.tool ?? 0) + woodProfile.tool)
             this.resourceSpecialization.woodUse.weapon = Math.min(1, (this.resourceSpecialization.woodUse.weapon ?? 0) + woodProfile.weapon)
             this.resourceSpecialization.woodUse.construction = Math.min(1, (this.resourceSpecialization.woodUse.construction ?? 0) + woodProfile.construction)
-            this.increaseSkill('materialAppraisal', 0.03)
+            this.useSkill('materialAppraisal', 0.03)
         }
     }
     
@@ -2127,7 +2127,7 @@ class Pawn extends MobileEntity {
                 cluster.id = entity.id
                 cluster.confidence = Math.min(1.0, (cluster.confidence ?? 0.5) + 0.03)
 
-                this.increaseSkill('memoryClustering', 0.04)
+                this.useSkill('memoryClustering', 0.04)
                 return
             }
         }
@@ -2155,7 +2155,7 @@ class Pawn extends MobileEntity {
         })
 
         if (nearbySameType) {
-            this.increaseSkill('memoryClustering', 0.02)
+            this.useSkill('memoryClustering', 0.02)
         }
         
         // Add new memory
@@ -2282,7 +2282,7 @@ class Pawn extends MobileEntity {
         if (success) {
             memory.observedSuccessCount = (memory.observedSuccessCount ?? 0) + 1
             memory.confidence = Math.min(1.0, (memory.confidence ?? 0.5) + 0.05 * normalizedWeight)
-            this.increaseSkill('routePlanning', 0.01 * normalizedWeight)
+            this.useSkill('routePlanning', 0.01 * normalizedWeight)
         } else {
             memory.observedFailCount = (memory.observedFailCount ?? 0) + 1
             memory.confidence = Math.max(0.0, (memory.confidence ?? 0.5) - 0.04 * normalizedWeight)
@@ -2488,7 +2488,7 @@ class Pawn extends MobileEntity {
         }
 
         if (route.length > 1) {
-            this.increaseSkill('routePlanning', usesOptimizedRoute ? 0.05 : 0.02)
+            this.useSkill('routePlanning', usesOptimizedRoute ? 0.05 : 0.02)
         }
 
         return route
@@ -2526,8 +2526,8 @@ class Pawn extends MobileEntity {
         }
 
         if (sharedCount > 0) {
-            this.increaseSkill('storytelling', 0.03 * sharedCount)
-            this.increaseSkill('routePlanning', 0.01 * sharedCount)
+            this.useSkill('storytelling', 0.03 * sharedCount)
+            this.useSkill('routePlanning', 0.01 * sharedCount)
         }
 
         return sharedCount
@@ -2597,8 +2597,11 @@ class Pawn extends MobileEntity {
         }
 
         if (sharedCount > 0) {
-            this.increaseSkill('storytelling', 0.02 * sharedCount)
-            otherPawn.increaseSkill?.('memoryClustering', 0.01 * sharedCount)
+            this.useSkill('storytelling', 0.02 * sharedCount)
+            // Listening is the other pawn's act, so it is practice for them too
+            // (#108) - the optional call stays because the listener is whatever
+            // the social goal handed us, not a pawn we constructed.
+            otherPawn.useSkill?.('memoryClustering', 0.01 * sharedCount)
         }
 
         return sharedCount
@@ -2648,7 +2651,7 @@ class Pawn extends MobileEntity {
             existing.clusterCount = Math.max(existing.clusterCount ?? 1, incomingClusterCount)
             existing.lastSeen = tick
             existing.source = 'shared'
-            this.increaseSkill('memoryClustering', 0.02)
+            this.useSkill('memoryClustering', 0.02)
             return true
         }
 
@@ -2674,7 +2677,7 @@ class Pawn extends MobileEntity {
             sharedBy: knowledge.sourcePawnId ?? null
         })
 
-        this.increaseSkill('memoryClustering', 0.03)
+        this.useSkill('memoryClustering', 0.03)
         return true
     }
 
@@ -3437,8 +3440,8 @@ class Pawn extends MobileEntity {
                 
                 // Grant experience (more for harder discoveries)
                 const xpMultiplier = 1 + (problem.attempts * 0.1)
-                this.increaseSkill('invention', (10 + problem.attempts * 2) * xpMultiplier)
-                this.increaseSkill('experimentation', (5 + problem.attempts) * xpMultiplier)
+                this.useSkill('invention', (10 + problem.attempts * 2) * xpMultiplier)
+                this.useSkill('experimentation', (5 + problem.attempts) * xpMultiplier)
                 
                 // Remove from queue
                 this.ponderingQueue.shift()
@@ -3688,7 +3691,7 @@ class Pawn extends MobileEntity {
         if (crafter && item.craftedBy === crafter.id) {
             const recipe = this.getRecipeForItemType(item.type)
             if (recipe?.primarySkill) {
-                this.increaseSkill(recipe.primarySkill, 0.1)
+                this.useSkill(recipe.primarySkill, 0.1)
             }
         }
     }
@@ -4844,7 +4847,7 @@ class Pawn extends MobileEntity {
         // Try combining or processing items without a recipe
         // Returns a result or null if nothing happens
         // This is a stub for more advanced experimentation logic
-        this.increaseSkill('processing', 0.2)
+        this.useSkill('processing', 0.2)
         // Example: if both are sticks, maybe discover 'sharp stick'
         if (itemA.type === 'stick' && itemB.type === 'rock') {
             return { type: 'sharp stick', quality: 1, discovered: true }
@@ -4952,7 +4955,7 @@ class Pawn extends MobileEntity {
 
         // Gain skill experience
         if (recipe.primarySkill && recipe.experience) {
-            this.increaseSkill(recipe.primarySkill, recipe.experience)
+            this.useSkill(recipe.primarySkill, recipe.experience)
         }
         
         // Track crafting success for specialization
@@ -5256,13 +5259,16 @@ class Pawn extends MobileEntity {
         if (item.filling) {
             this.needs.modifyNeedDecay?.('hunger', -item.filling)
         }
-        // Buffs
+        // Buffs. Not practice: the pawn is not getting better at herbalism by
+        // doing anything, the tincture is carrying it, so this stays on the
+        // primitive and out of the practice verb (#108).
         if (item.buffs) {
             for (const skill in item.buffs) {
                 this.increaseSkill(skill, item.buffs[skill])
             }
         }
-        // Mythical/rare effects (example: beer and charisma)
+        // Mythical/rare effects (example: beer and charisma) - likewise a
+        // property of the drink, not of the drinking.
         if (item.type === 'beer') {
             this.increaseSkill('charisma', 1)
         }
@@ -5321,7 +5327,10 @@ class Pawn extends MobileEntity {
     }
 
     applyRegularHoursBonus() {
-        // If pawn is awake during regular hours, apply a small bonus
+        // If pawn is awake during regular hours, apply a small bonus. Kept on the
+        // primitive (#108): keeping a schedule is a condition the pawn is in, not
+        // an act it performs, which makes this a standing bonus of the same kind
+        // as a workshop's, not practice.
         if (!this.isAsleep && this.isDaytime()) {
             this.increaseSkill('planning', 0.05)
             this.increaseSkill('composure', 0.05)

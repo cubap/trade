@@ -1783,24 +1783,24 @@ class PawnGoals {
                     if (elapsed >= goal.duration) {
                         console.log(`${this.pawn.name} completed collaboration with ${goal.partner.name}`)
                         // Both gain social and skill benefits
-                        this.pawn.increaseSkill('cooperation', 1)
-                        goal.partner.increaseSkill?.('cooperation', 1)
+                        this.pawn.useSkill('cooperation', 1)
+                        goal.partner.useSkill?.('cooperation', 1)
                         const shared = this.pawn.shareResourceMemory?.(goal.partner, { maxShare: 3, minConfidence: 0.5 }) ?? 0
                             const landmarkShared = this.pawn.shareSocialLandmarks?.(goal.partner, { maxShare: 2, minSignificance: 3 }) ?? 0
                         if (shared > 0) {
-                            this.pawn.increaseSkill('routePlanning', 0.05)
-                            goal.partner.increaseSkill?.('memoryClustering', 0.05)
+                            this.pawn.useSkill('routePlanning', 0.05)
+                            goal.partner.useSkill?.('memoryClustering', 0.05)
                         }
                             if (landmarkShared > 0) {
-                                this.pawn.increaseSkill('storytelling', 0.04)
-                                goal.partner.increaseSkill?.('storytelling', 0.02)
+                                this.pawn.useSkill('storytelling', 0.04)
+                                goal.partner.useSkill?.('storytelling', 0.02)
                             }
                         this.completeCurrentGoal()
                     } else {
                         // Periodic skill gains during collaboration
                         if (elapsed % 20 === 0) {
-                            this.pawn.increaseSkill('cooperation', 0.1)
-                            this.pawn.increaseSkill('planning', 0.05)
+                            this.pawn.useSkill('cooperation', 0.1)
+                            this.pawn.useSkill('planning', 0.05)
                         }
                     }
                 }

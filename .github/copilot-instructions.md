@@ -231,6 +231,23 @@ npm test
 - Skills may be required or gained from crafting
 - Goal planner automatically creates gathering subgoals for missing materials
 
+### Skill awards (`useSkill` vs `increaseSkill`)
+There are exactly two ways to move a skill number, and which one you type is the
+rule (#101, enforced by `solo/test/pawn-skill-verbs.test.js`):
+
+- `pawn.useSkill(skill, amount)` - the pawn *did* something. Gathering, crafting,
+  closing a barter, teaching or attending a lesson, walking a route, remembering a
+  resource, even a tick spent exploring. Every activity handler uses this, and it
+  is the only place a diminishing-returns curve can ever go.
+- `pawn.increaseSkill(skill, amount)` - the arithmetic underneath, and the door
+  for payments that are not practice: a workshop's "you are standing in here"
+  bump, a market's bartering bonus, a tincture's buffs, a meal's effect, the
+  regular-hours habit, a growth rule, a test.
+
+`gainSkill` was a third alias added so civic code would stop throwing; it is
+deleted and must not come back. Amounts belong to the caller either way - the
+verb decides *how* a payment lands, never how big it is.
+
 ## Documentation References
 
 - **Hierarchical Goals**: See `HIERARCHICAL_GOALS.md` for detailed goal planning architecture
