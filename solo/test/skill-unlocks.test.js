@@ -70,7 +70,8 @@ test('the exemptions are real recipes with a stated reason', () => {
     assert.ok(String(reason).trim().length > 20, `${recipeId} needs a reason worth reading`)
   }
   // Saying the set out loud, so adding a recipe cannot slip past unmentioned.
-  assert.deepStrictEqual(Object.keys(UNREACHABLE_RECIPES).sort(), ['basic_shelter', 'durable_cordage'])
+  // #121 removed durable_cordage from this list: it has a driver now.
+  assert.deepStrictEqual(Object.keys(UNREACHABLE_RECIPES).sort(), ['basic_shelter'])
 })
 
 function grantsRecipe(recipeId) {

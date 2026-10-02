@@ -92,6 +92,10 @@ class Pawn extends MobileEntity {
         this.behaviorState = 'idle'  // Current activity state
         this.recentAction = 'Idle'
         this.recentActionTick = 0
+        // #121: { cacheId, readyTick } for fibre this pawn put in a soaking pit.
+        // The batch is owed a collecting trip wherever the pawn has wandered off to,
+        // so it cannot be remembered only by standing near the hole again.
+        this.pendingSoak = null
         this.thoughtLog = []
         this.maxThoughtLog = 16
         this.thoughtSequence = 0 // Increments on every addThought, even duplicates
@@ -3499,6 +3503,7 @@ class Pawn extends MobileEntity {
             'teach_skill': 'civic',
             'socialize': 'civic',
             'rest': 'civic',
+            'soak_fiber': 'civic',
             // Mercantile goals
             'trade': 'mercantile',
             'accumulate_valuables': 'mercantile',

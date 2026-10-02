@@ -148,6 +148,27 @@ export const SKILL_UNLOCKS = [
       recipes: ['stone_knife'],
       goals: ['craft_stone_knife']
     }
+  },
+  {
+    // #121: the recipe that needed an ingredient no pawn could obtain.
+    // `durable_cordage` asks for three `soaked_fiber`, and soaked fibre comes
+    // from one place - a ResourceCache holding a soaking job, which
+    // `startFiberSoakAtCache()` used to create for nobody but a test. The
+    // technique was finished; what was missing was a reason to use it. This gate
+    // is the reason: two cords twisted is a pawn noticing which fibre holds and
+    // which snaps, and the answer is "the one that rotted a day first". The
+    // errand this sends the pawn off to (`soak_fiber` in PawnGoals) is not a
+    // craft idea, so it cannot be listed in `goals` - the goals list is recipe
+    // ideas only - and is driven off the unlocked recipe instead.
+    id: 'soaking_pit',
+    description: 'Twisting two cords suggests soaking the fibre that will hold',
+    conditions: {
+      craftedCounts: { cordage: 2 }
+    },
+    unlocks: {
+      recipes: ['durable_cordage'],
+      goals: ['craft_durable_cordage']
+    }
   }
 ]
 
@@ -158,11 +179,12 @@ export const UNREACHABLE_RECIPES = {
   // read by nothing, so granting it would let a pawn put a building in its pack.
   // Shelters get built instead, by the civic `build_structure` goal, which
   // creates a Structure in the world with an owner, condition and landmark.
-  basic_shelter: 'Shelters are built, not carried. Needs a place-from-recipe path.',
-  // Soaking fibre works (startFiberSoakAtCache queues a job on a ResourceCache
-  // and the job yields soaked_fiber), but nothing in play ever starts one - only
-  // a test does. Until some goal or invention drives it, the input cannot appear.
-  durable_cordage: 'Its only input, soaked_fiber, has no driver in the game yet.'
+  basic_shelter: 'Shelters are built, not carried. Needs a place-from-recipe path.'
+  // durable_cordage is not here any more (#121). It used to be exempt because
+  // its only input, soaked_fiber, had no driver in the game; the `soaking_pit`
+  // entry above grants the recipe and the `soak_fiber` household errand in
+  // PawnGoals fills the pit. If that errand is ever removed, this exemption has
+  // to come back with it - the recipe is only reachable through the chore.
 }
 
 // Every recipe id the table grants, for the guard test and for anyone reading

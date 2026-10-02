@@ -33,6 +33,17 @@ const TRADE_SEARCH_RANGE = 50
 // start of the barter rather than the end of a goal.
 const TRADE_ARRIVE_RADIUS = 10
 
+// #121: soaking fibre is the one craft input that cannot be picked up off the
+// ground. It needs a cache to stow it in, water beside that cache, and a day of
+// patience - so the driver has to be a household decision, not a line in a
+// recipe book. Three fibres because that is what `durable_cordage` asks for, and
+// because stowing one at a time would be a chore nobody would finish.
+const SOAK_FIBER_COUNT = 3
+const SOAK_CACHE_RANGE = 140 // how far a pawn will walk to reach its soak pit
+const SOAK_STOW_RADIUS = 14  // close enough to the cache to work at it
+const SOAK_WATER_RANGE = 60  // a soak needs water near it, not a dry shelf
+const SOAK_NOTICE_TICKS = 120 // how often the pawn repeats "I cannot soak without water"
+
 class PawnGoals {
     constructor(pawn) {
         this.pawn = pawn
@@ -41,6 +52,7 @@ class PawnGoals {
         this.completedGoals = []
         this.deferredGoals = [] // Goals on hold due to missing prerequisites
         this.goalSwitchLog = [] // recent abandon/preempt events for debugging the UI
+        this.lastSoakRefusalTick = null // #121: rationing the "needs water" complaint
     }
 
     currentTick() {
@@ -142,6 +154,7 @@ class PawnGoals {
             this.addLongTermGoals()
             this.addLearningGoals()
             this.addCivicNegotiationGoals()
+            this.addHouseholdGoals()
         }
         
         // Re-evaluate deferred goals periodically
@@ -225,6 +238,7 @@ class PawnGoals {
             'rest': 'civic',
             'seek_shelter': 'civic',
             'collaborative_craft': 'civic',
+            'soak_fiber': 'civic',
             // Mercantile goals
             'trade': 'mercantile',
             'barter': 'mercantile',
@@ -533,6 +547,323 @@ class PawnGoals {
         this.goalQueue.unshift(goal)
     }
     
+    /**
+     * #121: the household errand that makes `soaked_fiber` exist at all.
+     *
+     * Soaking was never the missing piece. `startFiberSoakAtCache()` stows fibre
+     * in a ResourceCache, the cache converts it a day later, and the conversion
+     * had exactly one caller in the repository: a test. Meanwhile
+     * `durable_cordage` asks for three of the stuff, so the strongest cord in the
+     * game was a recipe about an ingredient no pawn could ever obtain. What was
+     * missing was somebody deciding to bury fibre, which is a chore, not a craft.
+     *
+     * It is deliberately two errands rather than one long one. Stage the fibre
+     * and go away; come back when the day has passed. A pawn that stood beside a
+     * soaking pit for 360 ticks would be a pawn with nothing better to do, and
+     * the patience belongs to the pit instead - which is also how a real soak
+     * works, and why the goal recurs instead of blocking.
+     */
+    addHouseholdGoals() {
+        const pawn = this.pawn
+        // The knowledge comes first: a pawn who has not worked out that fibre can
+        // be rotted has no reason to be carrying a spadeful of it anywhere.
+        if (!pawn.unlocked?.recipes?.has('durable_cordage')) return
+        if (this.currentGoal?.type === 'soak_fiber') return
+        if (this.goalQueue.some(goal => goal.type === 'soak_fiber')) return
+
+        const caches = this.soakCaches()
+
+        // The batch already in the ground is the errand the pawn owes itself, and it
+        // is owed from anywhere: a pit three fields over is still this pawn's pit.
+        // Proposals are rebuilt every tick, so a collect goal that only appeared
+        // while the pawn happened to stand beside the hole would be starved by the
+        // pawn wandering off - which is exactly how the soak used to stall.
+        const owed = pawn.pendingSoak
+        if (owed) {
+            const pit = this.soakCacheById(owed.cacheId)
+            if (!pit) {
+                pawn.pendingSoak = null
+            } else if (
+                (pit.countByType?.('soaked_fiber') ?? 0) > 0 ||
+                this.currentTick() >= (owed.readyTick ?? 0)
+            ) {
+                const goal = {
+                    type: 'soak_fiber',
+                    phase: 'collect',
+                    cacheId: pit.id,
+                    priority: 2,
+                    description: 'Collect the soaked fibre',
+                    targetType: 'cache',
+                    action: 'soak'
+                }
+                if (!this.takeUpOwedErrand(goal)) {
+                    this.goalQueue.push(goal)
+                }
+                return
+            } else {
+                // Still rotting. There is nothing to propose and nothing to complain
+                // about; the pit is working.
+                return
+            }
+        }
+
+        // Collect before stowing: fibre in the ground is fibre out of circulation,
+        // and the pack is the only place it does any good. Somebody else's full pit
+        // is still a full pit.
+        const ready = caches.find(cache => (cache.countByType?.('soaked_fiber') ?? 0) > 0)
+        if (ready) {
+            this.goalQueue.push({
+                type: 'soak_fiber',
+                phase: 'collect',
+                cacheId: ready.id,
+                priority: 2,
+                description: 'Collect the soaked fibre',
+                targetType: 'cache',
+                action: 'soak'
+            })
+            return
+        }
+
+        // One batch at a time. A pit with a job in it is a pit already doing the
+        // soaking, and a second batch would be a pawn digging itself a hole it
+        // cannot collect from.
+        if (caches.some(cache => (cache.soakJobs?.length ?? 0) > 0)) return
+
+        // The reserve is the batch itself: a pawn holding exactly the three fibres
+        // a cordage recipe wants should still soak them, and one holding two is
+        // not yet in a position to start.
+        if (PawnMercantile.countItem(pawn, 'fiber') < SOAK_FIBER_COUNT) return
+
+        const pit = caches.find(cache => this.waterNear(cache.x, cache.y)) ?? null
+        if (pit) {
+            this.goalQueue.push({
+                type: 'soak_fiber',
+                phase: 'stage',
+                cacheId: pit.id,
+                priority: 2,
+                description: 'Soak fibre at the cache',
+                targetType: 'cache',
+                action: 'soak'
+            })
+            return
+        }
+
+        // No cache by water. If the pawn is standing by water with a packful of
+        // fibre then the pit is what is missing, not the place - so dig it here.
+        if (this.waterNear(pawn.x, pawn.y)) {
+            this.goalQueue.push({
+                type: 'soak_fiber',
+                phase: 'stage',
+                cacheId: null,
+                targetLocation: { x: pawn.x, y: pawn.y },
+                priority: 2,
+                description: 'Dig a soak pit by the water',
+                targetType: 'cache',
+                action: 'soak'
+            })
+            return
+        }
+
+        // Honest refusal, visible in the HUD: the recipe is known, the fibre is
+        // carried, and the reason nothing is happening is that nobody has found a
+        // drink yet. Water is not a rumour a pawn should soak against. Planning
+        // runs every tick, so the complaint is rationed - a pawn that muttered
+        // this constantly would tell you nothing you could not work out.
+        const tick = this.currentTick()
+        if (tick - (this.lastSoakRefusalTick ?? -Infinity) >= SOAK_NOTICE_TICKS) {
+            this.lastSoakRefusalTick = tick
+            pawn.setRecentAction?.('No water known for a soak pit')
+        }
+    }
+
+    /**
+     * Caches this pawn could reach for a household errand, nearest first.
+     * `getNearbyCaches` is a world scan rather than a memory read, which is the
+     * right strictness for a pit the pawn has to stand over. The hole this leaves
+     * (a cache the pawn visited but no longer has in view) is #127's subject.
+     */
+    soakCaches(range = SOAK_CACHE_RANGE) {
+        const pawn = this.pawn
+        return (pawn.getNearbyCaches?.(range) ?? [])
+            .map(cache => ({ cache, d: Math.hypot((cache.x ?? 0) - pawn.x, (cache.y ?? 0) - pawn.y) }))
+            .sort((a, b) => a.d - b.d)
+            .map(entry => entry.cache)
+    }
+
+    /**
+     * Resolve a pit by id rather than by proximity, because the pawn is rarely
+     * standing next to it at the moment the fibre is ready. The same lookup the
+     * executor uses; a cache that has expired is not haunted.
+     */
+    soakCacheById(id) {
+        if (!id) return null
+        const cache = this.pawn.world?.entitiesMap?.get(id)
+        return cache?.subtype === 'cache' ? cache : null
+    }
+
+    /**
+     * An errand the pawn owes itself is allowed to interrupt an idle aspiration,
+     * which is the only way it ever happens: goals are picked up when the pawn has
+     * none, and a pawn that has started a day of study or a wandering gather can
+     * stay inside it long after the fibre in its pit is ready. The interrupted plan
+     * is deferred rather than dropped, exactly as an emergency need does it.
+     *
+     * Needs keep their ranking. A thirsty pawn drinks first - soaked fibre waits an
+     * afternoon without spoiling, and a dehydrated pawn does not.
+     *
+     * Returns true when the errand was taken up, in which case it is deliberately
+     * not queued: the queue hands the same object straight back on completion.
+     */
+    takeUpOwedErrand(goal) {
+        const current = this.currentGoal
+        if (!current) return false
+        if (current.type === goal.type) return true
+        if ((current.priority ?? 1) >= (goal.priority ?? 2)) return false
+
+        this.logGoalSwitch(current, goal, 'owed_soak')
+        this.deferredGoals.push({
+            ...current,
+            deferredReason: 'owed_soak',
+            deferredAt: this.currentTick()
+        })
+        this.currentGoal = goal
+        this.startGoal(goal)
+        return true
+    }
+
+    /**
+     * Note the debt the pawn has just taken on: three fibres are in a pit and are
+     * owed a collecting trip. `cache` is null when the pawn dug on the spot, so the
+     * pit is found by the soak job now sitting in it - which is also the only
+     * honest way to learn the ready tick.
+     */
+    claimSoakBatch(cache) {
+        const pawn = this.pawn
+        const pit =
+            cache ??
+            (pawn.getNearbyCaches?.(SOAK_STOW_RADIUS * 3) ?? []).find(
+                candidate => (candidate.soakJobs?.length ?? 0) > 0
+            )
+        const job = pit?.soakJobs?.[pit.soakJobs.length - 1]
+        if (!pit || !job) return
+        pawn.pendingSoak = {
+            cacheId: pit.id,
+            readyTick: job.readyTick ?? this.currentTick() + pawn.getDayTicks()
+        }
+    }
+
+    /**
+     * Does this pawn know of water at the place it wants to soak? Memory first,
+     * because a soak pit is dug beside a stream the pawn has drunk from before;
+     * what is in front of it counts too, since a pawn that walks past a pool with
+     * fibre in its pack has every reason to use it.
+     */
+    waterNear(x, y, range = SOAK_WATER_RANGE) {
+        const pawn = this.pawn
+        const remembered = pawn.recallResourcesByType?.('water') ?? []
+        if (remembered.some(m => Math.hypot((m.x ?? 0) - x, (m.y ?? 0) - y) <= range)) return true
+
+        if (!pawn.world?.entitiesMap) return false
+        for (const entity of pawn.world.entitiesMap.values()) {
+            if (!entity || entity === pawn) continue
+            if (entity.subtype !== 'water') {
+                const tags = entity.tags
+                const wet = Array.isArray(tags) ? tags.includes('water') : (tags?.has?.('water') ?? false)
+                if (!wet) continue
+            }
+            if (Math.hypot((entity.x ?? 0) - x, (entity.y ?? 0) - y) <= range) return true
+        }
+        return false
+    }
+
+    /**
+     * Walk to the pit, do the one thing this errand is for, and leave.
+     *
+     * The cache is resolved from its id every tick rather than held in
+     * `goal.target`, because the generic completion test is "standing next to the
+     * target" and the standing is not the doing (#99 learned this the hard way).
+     */
+    executeSoakFiber(goal) {
+        const pawn = this.pawn
+        const world = pawn.world
+        const cache = goal.cacheId ? (world?.entitiesMap?.get(goal.cacheId) ?? null) : null
+
+        if (goal.phase === 'collect') {
+            if (!cache || cache.subtype !== 'cache') {
+                pawn.setRecentAction?.('The soak cache is gone')
+                if (pawn.pendingSoak?.cacheId === goal.cacheId) pawn.pendingSoak = null
+                this.completeCurrentGoal()
+                return
+            }
+            const dist = Math.hypot(pawn.x - cache.x, pawn.y - cache.y)
+            if (dist > SOAK_STOW_RADIUS) {
+                pawn.nextTargetX = cache.x
+                pawn.nextTargetY = cache.y
+                pawn.setRecentAction?.('Going to collect soaked fibre')
+                return
+            }
+            const waiting = cache.countByType?.('soaked_fiber') ?? 0
+            const got = pawn.retrieveFromCache?.({ cache, itemType: 'soaked_fiber', count: SOAK_FIBER_COUNT }) ?? 0
+            if (got > 0) {
+                if (pawn.pendingSoak?.cacheId === cache.id) pawn.pendingSoak = null
+                pawn.addThought?.(`${got} soaked fibre, ready to twist`, 'crafting')
+            } else if (waiting > 0) {
+                pawn.setRecentAction?.('No room for the soaked fibre')
+            } else {
+                // Nothing to take and nothing ripening: the batch is somebody else's
+                // rope now, and the pawn stops walking to an empty hole.
+                if (pawn.pendingSoak?.cacheId === cache.id && (cache.soakJobs?.length ?? 0) === 0) {
+                    pawn.pendingSoak = null
+                }
+                pawn.setRecentAction?.('Nothing soaked at the cache yet')
+            }
+            this.completeCurrentGoal()
+            return
+        }
+
+        // Staging. Without a cache id the errand is to dig the pit as well as fill
+        // it, at the water the generator found; `startFiberSoakAtCache` creates the
+        // cache at whatever spot the pawn is standing on when it asks.
+        if (!cache) {
+            const site = goal.targetLocation ?? { x: pawn.x, y: pawn.y }
+            const dist = Math.hypot(pawn.x - site.x, pawn.y - site.y)
+            if (dist > SOAK_STOW_RADIUS) {
+                pawn.nextTargetX = site.x
+                pawn.nextTargetY = site.y
+                pawn.setRecentAction?.('Carrying fibre to the water')
+                return
+            }
+            if (!this.waterNear(site.x, site.y)) {
+                // Water the pawn remembered may be somebody else's dried-up
+                // spring. Saying so is better than soaking in dust.
+                pawn.setRecentAction?.('The water by the soak site is gone')
+                this.completeCurrentGoal()
+                return
+            }
+        } else {
+            const dist = Math.hypot(pawn.x - cache.x, pawn.y - cache.y)
+            if (dist > SOAK_STOW_RADIUS) {
+                pawn.nextTargetX = cache.x
+                pawn.nextTargetY = cache.y
+                pawn.setRecentAction?.('Hauling fibre to the soak pit')
+                return
+            }
+        }
+
+        const started = pawn.startFiberSoakAtCache?.({ cache, fiberCount: SOAK_FIBER_COUNT }) ?? false
+        if (!started) {
+            // No fibre to spare after all - eaten, traded, or never gathered. The
+            // action line is whichever one the stow or the pack reported.
+            this.completeCurrentGoal()
+            return
+        }
+        // The day does the rest. Completing here is the point of the design: the
+        // pawn is free to be somewhere else while the pit works, and the collect
+        // phase comes round when the fibre is worth coming back for.
+        this.claimSoakBatch(cache)
+        this.completeCurrentGoal()
+    }
+
     selectRandomGoals(goals, count) {
         // Weighted random selection based on priority
         const weighted = []
@@ -669,6 +1000,7 @@ class PawnGoals {
             'gather_materials': 'gathering',
             'stage_build_materials': 'hauling',
             'gather_specific': 'gathering',
+            'soak_fiber': 'hauling',
             'search_resource': 'exploring',
             'collaborative_craft': 'collaborating',
             'accumulate_valuables': 'crafting'
@@ -932,7 +1264,10 @@ class PawnGoals {
             'map_territory': { cartography: 0.4 },
             'study': { planning: 0.3 },
             'post_job': { planning: 0.15, convincing: 0.1 },
-            'teach_lesson': { storytelling: 0.2, planning: 0.1 }
+            'teach_lesson': { storytelling: 0.2, planning: 0.1 },
+            // #121: stowing fibre in a wet pit is hand work, not craft practice -
+            // the weaving does not start until the cordage gets twisted.
+            'soak_fiber': { manipulation: 0.1 }
         }
         const gains = sg[goal.type]
         if (gains) {
@@ -2221,7 +2556,13 @@ class PawnGoals {
                 }
             }
         }
-        if (goal.type === 'barter') {
+        if (goal.type === 'soak_fiber') {
+            // #121: the chore that fills the pit and, a day later, empties it.
+            this.executeSoakFiber(goal)
+            return
+        }
+
+        if (goal.type === 'barter') {
             this.executeBarter(goal)
         }
 
