@@ -44,6 +44,56 @@ const SOAK_STOW_RADIUS = 14  // close enough to the cache to work at it
 const SOAK_WATER_RANGE = 60  // a soak needs water near it, not a dry shelf
 const SOAK_NOTICE_TICKS = 120 // how often the pawn repeats "I cannot soak without water"
 
+// #128: a goal that can never finish has to be able to fail, because nothing else
+// will end it. A goal is only ever picked up when the pawn has none, so whatever it
+// is standing inside is load-bearing whether it was ever going to finish or not -
+// the pawn in the report spent the rest of its game "Searching for stick for build
+// cache" in a world with no sticks, and no other errand could get a turn.
+//
+// Two clocks, because there are two ways to fail:
+//   budget    ticks without either going somewhere new or moving a number. The
+//             pawn is not working, it is pacing, and patience does not turn a
+//             missing stick into a stick.
+//   lifetime  ticks without making headway. It may be walking a long way in the
+//             right direction, but a plan that has not moved a single number in a
+//             day and a half is not a plan, it is a trap.
+//
+// Headway is counters only - material staged, items carried, building progress,
+// batch collected. Motion is measured in coarse buckets: the stuck pawn kept
+// walking and kept re-aiming at new random points, which is precisely how it looked
+// busy for hundreds of ticks. A goal the player or the group asked for gets more
+// rope, but not infinite rope, and whatever is given up cools its type down so the
+// pawn can actually get on with the rest of its list.
+const GOAL_STALL = {
+    budget: 240,
+    lifetime: 1200,
+    budgets: {
+        stage_build_materials: 180,
+        search_resource: 200,
+        explore: 300,
+        soak_fiber: 240
+    },
+    lifetimes: {
+        // A crossing is long by nature; the road, not the plan, sets that clock.
+        travel_route: 3000,
+        build_structure: 3000,
+        establish_trade: 2400,
+        // Wandering-without-finding is the load-bearing aspiration of the report.
+        explore: 1500,
+        study: 900,
+        stage_build_materials: 900
+    },
+    motionBucket: 64,
+    // How many full-map scans a stage job makes after reporting that the material
+    // is not in the world. Every tick is a fresh scan, so a handful is generous:
+    // past that, walking further is not searching better.
+    searchAttempts: 4,
+    commandRope: 4,
+    cooldownTicks: 240,
+    cooldownCap: 2400,
+    abandonLogCap: 24
+}
+
 class PawnGoals {
     constructor(pawn) {
         this.pawn = pawn
@@ -53,6 +103,8 @@ class PawnGoals {
         this.deferredGoals = [] // Goals on hold due to missing prerequisites
         this.goalSwitchLog = [] // recent abandon/preempt events for debugging the UI
         this.lastSoakRefusalTick = null // #121: rationing the "needs water" complaint
+        this.goalCooldowns = new Map() // #128: goal type -> { untilTick, strikes }
+        this.stalledGoals = [] // #128: recent give-ups, for the HUD, tests and post-mortems
     }
 
     currentTick() {
@@ -112,6 +164,14 @@ class PawnGoals {
             investedTicks: invested,
             commitmentCost: this.getCommitmentCost(),
             hasMovementPlan: !!(this.pawn.movementPlan && this.pawn.movementPlan.goal === goal),
+            // #128: the give-up clock, visible. A pawn that has been inside one
+            // unfinishable plan for most of its budget is the thing the quest panel
+            // should be admitting out loud.
+            sinceProgressTicks: goal.lastProgressTick == null ? null : this.currentTick() - goal.lastProgressTick,
+            sinceHeadwayTicks: goal.lastCounterTick == null ? null : this.currentTick() - goal.lastCounterTick,
+            stallBudget: this.goalStallLimits(goal).budget,
+            stallLifetime: this.goalStallLimits(goal).lifetime,
+            recentAbandons: this.stalledGoals.slice(-3),
             recentSwitches: this.goalSwitchLog.slice(-5)
         }
     }
@@ -173,6 +233,17 @@ class PawnGoals {
             this.goalQueue.unshift({ ...this.pawn.priorityBias.nextGoal })
             // one-shot bias
             this.pawn.priorityBias.nextGoal = null
+        }
+
+        // #128: a goal type the pawn has just given up on is not offered to it again
+        // until the cooldown expires. Without this the scheduler re-enters the same
+        // trap every tick with a fresh clock and the give-up buys the pawn nothing.
+        // Needs are exempt - a thirsty pawn gets to drink even if drinking has been
+        // failing, because starvation is a worse bug than a loop.
+        if (this.goalCooldowns.size > 0) {
+            this.goalQueue = this.goalQueue.filter(
+                goal => this.isEmergencyGoal(goal) || !this.isGoalCooling(goal.type)
+            )
         }
 
         // Set current goal if none exists, with inclination bias
@@ -1150,6 +1221,222 @@ class PawnGoals {
         this.selectExplorationTarget()
     }
     
+    /**
+     * #128: how much rope this particular goal gets, in ticks. Goals the player or
+     * the group asked for are trusted with more, but they are still on a leash - the
+     * complaint in the report was that nothing ever ended, not who started it.
+     */
+    goalStallLimits(goal) {
+        const type = String(goal?.type ?? '')
+        const rope =
+            goal?.groupCommand || goal?.userAssigned ? GOAL_STALL.commandRope : 1
+        return {
+            budget: (GOAL_STALL.budgets[type] ?? GOAL_STALL.budget) * rope,
+            lifetime: (GOAL_STALL.lifetimes[type] ?? GOAL_STALL.lifetime) * rope
+        }
+    }
+
+    /**
+     * Headway, as a string of counters: material staged, building raised, items in
+     * the pack, batch collected. Deliberately blind to position - the pawn in the
+     * report was never standing still, it was running in place.
+     */
+    goalCounterToken(goal) {
+        const pawn = this.pawn
+        return [
+            goal.stagedCount ?? 0,
+            goal.buildProgress ?? 0,
+            goal.gatheredCount ?? 0,
+            goal.soakStowed ?? 0,
+            goal.craftedItem ? 1 : 0,
+            pawn.inventory?.length ?? 0,
+            pawn.pendingSoak?.cacheId ?? ''
+        ].join(':')
+    }
+
+    /**
+     * Where the pawn actually is, in buckets coarse enough that pacing a clearing
+     * does not read as travel. A goal with a destination is measured by how far it
+     * still has to go, so a slow-but-honest crossing keeps its clock topped up.
+     */
+    goalMotionToken(goal) {
+        const pawn = this.pawn
+        const bucket = GOAL_STALL.motionBucket
+        const cell = `${Math.floor(pawn.x / bucket)}:${Math.floor(pawn.y / bucket)}`
+        const target = goal.destination ?? goal.target ?? goal.targetLocation
+        if (!target || !Number.isFinite(target.x) || !Number.isFinite(target.y)) {
+            return cell
+        }
+        const dist = Math.hypot(pawn.x - target.x, pawn.y - target.y)
+        return `${cell}:${Math.floor(dist / bucket)}`
+    }
+
+    /**
+     * Executors that know they have achieved something can say so directly. The
+     * watchdog does not depend on being told - it reads the world - but a handler
+     * with a real milestone should not have to wait for the next bucket crossing.
+     */
+    noteGoalProgress(goal = this.currentGoal) {
+        if (!goal) return
+        const tick = this.currentTick()
+        goal.lastProgressTick = tick
+        goal.lastCounterTick = tick
+    }
+
+    /**
+     * Needs outrank the dog house. A pawn that keeps failing to find water must keep
+     * looking for water; the alternative is a pawn that politely starves.
+     */
+    isEmergencyGoal(goal) {
+        if (!goal) return false
+        if (goal.groupCommand || goal.userAssigned) return true
+        const needDriven = [
+            'find_food',
+            'find_water',
+            'rest',
+            'seek_shelter',
+            'flee',
+            'eat',
+            'drink',
+            'heal'
+        ]
+        return needDriven.includes(goal.type) || (goal.priority ?? 0) >= 3
+    }
+
+    /**
+     * Is this goal type in the dog house? Strikes persist so a plan that keeps
+     * failing keeps the pawn away from it for longer, which is the only way a map
+     * genuinely short of sticks stops being explored for sticks every ten minutes.
+     */
+    isGoalCooling(type) {
+        const entry = this.goalCooldowns.get(type)
+        if (!entry) return false
+        if (this.currentTick() < entry.untilTick) return true
+        this.goalCooldowns.delete(type)
+        return false
+    }
+
+    coolGoalType(type, now = this.currentTick()) {
+        const strikes = (this.goalCooldowns.get(type)?.strikes ?? 0) + 1
+        const wait = Math.min(
+            GOAL_STALL.cooldownCap,
+            GOAL_STALL.cooldownTicks * Math.pow(2, strikes - 1)
+        )
+        this.goalCooldowns.set(type, { untilTick: now + wait, strikes })
+        return wait
+    }
+
+    /**
+     * #128: the watchdog. Returns true when the current goal has just been given up,
+     * so the caller knows not to run the executor of a goal that no longer exists.
+     */
+    checkGoalStall() {
+        const goal = this.currentGoal
+        if (!goal) return false
+
+        const tick = this.currentTick()
+        if (goal.startedAtTick == null) goal.startedAtTick = tick
+        if (goal.lastProgressTick == null) {
+            goal.lastProgressTick = tick
+            goal.lastCounterTick = tick
+            goal.progressToken = this.goalMotionToken(goal)
+            goal.counterToken = this.goalCounterToken(goal)
+            return false
+        }
+
+        const counters = this.goalCounterToken(goal)
+        if (counters !== goal.counterToken) {
+            goal.counterToken = counters
+            goal.lastCounterTick = tick
+        }
+        const motion = this.goalMotionToken(goal)
+        if (motion !== goal.progressToken) {
+            goal.progressToken = motion
+            goal.lastProgressTick = tick
+        }
+
+        const { budget, lifetime } = this.goalStallLimits(goal)
+        const sinceMotion = tick - goal.lastProgressTick
+        const sinceHeadway = tick - goal.lastCounterTick
+        // Standing still is not the failure on its own - a pawn emptying its pack at
+        // a build site barely walks and is plainly getting somewhere, so headway buys
+        // it the same grace that motion buys a traveller. Both clocks still is a
+        // pawn running in place.
+        if (sinceMotion >= budget && sinceHeadway >= budget) {
+            this.abandonCurrentGoal('no_progress')
+            return true
+        }
+        if (sinceHeadway >= lifetime) {
+            this.abandonCurrentGoal('no_headway')
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Give up on the current goal and hand the pawn back its life. This is the
+     * missing exit: the alternative was a plan that ran until the world ended.
+     *
+     * The type that failed is cooled down, and so is its parent, because a child
+     * errand is regenerated on the spot by the plan waiting on it - cooling only the
+     * staging job would have the pawn back inside the same trap on the next tick,
+     * and `build_structure` would be the thing standing between it and everything
+     * else it meant to do.
+     */
+    abandonCurrentGoal(reason = 'stalled') {
+        const goal = this.currentGoal
+        if (!goal) return null
+
+        const tick = this.currentTick()
+        const invested = this.getGoalInvestment(goal)
+        const label = goal.description ?? goal.type
+
+        this.completedGoals.push({
+            ...goal,
+            endReason: `abandoned:${reason}`,
+            investedTicks: invested,
+            abandonedAt: tick
+        })
+        this.stalledGoals.push({
+            type: goal.type,
+            description: label,
+            reason,
+            investedTicks: invested,
+            atTick: tick
+        })
+        if (this.stalledGoals.length > GOAL_STALL.abandonLogCap) this.stalledGoals.shift()
+
+        const wait = this.coolGoalType(goal.type, tick)
+        if (goal.parentGoal) this.coolGoalType(goal.parentGoal, tick)
+
+        this.logGoalSwitch(goal, null, `abandoned:${reason}`)
+        this.pawn.movementPlan = null
+        this.pawn.setRecentAction?.(`Gave up on ${label}`)
+        this.pawn.addThought?.(`That was going nowhere.`, 'planning')
+        console.warn(
+            `${this.pawn.name} abandoned ${label} after ${invested} ticks (${reason}, ${wait}t cooldown)`
+        )
+
+        // Whatever else was queued gets its turn now rather than after the next
+        // scheduler pass, so a give-up is worth something to the pawn immediately.
+        this.currentGoal = null
+        if (this.goalCooldowns.size > 0) {
+            this.goalQueue = this.goalQueue.filter(
+                candidate => this.isEmergencyGoal(candidate) || !this.isGoalCooling(candidate.type)
+            )
+            this.deferredGoals = this.deferredGoals.filter(
+                candidate => this.isEmergencyGoal(candidate) || !this.isGoalCooling(candidate.type)
+            )
+        }
+        if (this.goalQueue.length > 0) {
+            this.currentGoal = this.goalQueue.shift()
+            this.startGoal(this.currentGoal)
+        } else {
+            this.pawn.behaviorState = 'idle'
+        }
+        return goal
+    }
+
     updateGoalProgress() {
         if (!this.currentGoal) return
         
@@ -1158,7 +1445,7 @@ class PawnGoals {
         
         if (completed) {
             this.completeCurrentGoal()
-        } else {
+        } else if (!this.checkGoalStall()) {
             // Update goal-specific logic
             this.updateGoalSpecificLogic()
         }
@@ -1766,6 +2053,16 @@ class PawnGoals {
 
         if (goal.type === 'build_structure') {
             const tick = this.pawn.world?.clock?.currentTick ?? 0
+            // #128: this plan hands itself a staging errand on the spot, below the
+            // scheduler's nose, so it is the one place a cooldown can be walked
+            // straight through. If the materials have already cost the pawn a
+            // give-up, then the building is the thing that is not happening; saying
+            // so is what frees the pawn to go and do the rest of its list.
+            if (this.isGoalCooling('stage_build_materials')) {
+                this.pawn.setRecentAction?.('Frame abandoned: materials never arrived')
+                this.abandonCurrentGoal('materials_unreachable')
+                return
+            }
             const requirements = Array.isArray(goal.materialRequirements)
                 ? goal.materialRequirements
                 : [
@@ -1987,6 +2284,18 @@ class PawnGoals {
             })
 
             if (!candidates.length) {
+                // #128: this scan covers every entity the pawn's world holds, so an
+                // empty result does not mean "look harder", it means "there is
+                // nothing here". The old code read it the other way round forever:
+                // no counter, no exit, and a pawn that re-aimed at a fresh random
+                // point every tick for the rest of its game while the building it was
+                // meant to feed waited on materials that were never going to appear.
+                goal.searchAttempts = (goal.searchAttempts ?? 0) + 1
+                if (goal.searchAttempts >= GOAL_STALL.searchAttempts) {
+                    this.pawn.setRecentAction?.(`No ${needType} left to find anywhere`)
+                    this.abandonCurrentGoal('material_absent')
+                    return
+                }
                 if (!this.pawn.nextTargetX || !this.pawn.nextTargetY) {
                     this.selectExplorationTarget()
                 }

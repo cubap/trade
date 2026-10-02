@@ -1607,7 +1607,10 @@ class Pawn extends MobileEntity {
         // Otherwise, pick an idle enrichment task
         // Prioritize gathering if inventory is low
         const invCount = this.inventory?.length ?? 0
-        if (invCount < 5 && Math.random() < 0.4) {
+        // #128: the idle planner writes goals directly into `currentGoal`, which is
+        // how a scheduled wander could outlive every other intention a pawn had.
+        // It now honours the same give-up cooldowns the scheduler does.
+        if (invCount < 5 && Math.random() < 0.4 && !this.goals.isGoalCooling('gather_materials')) {
             this.goals.currentGoal = {
                 type: 'gather_materials',
                 priority: 1,
@@ -1617,7 +1620,7 @@ class Pawn extends MobileEntity {
             this.goals.startGoal(this.goals.currentGoal)
             return
         }
-        if (canStudy && this.idlePlan.tasks.includes('study')) {
+        if (canStudy && this.idlePlan.tasks.includes('study') && !this.goals.isGoalCooling('study')) {
             const dur = this.idlePlan.studyDuration
             this.goals.currentGoal = {
                 type: 'study', priority: 1, description: 'Study and plan',
@@ -1626,7 +1629,7 @@ class Pawn extends MobileEntity {
             this.goals.startGoal(this.goals.currentGoal)
             return
         }
-        if (canExplore && this.idlePlan.tasks.includes('explore')) {
+        if (canExplore && this.idlePlan.tasks.includes('explore') && !this.goals.isGoalCooling('explore')) {
             this.goals.currentGoal = {
                 type: 'explore', priority: 1, description: 'Wander and observe',
                 targetType: 'location', action: 'explore'
