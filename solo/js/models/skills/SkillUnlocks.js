@@ -8,12 +8,12 @@
 //     skills?: { [skillName]: minLevel },
 //     itemExposure?: { [itemType]: minCount },
 //     structureExposure?: { [structureTag]: minCount },
-//     craftedCounts?: { [itemType]: minCount }
+//     craftedCounts?: { [recipeId]: minCount }   // craft() counts by recipe id
 //   },
 //   unlocks: {
 //     skills?: string[],
 //     goals?: string[],
-//     recipes?: string[]
+//     recipes?: string[]   // recipe ids; an id that names no recipe unlocks nothing
 //   }
 // }
 
@@ -74,6 +74,23 @@ export const SKILL_UNLOCKS = [
     unlocks: {
       recipes: ['poultice'],
       goals: ['craft_poultice']
+    }
+  },
+  {
+    // #112: the producer the carrying system was missing. The gate is the one a
+    // pawn can actually meet - it has had fibre in its hands and looked at it -
+    // rather than the weaving level or a cordage tally, because weaving practice
+    // only ever comes *from* crafting and nothing was craftable: an unlock that
+    // asks for the thing it exists to cause is a door that opens onto itself.
+    // Only the recipe is granted, since the planner reads recipes and not
+    // unlocked.goals; listing a craft goal here would be decoration.
+    id: 'woven_container',
+    description: 'Carrying loose fibre suggests weaving something that holds',
+    conditions: {
+      itemExposure: { fiber: 4 }
+    },
+    unlocks: {
+      recipes: ['basket']
     }
   }
 ]

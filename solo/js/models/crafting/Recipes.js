@@ -20,6 +20,49 @@ export const RECIPES = [
     experience: 0.5 // skill gain on craft
   },
   {
+    // #112. A pawn has two slots and the world holds far more than two things, yet
+    // every other craft here makes something you spend. This one makes room. It is
+    // deliberately as cheap as cordage and draws the extra fibre from the patch the
+    // weaver is standing on, so a pawn with full hands can still weave its way out
+    // of them - otherwise the cure for being overloaded would itself require
+    // carrying the load.
+    //
+    // No requiredSkills, which is not an oversight: weaving is the skill this
+    // recipe *pays* (primarySkill + experience), and nothing else in the game pays
+    // practice into it. A weaving prerequisite here would be a locked door with the
+    // key hanging on the inside of it - cordage asks for weaving 1 too, so with a
+    // two-slot pack and no teacher there was no craft a fresh pawn could ever
+    // finish. The basket is the root the textile branch was missing.
+    id: 'basket',
+    name: 'Basket',
+    description: 'A woven vessel that gives a pair of hands somewhere else to put things',
+    requiredItems: [
+      {
+        type: 'fiber',
+        count: 3,
+        allowSourceUse: true,
+        sourceTag: 'fiber',
+        sourceRange: 24
+      }
+    ],
+    output: {
+      type: 'basket',
+      name: 'Basket',
+      baseQuality: 1,
+      tags: ['container', 'carrying'],
+      slotType: 'container',
+      increasesCapacity: { slots: 4, weight: 20, size: 15 },
+      weight: 2,
+      size: 2,
+      stackable: false,
+      maxStack: 1,
+      durability: 30
+    },
+    craftTime: 30,
+    primarySkill: 'weaving',
+    experience: 0.8
+  },
+  {
     id: 'sharp_stone',
     name: 'Sharp Stone',
     description: 'Knapped flint cutting tool',
@@ -90,7 +133,12 @@ export const RECIPES = [
     experience: 0.4
   },
   {
-    id: 'simple_poultice',
+    // The id is the recipe's name in every other vocabulary: the unlock table
+    // grants recipes by id, the goal planner turns craft_<goal> into <goal> and
+    // looks that up as an id, and this recipe's *output type* has always been
+    // 'poultice'. While the id said 'simple_poultice' both of those lookups missed
+    // silently, which is why no pawn could ever craft a poultice (#112).
+    id: 'poultice',
     name: 'Simple Poultice',
     description: 'Prepared healing mash for wounds',
     requiredSkills: { herbalism: 2 },

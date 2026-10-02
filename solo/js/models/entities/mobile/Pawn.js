@@ -4748,10 +4748,12 @@ class Pawn extends MobileEntity {
      * would quietly drift out of sync with the real ones.
      *
      * `state` tests a hypothetical pack (items held, weight, size so far) rather
-     * than this pawn's, which is how canHold() stacks several items up.
+     * than this pawn's, which is how canHold() stacks several items up. It can
+     * carry the pack's limits too, because a hypothetical pack that is giving away
+     * a basket is also giving away the room that basket lent it (#112).
      *
      * @param {Object} item - prospective item
-     * @param {{count:number, weight:number, size:number}|null} [state]
+     * @param {Object|null} [state] - hypothetical count/weight/size and limits
      * @returns {string|null} 'need_water_container' | 'inventory_full' | 'over_weight' | 'over_size' | null
      */
     carryRejection(item, state = null) {
@@ -4761,12 +4763,16 @@ class Pawn extends MobileEntity {
         const count = state ? state.count : this.inventory.length
         const weight = state ? state.weight : this.inventoryWeight
         const size = state ? state.size : this.getInventorySize()
-        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !this.hasContainer()) {
+        const slots = state?.slots ?? this.inventorySlots
+        const maxWeight = state?.maxWeight ?? this.maxWeight
+        const maxSize = state?.maxSize ?? this.maxSize
+        const holdsContainer = state ? state.container : this.hasContainer()
+        if ((item.type === 'water' || item.subtype === 'water' || item.tags?.includes?.('water')) && !holdsContainer) {
             return 'need_water_container'
         }
-        if (count >= this.inventorySlots + (bonus.slots ?? 0)) return 'inventory_full'
-        if ((weight + (item.weight ?? 1)) > this.maxWeight + (bonus.weight ?? 0)) return 'over_weight'
-        if ((size + (item.size ?? 1)) > this.maxSize + (bonus.size ?? 0)) return 'over_size'
+        if (count >= slots + (bonus.slots ?? 0)) return 'inventory_full'
+        if ((weight + (item.weight ?? 1)) > maxWeight + (bonus.weight ?? 0)) return 'over_weight'
+        if ((size + (item.size ?? 1)) > maxSize + (bonus.size ?? 0)) return 'over_size'
         return null
     }
 
@@ -4787,10 +4793,24 @@ class Pawn extends MobileEntity {
     canHold(itemType, amount = 1, frees = null) {
         if (!(amount > 0)) return true
         const leaving = Array.isArray(frees) ? frees : []
+        const leavingSet = new Set(leaving)
         const state = {
             count: this.inventory.length - leaving.length,
             weight: this.inventoryWeight - leaving.reduce((sum, item) => sum + (item?.weight ?? 1), 0),
-            size: this.getInventorySize() - leaving.reduce((sum, item) => sum + (item?.size ?? 1), 0)
+            size: this.getInventorySize() - leaving.reduce((sum, item) => sum + (item?.size ?? 1), 0),
+            // What the pack will still be able to hold once those goods have gone.
+            // A basket's slots were never the pawn's to trade away, so handing one
+            // over in a barter closes the room it was lending (#112).
+            slots: this.inventorySlots,
+            maxWeight: this.maxWeight,
+            maxSize: this.maxSize,
+            container: this.inventory.some(item => !leavingSet.has(item) && item.slotType === 'container')
+        }
+        for (const item of leaving) {
+            if (!item?.capacityApplied) continue
+            state.slots -= item.increasesCapacity?.slots ?? 0
+            state.maxWeight -= item.increasesCapacity?.weight ?? 0
+            state.maxSize -= item.increasesCapacity?.size ?? 0
         }
         // A pack cannot be freer than empty; clamp rather than inventing space.
         if (state.count < 0) state.count = 0
@@ -4806,6 +4826,55 @@ class Pawn extends MobileEntity {
         return true
     }
 
+    /**
+     * Which of the recipes this pawn could make right now it should make.
+     *
+     * The craft goals took candidates[0], which in practice meant "the first entry
+     * in Recipes.js, forever": a pawn with full hands and a fibre patch underfoot
+     * kept twisting cordage it did not need, and the one craft that could widen
+     * the pack was the one it never chose (#112). Selection follows the complaint
+     * that opens the pondering queue - full hands want the thing that makes room.
+     *
+     * @param {Object[]} candidates - recipes already filtered to unlocked + craftable
+     * @returns {Object|null}
+     */
+    chooseCraft(candidates = []) {
+        if (candidates.length === 0) return null
+        if (this.inventory.length >= this.inventorySlots) {
+            const widening = candidates.find(r => (r.output?.increasesCapacity?.slots ?? 0) > 0)
+            if (widening) return widening
+        }
+        return candidates[0]
+    }
+
+    /**
+     * Lend the pack the room an item grants, or take it back.
+     *
+     * increasesCapacity used to be added on the way in and never removed, so a
+     * pawn that lost a basket to a barter, a death, or a transfer that failed at
+     * the far end kept the extra slots for good: capacity had become a rumour the
+     * pack repeated about itself. The bonus is a property of *carrying* the item,
+     * so it is booked when the item enters the pack and released when it leaves.
+     * The item carries the ledger on itself (capacityApplied), which also makes
+     * the operation idempotent - putting an item back after a failed transfer
+     * cannot count it twice.
+     *
+     * @param {Object} item
+     * @param {boolean} applied - true when the item is now being carried
+     * @returns {boolean} whether the pack's limits changed
+     */
+    applyItemCapacity(item, applied) {
+        const bonus = item?.increasesCapacity
+        if (!bonus) return false
+        if (Boolean(item.capacityApplied) === Boolean(applied)) return false
+        const sign = applied ? 1 : -1
+        this.inventorySlots += (bonus.slots ?? 0) * sign
+        this.maxWeight += (bonus.weight ?? 0) * sign
+        this.maxSize += (bonus.size ?? 0) * sign
+        item.capacityApplied = Boolean(applied)
+        return true
+    }
+
     addItemToInventory(item) {
         // item: { id, name, weight, size, slotType, increasesCapacity, ... }
         // Track as known material
@@ -4813,11 +4882,7 @@ class Pawn extends MobileEntity {
 
         const rejection = this.carryRejection(item)
         if (!rejection) {
-            if (item.increasesCapacity) {
-                this.inventorySlots += item.increasesCapacity.slots ?? 0
-                this.maxWeight += item.increasesCapacity.weight ?? 0
-                this.maxSize += item.increasesCapacity.size ?? 0
-            }
+            this.applyItemCapacity(item, true)
             this.inventory.push(item)
             this.inventoryWeight += item.weight ?? 1
             return true
@@ -4891,6 +4956,7 @@ class Pawn extends MobileEntity {
         if (idx !== -1) {
             const [item] = this.inventory.splice(idx, 1)
             this.inventoryWeight -= item.weight ?? 1
+            this.applyItemCapacity(item, false)
             return item
         }
         return null
@@ -4974,6 +5040,16 @@ class Pawn extends MobileEntity {
             if (stillNeeded > 0) {
                 const sourced = this.consumeRecipeRequirementAtSource(req, stillNeeded)
                 if (sourced < stillNeeded) {
+                    // Either the nearby estimate was optimistic or the source ran dry
+                    // mid-weave. Either way the goods already taken out of the pack go
+                    // back (#112): a craft that eats its own materials and then fails
+                    // leaves the pawn poorer *and* empty-handed, with an emptier fibre
+                    // store than before it tried to widen its carry.
+                    for (const item of consumed.splice(0).reverse()) {
+                        if (!this.addItemToInventory(item)) {
+                            console.warn(`${this.name} could not take back ${item.name ?? item.type} after a failed craft`)
+                        }
+                    }
                     console.warn(`${this.name} failed to source ${req.type} at crafting site`)
                     return null
                 }

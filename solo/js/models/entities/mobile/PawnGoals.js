@@ -1130,9 +1130,13 @@ class PawnGoals {
                 if (goal.recipeName) {
                     recipe = getRecipe(goal.recipeName)
                 } else {
-                    // Otherwise pick a craftable recipe we can currently make
+                    // Otherwise pick a craftable recipe we can currently make. The
+                    // choice is the pawn's, not the array's: candidates[0] meant
+                    // "whatever sits first in Recipes.js", so a pawn standing on
+                    // fibre with full hands kept reaching for cordage it could not
+                    // carry and never wove the one thing that would make room (#112).
                     const candidates = getAvailableRecipes(this.pawn).filter(r => canCraftRecipe(this.pawn, r))
-                    if (candidates.length > 0) recipe = candidates[0]
+                    recipe = this.pawn.chooseCraft?.(candidates) ?? candidates[0] ?? null
                 }
 
                 if (!recipe) {
