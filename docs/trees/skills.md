@@ -46,13 +46,14 @@ Each entry lists the conditions that cause the skill to **first become available
 ### Weaving ✅
 > Braiding and interlacing fibrous materials into useful objects.
 
-- **Prerequisites (any one path):**
-  - `manipulation ≥ 1` AND item exposure: `grass ≥ 3, fiber ≥ 2`
-  - OR pawn observes another pawn crafting cordage or basket
+- **Prerequisites:**
+  - `manipulation ≥ 1` AND item exposure: `fiber ≥ 3`
 - **Enables:**
   - Recipe: [Tools › Cordage](tools.md#cordage)
   - Recipe: [Tools › Basket](tools.md#basket)
   - Synergy into [Knot-Work / Rope Craft](#knot-work--rope-craft), [Textile Work](#textile-work)
+
+> Grass is a separate tile-harvested material: it can be woven into a [Sleeping Mat](tools.md#sleeping-mat) without first unlocking Weaving. Handling fiber remains the documented gate for the Weaving skill and cordage path.
 
 ---
 

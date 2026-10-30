@@ -8,14 +8,14 @@ Materials are the raw and processed substances that feed crafting recipes, build
 
 ### Grass ✅
 >
-> Dry or green grass blades collected from open ground.
+> A tile-owned bundle of grasses harvested from open ground. Its mixed properties vary with biome and the remaining grass on the tile.
 
 - **Prerequisites:** *(available from world spawn — no unlock required)*
-- **Found via:** Ground cover tiles in open biomes
+- **Found via:** Harvestable grass stocks on ground-cover tiles in open biomes
+- **Material properties:** Durability, rot resistance, flexibility, edibility, medicine, length, and mass are aggregated from the gathered mix. A pawn's skill can bias a targeted harvest toward a useful profile.
 - **Enables:**
-  - Item exposure toward [Skills › Weaving](skills.md#weaving)
-  - Input for [Tools › Cordage](tools.md#cordage) and [Structures › Basic Shelter](structures.md#basic-shelter)
-  - Feedstock for [Fiber](#fiber) processing
+  - Input for [Tools › Sleeping Mat](tools.md#sleeping-mat)
+  - Foraging from the same tile-grass stocks
 
 ---
 
@@ -25,12 +25,13 @@ Materials are the raw and processed substances that feed crafting recipes, build
 
 - **Prerequisites (any one path):**
   - Harvesting a fiber plant (`FiberPlant` entity)
-  - OR processing collected grass with `manipulation ≥ 1`
-- **Found via:** Fiber plant patches; also yielded from certain grasses
+- **Found via:** Fiber plant patches
 - **Enables:**
   - Primary input for [Tools › Cordage](tools.md#cordage)
   - Item exposure triggers [Skills › Weaving](skills.md#weaving)
   - Path toward [Cloth](#cloth) via [Skills › Textile Work](skills.md#textile-work)
+
+> A harvested grass bundle remains `grass`; it is not raw `fiber`. Grass is woven directly into a sleeping mat, while the separate fiber material supports cordage and other fiber recipes.
 
 ---
 
