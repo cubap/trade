@@ -409,6 +409,7 @@ class Pawn extends MobileEntity {
                 if (added) {
                     this.setRecentAction(`Gathered ${gathered.type ?? gathered.name ?? 'resource'}`)
                     this.assessManualCuttingHardship(resource, gathered)
+                    this.useSkill('manipulation', 0.5)
                     // Examination-based learning: require interaction with the gathered item
                     this.examineItem?.(gathered)
                     // Track material for lateral learning
@@ -3047,6 +3048,7 @@ class Pawn extends MobileEntity {
     registerRestOutcome(goal = null) {
         const tick = this.world?.clock?.currentTick ?? 0
         const entities = this.world?.entitiesMap ? Array.from(this.world.entitiesMap.values()) : []
+        const hasRestSurface = this.inventory.some(item => hasTag(item, 'rest_surface'))
         // #131: the radii and the cover test come from `PawnBehaviors`, which is
         // what `PawnNeeds.readSituation()` now uses to decide whether the pawn is
         // under a roof at all. The night used to be judged by one pair of numbers
@@ -3067,9 +3069,11 @@ class Pawn extends MobileEntity {
 
         if (!nearCover) {
             this.exposedNights++
-            this.recordChallengeContext('poor_sleep_ground', 0.07, { durationTicks: 900 })
             this.recordChallengeContext('exposed_night', 0.04, { durationTicks: 700 })
-            this.addThought('Sleeping on the ground feels rough and unsteady.', 'comfort')
+            if (!hasRestSurface) {
+                this.recordChallengeContext('poor_sleep_ground', 0.07, { durationTicks: 900 })
+                this.addThought('Sleeping on the ground feels rough and unsteady.', 'comfort')
+            }
 
             if (this.exposedNights >= 2) {
                 this.ponderProblem('need_shelter', {
@@ -3088,6 +3092,23 @@ class Pawn extends MobileEntity {
         if (nearbyPawns.length >= 1) {
             // Gain proximity-based trust with nearby pawns
             this.registerProximityTrustGain(nearbyPawns)
+        }
+
+        const comfortThreshold = this.needs?.thresholds?.comfort?.medium ?? 20
+        const poorSleep = !nearCover && !hasRestSurface
+        const unresolvedNeeds = Object.fromEntries(
+            Object.entries(this.needs?.needs ?? {}).filter(([need, value]) =>
+                value >= (this.needs?.thresholds?.[need]?.low ?? 0)
+            )
+        )
+        const alreadyImaginedMat = this.discoveredSolutions?.has('sleeping_mat_concept')
+        if (!alreadyImaginedMat &&
+            (poorSleep || (this.needs?.needs?.comfort ?? 0) >= comfortThreshold)) {
+            this.ponderProblem('dream_reflection', {
+                poorSleep,
+                exposedNights: this.exposedNights,
+                unresolvedNeeds
+            })
         }
 
         if (nearbyPawns.length >= 2) {
@@ -3642,6 +3663,29 @@ class Pawn extends MobileEntity {
                 console.log(`💡 ${this.name} has an epiphany: ${solution.name}!`)
                 this.addThought(`I have a way to ${solution.unlocks?.replace?.(/_/g, ' ') ?? 'solve this'}.`, 'epiphany')
                 this.discoveredSolutions.add(solution.id)
+
+                if (solution.recipeId) {
+                    const newlyUnlocked = !this.unlocked.recipes.has(solution.recipeId)
+                    this.unlocked.recipes.add(solution.recipeId)
+                    if (newlyUnlocked) {
+                        emitUnlocks({ pawn: this, skills: [], goals: [], recipes: [solution.recipeId] })
+                    }
+                    const hasMat = this.inventory.some(item => item.type === solution.recipeId)
+                    const goalType = `craft_${solution.recipeId}`
+                    const hasMatGoal = this.goals.currentGoal?.type === goalType ||
+                        this.goals.currentGoal?.recipeName === solution.recipeId ||
+                        this.goals.goalQueue.some(goal =>
+                            goal.type === goalType || goal.recipeName === solution.recipeId
+                        )
+                    if (!hasMat && !hasMatGoal) {
+                        this.goals.goalQueue.push({
+                            type: goalType,
+                            recipeName: solution.recipeId,
+                            priority: 1,
+                            description: `Weave a ${solution.name.toLowerCase()}`
+                        })
+                    }
+                }
                 
                 // Initialize success tracking
                 this.solutionSuccessCount[solution.id] = 0
@@ -3748,6 +3792,15 @@ class Pawn extends MobileEntity {
                 unlocks: 'basic_shelter',
                 domain: 'construction_basics'
             },
+            dream_reflection: {
+                id: 'sleeping_mat_concept',
+                name: 'Sleeping Mat',
+                type: 'recipe',
+                description: 'A grass weave could make the ground easier to sleep on',
+                unlocks: 'sleeping_mat',
+                recipeId: 'sleeping_mat',
+                domain: 'weaving'
+            },
             material_substitution: {
                 id: `${context?.originalSolution}_variant_${context?.newMaterial}`,
                 name: `Alternative ${context?.originalSolution} Method`,
@@ -3817,7 +3870,9 @@ class Pawn extends MobileEntity {
                 const crafting = this.getSkill('crafting')
                 const invention = this.getSkill('invention')
                 return (construction >= 1 || crafting >= 3) && invention >= 3
-            }
+            },
+            sleeping_mat_concept: () => context?.poorSleep === true ||
+                (context?.unresolvedNeeds?.comfort ?? 0) >= (this.needs?.thresholds?.comfort?.medium ?? 20)
         }
         
         const meetsRequirements = requirements[solution.id]?.() ?? true

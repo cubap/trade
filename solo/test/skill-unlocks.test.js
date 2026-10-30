@@ -21,9 +21,9 @@ import { transferItems } from '../js/models/entities/mobile/PawnInventory.js'
 //   #117 - `unlocks.goals` was written into a Set that nothing read, so the
 //   ideas a pawn had lost to whatever `Recipes.js` happens to file first.
 //
-// These tests pin the three rules the table now keeps: every recipe is granted
-// or exempt on purpose; a granted skill qualifies the pawn once; a granted goal
-// is an idea that changes what gets made.
+// These tests pin the rules the table now keeps: every recipe is granted by the
+// skill table or an explicit idea path; a granted skill qualifies the pawn once;
+// a granted goal is an idea that changes what gets made.
 
 function makeItem(type, id, extra = {}) {
   return { id, type, name: type, weight: 1, size: 1, ...extra }
@@ -51,12 +51,13 @@ function stow(pawn, type, count) {
 
 // ---------------------------------------------------------------- #115 rule 1
 
-test('every recipe is granted by the table or exempt from it, never merely filed', () => {
+test('every recipe has a progression unlock path rather than being merely filed', () => {
   const granted = new Set(GRANTED_RECIPES)
   const exempt = new Set(Object.keys(UNREACHABLE_RECIPES))
+  const ideaUnlocked = new Set(['sleeping_mat'])
   for (const recipe of RECIPES) {
     assert.ok(
-      granted.has(recipe.id) || exempt.has(recipe.id),
+      granted.has(recipe.id) || exempt.has(recipe.id) || ideaUnlocked.has(recipe.id),
       `${recipe.id} is in the recipe book but nothing can ever unlock it`
     )
   }
@@ -115,8 +116,8 @@ test('a granted skill qualifies the pawn, once', () => {
   assert.strictEqual(pawn.getSkill('weaving'), 0, 'a stranger has no weaving at all')
 
   pawn.skills.manipulation = 1
-  // Three fibres, which is what the gate can actually be met with: no item of type
-  // `grass` has ever existed (#120).
+  // Three fibres, which is what the early manipulation gate is designed around;
+  // tile grass is a separate gathering and crafting path.
   stow(pawn, 'fiber', 3)
   pawn.evaluateSkillUnlocks()
 

@@ -12,8 +12,8 @@ import { GRANTED_RECIPES } from '../js/models/skills/SkillUnlocks.js'
 // flag - the output object went into the pack like a flint knife, `capacity: 2`
 // implied a storehouse that did not exist, and the world never gained a building.
 // It was unreachable twice over as well: nothing in the unlock table granted it, and
-// its frame asked for 20 grass, an item type no entity in the tree has ever yielded
-// (grass is flora a browser eats; there is no `gather()` and no thatch).
+// its frame asked for a large grass input before tile-owned grass could be gathered
+// as a material, and for herb before any herb plant existed.
 //
 // So these tests hold three promises: `placeable` means a Structure appears on the
 // ground and nothing goes into the pack; the materials are ones a pawn can actually
@@ -147,9 +147,8 @@ test('the frame is priced in materials the world has', () => {
   const recipe = getRecipe('basic_shelter')
   const types = recipe.requiredItems.map(req => req.type)
 
-  // `grass` and `herb` have never been obtainable item types (#129). A recipe that
-  // asks for them is not hard, it is impossible, and the difference matters: the pawn
-  // spends a lifetime looking for something no entity in the game can give it.
+  // The shelter frame has its own deliberately simple inputs; it should not depend
+  // on the separate grass-weaving or herbalism progression paths.
   assert.ok(!types.includes('grass'), 'no grass: nothing gathers thatch')
   assert.ok(!types.includes('herb'), 'no herb: there is no herb plant in the tree')
   assert.deepStrictEqual(types, ['stick', 'fiber', 'cordage'], 'each of which a pawn can pick up or make')

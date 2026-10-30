@@ -299,7 +299,15 @@ class Animal extends MobileEntity {
             this.nextTargetY = this.memory.knownFood[0].y
         } else {
             // No food found or remembered, explore more widely
-            this.exploreForResources()
+            const forage = this.world?.harvestGrassAt?.(this.x, this.y, {
+                use: 'forage',
+                targetType: 'flowers'
+            })
+            if (forage) {
+                this.drives.hunger = Math.max(0, this.drives.hunger - forage.nutrition * 10)
+            } else {
+                this.exploreForResources()
+            }
         }
         
         // Restore original move range

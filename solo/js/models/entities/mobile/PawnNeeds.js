@@ -228,9 +228,19 @@ class PawnNeeds {
         const goal = pawn?.goals?.currentGoal ?? null
         const resting = goal?.type === 'rest' && !!goal.startTime
         if (resting) situations.add('resting')
+        const restSurface = pawn?.inventory?.find(item =>
+            hasTag(item, 'rest_surface') && Number.isFinite(item.restBonus)
+        )
+        const bonus = resting ? Number(goal.target?.restBonus ?? restSurface?.restBonus) : NaN
+        this.restBonus = Number.isFinite(bonus)
+            ? Math.min(REST_BONUS_RANGE.max, Math.max(REST_BONUS_RANGE.min, bonus))
+            : 1
 
         const world = pawn?.world
-        if (!world?.entitiesMap || !Number.isFinite(pawn.x)) return situations
+        if (!world?.entitiesMap || !Number.isFinite(pawn.x)) {
+            if (resting && restSurface && this.restBonus > 1) situations.add('in_comfortable_space')
+            return situations
+        }
 
         const company = SITUATION_RADIUS.company
         const companySq = company * company
@@ -270,13 +280,11 @@ class PawnNeeds {
         if (threatened) situations.add('threatened')
         if (sheltered) situations.add('in_shelter')
 
-        // The bed is whatever the pawn chose to lie on; a rest goal that was only
-        // ever a location has none, and bare ground rests you at exactly 1x.
-        const bonus = resting ? Number(goal.target?.restBonus) : NaN
-        this.restBonus = Number.isFinite(bonus)
-            ? Math.min(REST_BONUS_RANGE.max, Math.max(REST_BONUS_RANGE.min, bonus))
-            : 1
-        if (resting && sheltered && this.restBonus > 1) situations.add('in_comfortable_space')
+        // A built bed can be the rest target; a carried rest surface works too.
+        // Bare ground without either defaults to 1x.
+        if (resting && (sheltered || restSurface) && this.restBonus > 1) {
+            situations.add('in_comfortable_space')
+        }
 
         // A pawn alone in a world of one is not lonely; it is the only one there
         // is, and doubling an urgency nothing in the game can satisfy would hand

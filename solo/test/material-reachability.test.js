@@ -19,14 +19,14 @@ import {
 
 /**
  * #129: the recipe book and the unlock table are both allowed to name materials,
- * and for a long time nothing checked that the world could make them. `grass`
- * took one issue (#120) to notice and `herb` took another: `herb_mash` and
+ * and for a long time nothing checked that the world could make them. `herb`
+ * took one issue (#129) to notice: `herb_mash` and
  * `poultice` could never pass `canCraftRecipe()`, and the two unlocks gated on
  * handling an herb that no entity had ever dropped.
  *
  * So this file asks the question in the only way that stays true: it gathers from
- * every gatherable class in the game, reads the outputs the bench can make, and
- * reads the transforms the world itself performs. A material that appears in a
+ * every gatherable class in the game, the tile-grass world interaction, the outputs
+ * the bench can make, and the transforms the world itself performs. A material that appears in a
  * requirement or an exposure gate and in none of those three columns is a dead
  * end, and the pawn that finds itself wanting one will spend its afternoon there.
  */
@@ -45,6 +45,19 @@ function gatheredItemTypes() {
         const type = item?.type ?? entity.subtype
         if (type) types.add(type)
     }
+
+    const world = new World(200, 200, { mapSeed: 1, chunkSize: 200 })
+    const chunk = world.chunkManager.getChunkAtPosition(10, 10)
+    chunk.biome = 'plains'
+    chunk.humidity = 50
+    chunk.waterDepth = 0
+    const grassBundle = world.harvestGrassAt(10, 10, {
+        use: 'material',
+        targetType: 'fiber',
+        skill: 0
+    })
+    if (grassBundle?.type) types.add(grassBundle.type)
+
     return types
 }
 
@@ -191,6 +204,11 @@ test('chunk generation plants herbs, so a pawn away from spawn can still find th
         assert.ok(herb.x >= chunk.worldX && herb.x < chunk.worldX + chunk.size, 'the patch is inside the chunk it was paid for')
         assert.ok(herb.canGather(), 'a planted patch starts full')
     }
+    assert.equal(
+        Array.from(world.entitiesMap.values()).some(entity => entity.type === 'grass'),
+        false,
+        'grass is tile state, not a generated source entity'
+    )
 })
 
 test('a pawn who picks an herb is holding herb and remembers handling it', () => {

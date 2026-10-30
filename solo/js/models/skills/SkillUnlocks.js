@@ -37,14 +37,8 @@ export const SKILL_UNLOCKS = [
     description: 'Handling grasses reveals cordage and weaving basics',
     conditions: {
       skills: { manipulation: 1 },
-      // #120: this asked for 3 `grass`, and no item of type `grass` has ever existed.
-      // Grass is flora a browser eats (`Grass.consume()` returns a population count,
-      // there is no `gather()`), and nothing in the tree makes thatch - so cordage,
-      // the first rung of the whole crafting ladder, could never be learned and every
-      // recipe behind it (durable_cordage, and now `basic_shelter`, which lashes its
-      // frame with two cords) was unreachable through a phantom material. Fibre from a
-      // fibre plant is the same discovery made with the hands the world actually has.
-      // #129 is the ticket for giving grass something to be.
+      // Fiber handling is the early manipulation gate. Tile-owned grass follows a
+      // separate material path and does not replace this ingredient.
       itemExposure: { fiber: 3 }
     },
     unlocks: {
@@ -189,12 +183,11 @@ export const SKILL_UNLOCKS = [
 // empty list is a claim, not an absence.
 //
 // `basic_shelter` was the last exemption (#120). It was unreachable twice over: no
-// entry granted it, and its inputs asked for 20 grass, an item no entity in the tree
-// can yield (grass patches are flora a browser eats; nothing gathers thatch). The
-// `construction_basics` entry now grants it, the frame is priced in sticks, fibre and
-// cordage, and `placeable` is honoured - `Pawn.craft` raises a Structure on the spot
-// through the same `createShelter` factory the civic `build_structure` goal uses, so
-// a pawn never carries a building in its pack.
+// entry granted it, and its inputs asked for 20 grass before tile grass could be
+// gathered as a material. The `construction_basics` entry now grants it, the frame is
+// priced in sticks, fibre and cordage, and `placeable` is honoured - `Pawn.craft`
+// raises a Structure on the spot through the same `createShelter` factory the civic
+// `build_structure` goal uses, so a pawn never carries a building in its pack.
 export const UNREACHABLE_RECIPES = {}
 
 // Every recipe id the table grants, for the guard test and for anyone reading
