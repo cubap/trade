@@ -33,6 +33,7 @@ const TRADE_SEARCH_RANGE = 50
 // the same figure; #99 makes it mean something, because arriving is now the
 // start of the barter rather than the end of a goal.
 const TRADE_ARRIVE_RADIUS = 10
+const MIN_PAWN_FORAGE_EDIBILITY = 0.1
 
 // #121: soaking fibre is the one craft input that cannot be picked up off the
 // ground. It needs a cache to stow it in, water beside that cache, and a day of
@@ -123,6 +124,7 @@ const WORK_AT_TARGET_GOALS = new Set([
     'build_structure',
     'soak_fiber',
     'gather_specific',
+    'gather_grass',
     'search_resource',
     'gather_materials',
     'collaborative_craft',
@@ -1911,6 +1913,30 @@ class PawnGoals {
             goal.target = this.pawn.world.entitiesMap.get(goal.targetId) ?? null
         }
 
+        if (goal.type === 'find_food' && !goal.target) {
+            const dx = this.pawn.x - (goal.grassForageTarget?.x ?? this.pawn.x)
+            const dy = this.pawn.y - (goal.grassForageTarget?.y ?? this.pawn.y)
+            if (!goal.grassForageTarget || Math.hypot(dx, dy) <= 5) {
+                const forage = this.pawn.world?.harvestGrassAt?.(this.pawn.x, this.pawn.y, {
+                    use: 'forage',
+                    targetType: 'flowers',
+                    skill: this.pawn.getSkill?.('gathering') ?? 0
+                })
+                if (forage?.nutrition > MIN_PAWN_FORAGE_EDIBILITY) {
+                    this.pawn.needs.satisfyNeed('hunger', Math.round(forage.nutrition * 25))
+                    this.pawn.useSkill?.('gathering', 0.1)
+                    this.completeCurrentGoal()
+                } else {
+                    this.selectExplorationTarget()
+                    goal.grassForageTarget = { x: this.pawn.nextTargetX, y: this.pawn.nextTargetY }
+                }
+            } else {
+                this.pawn.nextTargetX = goal.grassForageTarget.x
+                this.pawn.nextTargetY = goal.grassForageTarget.y
+            }
+            return
+        }
+
         if (goal.type === 'follow_leader') {
             if (!goal.target || goal.target.subtype !== 'pawn') {
                 this.completeCurrentGoal()
@@ -2466,6 +2492,49 @@ class PawnGoals {
             }
 
             this.pawn.setRecentAction?.('Hands full while staging build materials')
+            return
+        }
+
+        if (goal.type === 'gather_grass') {
+            const location = goal.targetLocation ?? { x: this.pawn.x, y: this.pawn.y }
+            if (Math.hypot(this.pawn.x - location.x, this.pawn.y - location.y) > 5) {
+                this.pawn.nextTargetX = location.x
+                this.pawn.nextTargetY = location.y
+                return
+            }
+
+            const bundle = this.pawn.world?.harvestGrassAt?.(this.pawn.x, this.pawn.y, {
+                use: 'material',
+                targetType: goal.targetGrassType ?? 'fiber',
+                skill: this.pawn.getSkill?.('gathering') ?? 0
+            })
+            if (!bundle) {
+                const angle = Math.random() * Math.PI * 2
+                const world = this.pawn.world
+                const nextX = this.pawn.x + Math.cos(angle) * 10
+                const nextY = this.pawn.y + Math.sin(angle) * 10
+                goal.targetLocation = {
+                    x: Math.max(0, Math.min((world?.width ?? nextX) - 1, nextX)),
+                    y: Math.max(0, Math.min((world?.height ?? nextY) - 1, nextY))
+                }
+                this.pawn.nextTargetX = goal.targetLocation.x
+                this.pawn.nextTargetY = goal.targetLocation.y
+                return
+            }
+
+            const added = this.pawn.addItemToInventory(bundle)
+            if (added) {
+                this.pawn.useSkill?.('manipulation', 0.5)
+                this.pawn.examineItem?.(bundle)
+                this.pawn.trackMaterialEncounter?.(bundle)
+                this.pawn.setRecentAction?.('Gathered grass')
+                goal.gatheredCount = (goal.gatheredCount ?? 0) + 1
+                if (goal.gatheredCount >= (goal.count ?? 1)) this.completeCurrentGoal()
+            } else {
+                this.pawn.handleGatheredItemWithoutStorage?.(bundle, {
+                    goalResourceType: 'grass'
+                })
+            }
             return
         }
 

@@ -4,6 +4,8 @@
 
 import Plant from '../immobile/Plant.js'
 
+const GRASS_PER_BUNDLE = 10
+
 export class Tree extends Plant {
     constructor(props = {}) {
         super(props.id, props.name, props.x, props.y)
@@ -190,7 +192,10 @@ export class Grass extends Plant {
     constructor(props = {}) {
         super(props.id, props.name, props.x, props.y)
         this.type = 'grass'
+        this.subtype = 'grass'
         this.population = props.population || 10 // per meter
+        this.harvestCount = props.harvestCount ?? 0
+        this.tags.add('harvestable')
     }
 
     update(tick) {
@@ -222,6 +227,29 @@ export class Grass extends Plant {
     canConsume() {
         // Edible when population is above a minimal threshold
         return (this.population ?? 0) > 0 && !this.depleted
+    }
+
+    canGather() {
+        return this.canConsume()
+    }
+
+    gather(amount = 1) {
+        if (!this.canGather() || !Number.isFinite(amount) || amount <= 0) return null
+
+        const bundles = Math.max(1, Math.floor(amount))
+        const gathered = this.consume(bundles * GRASS_PER_BUNDLE)
+        if (gathered <= 0) return null
+
+        this.harvestCount++
+        return {
+            id: `${this.id}_bundle_${this.harvestCount}`,
+            type: 'grass',
+            name: 'Grass Bundle',
+            quantity: Math.ceil(gathered / GRASS_PER_BUNDLE),
+            tags: ['material', 'plant_fiber'],
+            weight: 1,
+            size: 1
+        }
     }
 
     consume(amount = 5) {

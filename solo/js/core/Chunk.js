@@ -20,6 +20,7 @@ class Chunk {
         
         // Entities in this chunk
         this.entities = new Set()
+        this.grassTiles = new Map()
         
         // Cached resource lists for quick lookup
         this.foodSources = []
@@ -33,6 +34,14 @@ class Chunk {
                worldX < this.worldX + this.size &&
                worldY >= this.worldY && 
                worldY < this.worldY + this.size
+    }
+
+    getGrassTile(tileX, tileY, createTile) {
+        const key = `${tileX},${tileY}`
+        if (!this.grassTiles.has(key) && createTile) {
+            this.grassTiles.set(key, createTile())
+        }
+        return this.grassTiles.get(key) ?? null
     }
     
     // Add entity to chunk

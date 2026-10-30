@@ -14,6 +14,7 @@ export function decomposeGoal(pawn, goal) {
         if (!recipe) return subgoals
         
         const requirements = []
+        const grassRequirements = []
 
         // Check each required item
         for (const req of recipe.requiredItems) {
@@ -21,7 +22,15 @@ export function decomposeGoal(pawn, goal) {
             const needCount = req.count - haveCount
             
             if (needCount > 0) {
-                requirements.push({ type: req.type, count: needCount })
+                const requirement = { type: req.type, count: needCount }
+                if (req.type === 'grass') {
+                    grassRequirements.push({
+                        ...requirement,
+                        targetGrassType: req.targetGrassType ?? 'fiber'
+                    })
+                } else {
+                    requirements.push(requirement)
+                }
             }
         }
 
@@ -59,6 +68,19 @@ export function decomposeGoal(pawn, goal) {
                     parentGoal: goal.type
                 })
             }
+        }
+
+        for (const requirement of grassRequirements) {
+            subgoals.push({
+                type: 'gather_grass',
+                priority: goal.priority + 1,
+                description: `Gather ${requirement.count}x grass`,
+                targetType: 'location',
+                targetLocation: { x: pawn.x, y: pawn.y },
+                targetGrassType: requirement.targetGrassType,
+                count: requirement.count,
+                parentGoal: goal.type
+            })
         }
         
         // Check skills
@@ -123,7 +145,7 @@ export function isGoalReachable(pawn, goal) {
             const haveCount = pawn.inventory?.filter(item => item.type === req.type).length ?? 0
             const remembered = pawn.recallResourcesByType?.(req.type) ?? []
             
-            if (haveCount < req.count && remembered.length === 0) {
+            if (req.type !== 'grass' && haveCount < req.count && remembered.length === 0) {
                 // Don't know where to find this material
                 return { 
                     reachable: false, 
@@ -154,6 +176,10 @@ export function isGoalReachable(pawn, goal) {
     // Gather goals - always reachable (they'll search as they go)
     if (goal.type === 'gather_materials') {
         // General gathering is always reachable - pawn will explore to find resources
+        return { reachable: true }
+    }
+
+    if (goal.type === 'gather_grass') {
         return { reachable: true }
     }
     

@@ -1,4 +1,5 @@
 import Chunk from './Chunk.js'
+import GrassTile from './GrassTile.js'
 import { TRADE_DAY_TICKS } from './TradeRoutes.js'
 
 class ChunkManager {
@@ -895,6 +896,38 @@ class ChunkManager {
         const chunkX = Math.floor(worldX / this.chunkSize)
         const chunkY = Math.floor(worldY / this.chunkSize)
         return this.getChunk(chunkX, chunkY)
+    }
+
+    harvestGrassAt(worldX, worldY, options = {}) {
+        const x = Math.max(0, Math.min(this.worldWidth - 1, Math.floor(worldX)))
+        const y = Math.max(0, Math.min(this.worldHeight - 1, Math.floor(worldY)))
+        const chunk = this.getChunkAtPosition(x, y)
+        if (!chunk || (chunk.waterDepth ?? 0) > 0.4) return null
+
+        const tileX = x - chunk.worldX
+        const tileY = y - chunk.worldY
+        const nearbyTrees = [...chunk.entities].filter(entity =>
+            entity.type === 'tree' && entity.stage === 'adult'
+        )
+        if (nearbyTrees.some(tree => Math.floor(tree.x) === x && Math.floor(tree.y) === y)) {
+            return null
+        }
+
+        const humidityScale = Math.min(1.3, Math.max(0.5, 0.5 + chunk.humidity / 100))
+        const biomeCapacity = {
+            plains: 100,
+            forest: 60,
+            hills: 70,
+            wetland: 80
+        }[chunk.biome] ?? 100
+        const shaded = nearbyTrees.some(tree => Math.hypot(tree.x - x, tree.y - y) <= 8)
+        const capacity = Math.min(100, biomeCapacity * humidityScale * (shaded ? 0.6 : 1))
+        const tile = chunk.getGrassTile(tileX, tileY, () => new GrassTile({
+            id: `grass_${x}_${y}`,
+            capacity,
+            biome: chunk.biome
+        }))
+        return tile?.interact(options) ?? null
     }
     
     // Get chunk at chunk coordinates

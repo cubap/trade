@@ -20,6 +20,27 @@ export const RECIPES = [
     experience: 0.5 // skill gain on craft
   },
   {
+    id: 'sleeping_mat',
+    name: 'Sleeping Mat',
+    description: 'A loose grass weave that makes a night on the ground more comfortable',
+    requiredItems: [
+      { type: 'grass', count: 1 }
+    ],
+    output: {
+      type: 'sleeping_mat',
+      name: 'Sleeping Mat',
+      baseQuality: 1,
+      tags: ['equipment', 'rest_surface'],
+      restBonus: 1.3,
+      weight: 2,
+      size: 2,
+      durability: 30
+    },
+    craftTime: 20,
+    primarySkill: 'weaving',
+    experience: 0.5
+  },
+  {
     // #112. A pawn has two slots and the world holds far more than two things, yet
     // every other craft here makes something you spend. This one makes room. It is
     // deliberately as cheap as cordage and draws the extra fibre from the patch the
@@ -188,12 +209,9 @@ export const RECIPES = [
     name: 'Basic Shelter',
     description: 'Simple lean-to structure',
     requiredSkills: { construction_basics: 1 },
-    // #120. This used to ask for 20 `grass`, and no item of type `grass` has ever
-    // existed: grass patches are flora that browsers eat (`Grass.consume()` returns a
-    // population count, not an item), and nothing in the tree makes thatch. The frame
-    // now costs what the civic `build_structure` route has always cost - 8 sticks and
-    // 4 fibre - plus two cords to lash it, so the two routes to a shelter are
-    // comparable and neither is free.
+    // The frame costs what the civic `build_structure` route has always cost - 8
+    // sticks and 4 fibre - plus two cords to lash it, so the two routes to a shelter
+    // are comparable and neither is free.
     requiredItems: [
       { type: 'stick', count: 8 },
       { type: 'fiber', count: 4 },

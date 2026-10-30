@@ -144,6 +144,10 @@ class World {
         return this.chunkManager.getEntitiesInRadius(x, y, radius)
     }
 
+    harvestGrassAt(x, y, options = {}) {
+        return this.chunkManager.harvestGrassAt(x, y, options)
+    }
+
     // Query all entities within a radius of (x, y)
     queryEntitiesInRadius(x, y, radius) {
         return this.getNearbyEntities(x, y, radius)

@@ -1,13 +1,13 @@
 // FloraGenerator.js
-// Populate the world with Trees, Bushes, Grass, and Herb patches using chunk-aware placement
+// Populate the world with Trees, Bushes, and Herb patches using chunk-aware placement
 
-import { Tree, Bush, Grass } from '../models/entities/plants/Flora.js'
+import { Tree, Bush } from '../models/entities/plants/Flora.js'
 import Herb from '../models/entities/resources/Herb.js'
 
 class FloraGenerator {
     constructor(world) {
         this.world = world
-        this.ids = { tree: 0, bush: 0, grass: 0, herb: 0 }
+        this.ids = { tree: 0, bush: 0, herb: 0 }
     }
 
     generateFlora() {
@@ -26,7 +26,6 @@ class FloraGenerator {
         const biome = chunk.biome
         const baseTrees = biome === 'forest' ? 20 : biome === 'plains' ? 6 : biome === 'hills' ? 9 : 8
         const baseBushes = biome === 'forest' ? 12 : biome === 'plains' ? 9 : biome === 'hills' ? 10 : 10
-        const baseGrass = biome === 'plains' ? 30 : biome === 'forest' ? 18 : biome === 'hills' ? 20 : 22
         // #129: herbs are the rarest thing placed here, on purpose. A poultice costs
         // three of them, and a material under everyone's foot teaches nobody its value.
         // Damp beats shade: wetland grows them in the open, dry biomes hide them in it.
@@ -34,7 +33,6 @@ class FloraGenerator {
 
         this.placeTrees(chunk, baseTrees)
         this.placeBushes(chunk, baseBushes)
-        this.placeGrass(chunk, baseGrass)
         this.placeHerbs(chunk, baseHerbs)
     }
 
@@ -102,25 +100,6 @@ class FloraGenerator {
             bush.tags.add('cover')
             if (Math.random() < 0.6) bush.tags.add('food') // 60% have berries
             this.world.addEntity(bush)
-        }
-    }
-
-    placeGrass(chunk, count) {
-        // Scatter grass where no adult trees in the same meter (1m radius)
-        let placed = 0
-        let attempts = 0
-        while (placed < count && attempts < count * 8) {
-            attempts++
-            const { x, y } = this.randomPointInChunk(chunk, 10)
-            const adultTreesHere = this.world.getNearbyEntities(x, y, 1).some(e => e.type === 'tree' && e.stage === 'adult')
-            if (adultTreesHere) continue
-            const id = `grass_${chunk.x}_${chunk.y}_${this.ids.grass++}`
-            const name = 'Grass'
-            const grass = new Grass({ id, name, x, y, population: 50 + Math.floor(Math.random() * 50) })
-            // Grass is food for herbivores
-            grass.tags.add('food')
-            this.world.addEntity(grass)
-            placed++
         }
     }
 
