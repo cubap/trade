@@ -9,10 +9,10 @@ Structures degrade over time unless maintained. A pawn familiar with a more dura
 ## Shelters
 
 ### Basic Shelter ✅
-> A simple angled windbreak of sticks and grass (lean-to).
+> A simple angled windbreak of sticks bound with fiber and cordage (lean-to).
 
-- **Prerequisites (any one path):**
-  - `construction_basics ≥ 1` AND `stick × 10, grass × 20, cordage × 3`
+- **Prerequisites:**
+  - `construction_basics ≥ 1` AND `stick × 8, fiber × 4, cordage × 2`
   - OR pawn ponders `need_shelter` AND `crafting ≥ 5, invention ≥ 5`
   - OR pawn observes another pawn building or sleeping in a lean-to
 - **Capacity:** 2 pawns
@@ -22,6 +22,8 @@ Structures degrade over time unless maintained. A pawn familiar with a more dura
   - Structure exposure triggers `construction_basics` for nearby pawns
   - Back-pressures recognition of better materials (clay, stone, timber)
   - Required for [Civic › Proto-Settlement](civic-industrial.md#proto-settlement) formation threshold
+
+> A carried [Sleeping Mat](tools.md#sleeping-mat) improves rest but does not provide shelter or cover.
 
 ---
 

@@ -14,6 +14,7 @@ This tree covers how pawns discover, refine, and share knowledge — the meta-la
   - `need_water_container` event: pawn attempts to carry water without a vessel
   - `need_better_tools` event: pawn gathers slowly with primitive tools
   - `need_shelter` event: pawn is exposed to harsh conditions
+  - `dream_reflection` after poor sleep or unresolved comfort: may reveal the [Sleeping Mat](tools.md#sleeping-mat) idea
   - *Future:* any blocked goal type can trigger a pondering event
 - **Discovery chance per cycle:**
   - `(invention × 1%) + (experimentation × 0.5%) + (attempts × 1%)`
@@ -28,6 +29,9 @@ This tree covers how pawns discover, refine, and share knowledge — the meta-la
   - `water_basket` recipe (from `need_water_container`)
   - `stone_axe` recipe (from `need_better_tools`)
   - `lean_to` recipe (from `need_shelter`)
+  - `sleeping_mat` recipe and crafting goal (from a qualifying `dream_reflection`)
+
+**Dream quality feedback 🔮:** Rest comfort may increase the effectiveness of a dream reflection, making a useful insight more likely or more valuable. A comfortable mat creates an opportunity, not a guaranteed invention; discovery remains subject to pondering, eligibility, and the pawn's evidence.
 
 ---
 

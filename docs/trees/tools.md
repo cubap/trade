@@ -1,8 +1,32 @@
 # Tools Tree
 
-Tools are carried items that augment a pawn's ability to gather, fight, craft, or carry. Most tools have a durability value and degrade with use. Higher-quality crafts (driven by skill level) start at higher durability and provide stronger bonuses.
+Tools are carried items that augment a pawn's ability to gather, fight, craft, carry, or rest. Most tools have a durability value and degrade with use. Higher-quality crafts (driven by skill level) start at higher durability and provide stronger bonuses.
 
 Tools may be discovered through multiple material paths — for example, a cutting tool can come from knapped stone, a filed bone, or eventually a cast metal blade.
+
+---
+
+## Rest & Sleep
+
+### Sleeping Mat ✅
+> A loose grass weave carried as a comfortable surface for resting on the ground.
+
+- **Discovery:** A poor sleep outcome or unresolved comfort can prompt a dream reflection that reveals the idea.
+- **Recipe:** `grass × 1`; no skill prerequisite.
+- **Craft practice:** Weaving is the primary skill and gains practice from crafting.
+- **Rest bonus:** ×1.3
+- **Durability:** 30
+- **Enables:**
+  - More comfortable rest while the pawn carries the mat
+  - A small, actionable progression loop from grass gathering through invention and crafting to improved rest
+- **Does not provide:** Shelter or cover; it is a rest surface, not a building.
+
+**Next progression — mat quality 🔮**
+
+- Let the gathered grass mix and the pawn's processing skill influence mat quality.
+- Let quality improve comfort and durability, with bounded values and a clear baseline at the current recipe's ×1.3 rest bonus and 30 durability.
+- Better comfort can make a dream reflection more effective: improve its chance or the usefulness of the insight, but do not guarantee an invention or bypass its evidence and eligibility rules.
+- Keep quality's effects legible in play: a better mat lasts longer and improves rest; better rest creates a stronger opportunity for useful dreaming.
 
 ---
 
