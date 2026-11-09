@@ -925,7 +925,12 @@ class ChunkManager {
         const tile = chunk.getGrassTile(tileX, tileY, () => new GrassTile({
             id: `grass_${x}_${y}`,
             capacity,
-            biome: chunk.biome
+            biome: chunk.biome,
+            humidity: chunk.humidity,
+            shaded,
+            seed: this.seed,
+            x,
+            y
         }))
         return tile?.interact(options) ?? null
     }

@@ -1,39 +1,8 @@
-const GRASS_PROFILES = {
-    thatch: {
-        durability: 50,
-        rotResistance: 60,
-        flexibility: 15,
-        edibility: 5,
-        medicine: 0,
-        length: 90,
-        mass: 30
-    },
-    flowers: {
-        durability: 5,
-        rotResistance: 8,
-        flexibility: 40,
-        edibility: 70,
-        medicine: 25,
-        length: 15,
-        mass: 10
-    },
-    biomass: {
-        durability: 20,
-        rotResistance: 25,
-        flexibility: 20,
-        edibility: 10,
-        medicine: 5,
-        length: 45,
-        mass: 80
-    }
-}
-
-const BIOME_RATIOS = {
-    plains: { thatch: 0.2, flowers: 0.5, biomass: 0.3 },
-    forest: { thatch: 0.15, flowers: 0.3, biomass: 0.55 },
-    hills: { thatch: 0.25, flowers: 0.2, biomass: 0.55 },
-    wetland: { thatch: 0.35, flowers: 0.4, biomass: 0.25 }
-}
+import {
+    createGrassProfileStocks,
+    GRASS_PROFILE_IDS,
+    GRASS_SOURCE_PROFILES
+} from './GrassSourceProfiles.js'
 
 const HARVEST_UNITS = 9
 const PROPERTY_NAMES = [
@@ -46,27 +15,54 @@ const PROPERTY_NAMES = [
     'mass'
 ]
 
+const PROFILE_TYPE_IDS = {
+    thatch: GRASS_PROFILE_IDS.THATCH,
+    flowers: GRASS_PROFILE_IDS.FLOWERS,
+    biomass: GRASS_PROFILE_IDS.BIOMASS
+}
+
 class GrassTile {
-    constructor({ id, capacity, biome, stocks }) {
+    constructor({ id, capacity, biome, stocks, humidity, shaded, seed, x, y }) {
         this.id = id
         this.capacity = capacity
-        const ratios = BIOME_RATIOS[biome] ?? BIOME_RATIOS.plains
-        this.stocks = stocks ?? Object.fromEntries(
-            Object.entries(ratios).map(([type, ratio]) => [type, capacity * ratio])
-        )
+        this.stocks = stocks
+            ? Object.fromEntries(Object.entries(stocks).map(([type, stock]) => [
+                PROFILE_TYPE_IDS[type] ?? type,
+                stock
+            ]))
+            : createGrassProfileStocks({
+                capacity,
+                biome,
+                humidity,
+                shaded,
+                seed,
+                x,
+                y
+            })
         this.harvestCount = 0
     }
 
-    interact({ use = 'material', targetType = 'fiber', skill = 0 } = {}) {
+    interact({
+        use = 'material',
+        targetType = 'fiber',
+        targetProfile,
+        recognizedProfiles,
+        skill = 0
+    } = {}) {
         if (use !== 'material' && use !== 'forage') return null
-        const selectedType = targetType === 'fiber' ? 'thatch' : targetType
+        const selectedType = targetProfile
+            ? recognizedProfiles?.has?.(targetProfile) ? targetProfile : null
+            : targetType === 'fiber'
+                ? GRASS_PROFILE_IDS.THATCH
+                : PROFILE_TYPE_IDS[targetType] ?? targetType
 
         const available = Object.entries(this.stocks).filter(([, stock]) => stock > 0)
         if (available.length === 0) return null
 
         const skillLevel = Number.isFinite(skill) ? Math.max(0, Math.min(10, skill)) : 0
+        const targetBias = 1 + (3 * skillLevel) / (skillLevel + 3)
         const preference = available.map(([type, stock]) => {
-            const preferenceFactor = type === selectedType ? 1 + skillLevel * 0.9 : 1
+            const preferenceFactor = type === selectedType ? targetBias : 1
             return {
                 type,
                 stock,
@@ -104,7 +100,7 @@ class GrassTile {
         const quantity = selected.reduce((sum, portion) => sum + portion.amount, 0)
         const properties = Object.fromEntries(PROPERTY_NAMES.map(name => {
             const weightedValue = selected.reduce(
-                (sum, portion) => sum + GRASS_PROFILES[portion.type][name] * portion.amount,
+                (sum, portion) => sum + GRASS_SOURCE_PROFILES[portion.type][name] * portion.amount,
                 0
             )
             return [name, weightedValue / quantity]
