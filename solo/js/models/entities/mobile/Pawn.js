@@ -18,6 +18,7 @@ import * as PawnInvention from './PawnInvention.js'
 import * as PawnMercantile from './PawnMercantile.js'
 import * as PawnSpecialization from './PawnSpecialization.js'
 import * as PawnLearning from './PawnLearning.js'
+import { GRASS_PROFILE_IDS, identifyGrassSourceProfile } from '../../../core/GrassSourceProfiles.js'
 import * as PawnInventory from './PawnInventory.js'
 import * as PawnReputation from './PawnReputation.js'
 import * as PawnContract from './PawnContract.js'
@@ -53,6 +54,9 @@ const TRAIL_NOTICE_PHRASES = {
     road: ({ skill, level }) => `a road you paved is worth remembering (${skill} ${level})`
 }
 const TRAIL_NOTICE_FALLBACK = ({ skill, level, cause }) => `${skill} ${level} - ${cause}`
+const GRASS_PROFILE_RECOGNITION_OBSERVATIONS = 3
+const SLEEPING_MAT_GRASS_BASE_SUITABILITY = 50
+const SLEEPING_MAT_GRASS_MAX_QUALITY_SHIFT = 0.3
 
 class Pawn extends MobileEntity {
     constructor(id, name, x, y) {
@@ -113,6 +117,10 @@ class Pawn extends MobileEntity {
         // Lateral learning and social observation
         this.observedCrafts = new Set() // Items seen being crafted or used
         this.knownMaterials = new Set() // Materials encountered/gathered
+        this.grassProfileEvidence = Object.fromEntries(
+            Object.values(GRASS_PROFILE_IDS).map(id => [id, 0])
+        )
+        this.recognizedGrassProfiles = new Set()
         this.craftingHistory = [] // Recent crafts: {recipe, quality, timestamp, success}
         this.resourceSpecialization = {
             domains: {},
@@ -908,8 +916,21 @@ class Pawn extends MobileEntity {
         this.itemExposure[type] = (this.itemExposure[type] ?? 0) + count
     }
 
+    observeGrassBundle(bundle) {
+        if (bundle?.type !== 'grass') return null
+        const profileId = identifyGrassSourceProfile(bundle.properties)
+        if (!profileId) return null
+
+        const evidence = ++this.grassProfileEvidence[profileId]
+        if (evidence >= GRASS_PROFILE_RECOGNITION_OBSERVATIONS) {
+            this.recognizedGrassProfiles.add(profileId)
+        }
+        return { profileId, evidence, recognized: this.recognizedGrassProfiles.has(profileId) }
+    }
+
     examineItem(item, amount = 0.2) {
         if (!item) return
+        this.observeGrassBundle(item)
         // #115: no exposure payment here on purpose. Studying a packed item is
         // attention, not handling; the pack already recorded the handling when
         // the item went in (see noteItemHandled).
@@ -5397,8 +5418,28 @@ class Pawn extends MobileEntity {
         // Quality variance: better skill reduces variance
         const variance = 0.3 - (primarySkill * 0.002) // Less variance as skill increases
         const randomFactor = (Math.random() * variance * 2) - variance
-        
-        const quality = baseQuality + skillBonus + synergyBonus + randomFactor
+
+        const matGrassBundles = recipe.id === 'sleeping_mat'
+            ? consumed.filter(item =>
+                item.type === 'grass' &&
+                ['durability', 'rotResistance', 'length'].every(
+                    trait => Number.isFinite(item.properties?.[trait])
+                )
+            )
+            : []
+        const matSuitability = matGrassBundles.length
+            ? matGrassBundles.reduce((sum, item) => {
+                const { durability, rotResistance, length } = item.properties
+                return sum + (durability + rotResistance + length) / 3
+            }, 0) / matGrassBundles.length
+            : SLEEPING_MAT_GRASS_BASE_SUITABILITY
+        const materialQualityBonus = recipe.id === 'sleeping_mat'
+            ? (
+                (matSuitability - SLEEPING_MAT_GRASS_BASE_SUITABILITY) / 100
+            ) * SLEEPING_MAT_GRASS_MAX_QUALITY_SHIFT
+            : 0
+
+        const quality = baseQuality + skillBonus + synergyBonus + randomFactor + materialQualityBonus
 
         // Determine durability based on quality
         // Quality < 0.8: starts degraded (0.6-0.9 durability)

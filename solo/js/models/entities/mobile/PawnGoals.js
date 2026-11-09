@@ -2505,7 +2505,9 @@ class PawnGoals {
 
             const bundle = this.pawn.world?.harvestGrassAt?.(this.pawn.x, this.pawn.y, {
                 use: 'material',
-                targetType: goal.targetGrassType ?? 'fiber',
+                targetType: goal.targetGrassProfile ? undefined : goal.targetGrassType ?? 'fiber',
+                targetProfile: goal.targetGrassProfile,
+                recognizedProfiles: this.pawn.recognizedGrassProfiles,
                 skill: this.pawn.getSkill?.('gathering') ?? 0
             })
             if (!bundle) {

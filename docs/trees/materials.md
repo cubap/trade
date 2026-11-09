@@ -12,7 +12,9 @@ Materials are the raw and processed substances that feed crafting recipes, build
 
 - **Prerequisites:** *(available from world spawn — no unlock required)*
 - **Found via:** Harvestable grass stocks on ground-cover tiles in open biomes
-- **Material properties:** Durability, rot resistance, flexibility, edibility, medicine, length, and mass are aggregated from the gathered mix. A pawn's skill can bias a targeted harvest toward a useful profile.
+- **Source profiles:** Three stable parent profiles (`grass_thatch`, `grass_flowers`, and `grass_biomass`) share base trait templates. Each tile has a seeded, locally varied mixture weighted by biome, humidity, and shade.
+- **Material properties:** Durability, rot resistance, flexibility, edibility, medicine, length, and mass are aggregated from the gathered mix. Sleeping-mat quality reflects the bundle's durability, rot resistance, and length as mat-specific suitability; grass has no universal quality rating. Pawns learn profile patterns from bundle traits; recognition is separate knowledge, and a recognized target biases harvest through Gathering skill without guaranteeing a pure bundle.
+- **Bundle identity:** Harvested items remain generic `grass` with aggregate traits only; source composition is not retained as provenance.
 - **Enables:**
   - Input for [Tools › Sleeping Mat](tools.md#sleeping-mat)
   - Foraging from the same tile-grass stocks

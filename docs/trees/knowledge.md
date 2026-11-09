@@ -109,6 +109,14 @@ This tree covers how pawns discover, refine, and share knowledge — the meta-la
 
 ## Advanced Discovery
 
+### Grass Source Discernment ✅
+> Learning to recognize grass source profiles from the observable traits of generic bundles.
+
+- **Populated by:** Examining grass bundles whose aggregate traits match a source profile
+- **Recognition:** Profile evidence accumulates separately from recognized-profile knowledge; three matching observations establish recognition
+- **Effect:** A recognized profile can be targeted during harvest, with Gathering skill increasing the bias without guaranteeing a pure bundle
+- **Constraint:** Bundles remain generic `grass`; their source composition is not carried forward
+
 ### Observed Crafts ✅
 > A set of item types the pawn has seen being crafted by others.
 
